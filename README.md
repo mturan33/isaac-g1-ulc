@@ -1,2 +1,2 @@
-# a1-vlm-rl
+# go2-vlm-rl
 Neuro-Symbolic AI for Robotics
