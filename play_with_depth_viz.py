@@ -16,7 +16,6 @@ parser.add_argument("--video_length", type=int, default=1000, help="Number of st
 
 # Add Isaac Sim launcher args
 from isaaclab.app import AppLauncher
-
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -131,14 +130,14 @@ def main():
     obs_dict, _ = env.reset()
     obs = obs_dict["policy"]
 
-    print("\n" + "=" * 60)
+    print("\n" + "="*60)
     print("DEPTH CAMERA VISUALIZATION")
-    print("=" * 60)
+    print("="*60)
     print("Controls:")
     print("  'q' - Quit")
     print("  's' - Save current frame")
     print("  'r' - Reset environment")
-    print("=" * 60 + "\n")
+    print("="*60 + "\n")
 
     step = 0
     total_reward = 0
@@ -196,7 +195,7 @@ def main():
             # Extract and reshape
             prop_dim = 48  # Proprioception dimensions
             depth_start = prop_dim
-            depth_end = prop_dim + 64 * 64
+            depth_end = prop_dim + 64*64
 
             if obs.shape[1] >= depth_end:
                 depth_flat = obs[0, depth_start:depth_end]
@@ -209,17 +208,17 @@ def main():
 
             # Add text overlay
             cv2.putText(display, f"Step: {step}", (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(display, f"Reward: {rewards[0].item():.3f}", (10, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(display, f"Total: {total_reward:.2f}", (10, 75),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             # Add colorbar legend
             cv2.putText(display, "Near", (10, 240),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             cv2.putText(display, "Far", (220, 240),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 0, 128), 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 0, 128), 1)
 
             cv2.imshow("Depth Camera View", display)
             video_writer.write(display)
@@ -227,7 +226,7 @@ def main():
             # Show placeholder
             placeholder = np.zeros((256, 256, 3), dtype=np.uint8)
             cv2.putText(placeholder, "No depth data", (50, 128),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             cv2.imshow("Depth Camera View", placeholder)
 
         # Handle keyboard input
@@ -265,11 +264,11 @@ def main():
     env.close()
     simulation_app.close()
 
-    print("\n" + "=" * 60)
+    print("\n" + "="*60)
     print(f"Visualization complete!")
     print(f"Total steps: {step}")
     print(f"Video saved to: {os.path.join(video_dir, 'depth_visualization.mp4')}")
-    print("=" * 60)
+    print("="*60)
 
 
 if __name__ == "__main__":
