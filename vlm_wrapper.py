@@ -1,6 +1,7 @@
 """
 VLM Wrapper for Phi-3-Vision
 Language-Conditioned Object Grounding
+Windows Compatible - No Flash Attention Required
 """
 
 import torch
@@ -9,7 +10,6 @@ import re
 from PIL import Image
 import numpy as np
 from typing import Optional, Tuple, Dict
-
 
 class VLMWrapper:
     """
@@ -53,6 +53,7 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
         "kahverengi": "brown", "brown": "brown",
         "pembe": "pink", "pink": "pink",
         "gri": "gray", "gray": "gray", "grey": "gray",
+        "turkuaz": "cyan", "cyan": "cyan",
     }
 
     OBJECT_MAP = {
@@ -67,10 +68,11 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
     }
 
     def __init__(
-            self,
-            model_id: str = "microsoft/Phi-3-vision-128k-instruct",
-            device: str = "cuda",
-            dtype: torch.dtype = torch.float16,
+        self,
+        model_id: str = "microsoft/Phi-3-vision-128k-instruct",
+        device: str = "cuda",
+        dtype: torch.dtype = torch.float16,
+        low_memory: bool = True,  # 12GB VRAM için optimize
     ):
         """
         Initialize VLM wrapper.
@@ -79,26 +81,60 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
             model_id: HuggingFace model ID
             device: "cuda" or "cpu"
             dtype: torch.float16 for efficiency
+            low_memory: Enable memory optimizations for 12GB VRAM
         """
         from transformers import AutoModelForCausalLM, AutoProcessor
 
         print(f"[VLM] Loading {model_id}...")
+        print(f"[VLM] Device: {device}, Dtype: {dtype}")
+
+        # Check VRAM
+        if torch.cuda.is_available():
+            total_vram = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"[VLM] Available VRAM: {total_vram:.1f} GB")
 
         self.processor = AutoProcessor.from_pretrained(
             model_id,
             trust_remote_code=True
         )
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map=device,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-            _attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager",
-        )
+        # Model loading with Windows compatibility
+        # NO flash_attention_2 - use "eager" or "sdpa" instead
+        model_kwargs = {
+            "device_map": device,
+            "torch_dtype": dtype,
+            "trust_remote_code": True,
+            "_attn_implementation": "eager",  # Windows compatible!
+        }
+
+        # Memory optimizations for 12GB VRAM
+        if low_memory:
+            model_kwargs["low_cpu_mem_usage"] = True
+            # Don't use 8bit/4bit quantization as it requires bitsandbytes
+            # which is problematic on Windows
+
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                **model_kwargs
+            )
+            print(f"[VLM] Model loaded successfully!")
+        except Exception as e:
+            print(f"[VLM] Error loading model: {e}")
+            print("[VLM] Trying with CPU offload...")
+            model_kwargs["device_map"] = "auto"
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                **model_kwargs
+            )
 
         self.device = device
-        print(f"[VLM] Model loaded on {device}")
+
+        # Print memory usage
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1e9
+            reserved = torch.cuda.memory_reserved() / 1e9
+            print(f"[VLM] GPU Memory - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
 
     def parse_command(self, command: str) -> Tuple[str, str]:
         """
@@ -114,7 +150,7 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
 
         # Türkçe ekleri temizle
         command_clean = command_lower
-        for suffix in ["'e", "'a", "ye", "ya", "'ye", "'ya", "e git", "a git"]:
+        for suffix in ["'e", "'a", "ye", "ya", "'ye", "'ya", "e git", "a git", "yi bul", "ı bul", "u bul", "ü bul"]:
             command_clean = command_clean.replace(suffix, "")
 
         color = "unknown"
@@ -135,10 +171,10 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
         return color, obj
 
     def ground_object(
-            self,
-            image: np.ndarray,
-            command: str,
-            max_new_tokens: int = 100,
+        self,
+        image: np.ndarray,
+        command: str,
+        max_new_tokens: int = 100,
     ) -> Dict:
         """
         Find object in image based on language command.
@@ -160,6 +196,7 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
         """
         # Parse command
         color, obj = self.parse_command(command)
+        print(f"[VLM] Parsed: color='{color}', object='{obj}'")
 
         # Convert numpy to PIL if needed
         if isinstance(image, np.ndarray):
@@ -172,6 +209,14 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
             pil_image = Image.fromarray(image)
         else:
             pil_image = image
+
+        # Resize if too large (saves VRAM)
+        max_size = 768
+        if max(pil_image.size) > max_size:
+            ratio = max_size / max(pil_image.size)
+            new_size = (int(pil_image.size[0] * ratio), int(pil_image.size[1] * ratio))
+            pil_image = pil_image.resize(new_size, Image.LANCZOS)
+            print(f"[VLM] Resized image to {new_size}")
 
         # Build prompt
         prompt = self.GROUNDING_PROMPT.format(color=color, object=obj)
@@ -194,6 +239,7 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
 
         # Decode
         response = self.processor.decode(outputs[0], skip_special_tokens=True)
+        print(f"[VLM] Raw response: {response[-200:]}")  # Last 200 chars
 
         # Extract JSON
         result = self._extract_json(response)
@@ -217,7 +263,10 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
                     # Clean up common issues
                     json_str = match.group()
                     json_str = json_str.replace("'", '"')
-                    json_str = re.sub(r'(\w+):', r'"\1":', json_str)
+                    # Fix unquoted keys
+                    json_str = re.sub(r'(\s*)(\w+)(\s*):', r'\1"\2"\3:', json_str)
+                    # Fix true/false
+                    json_str = json_str.replace("True", "true").replace("False", "false")
 
                     result = json.loads(json_str)
                     return {
@@ -226,11 +275,21 @@ If object not found: {{"found": false, "x": 0.0, "y": 0.0, "confidence": 0.0}}
                         "y": float(result.get("y", 0.5)),
                         "confidence": float(result.get("confidence", 0.0)),
                     }
-                except (json.JSONDecodeError, ValueError):
+                except (json.JSONDecodeError, ValueError) as e:
+                    print(f"[VLM] JSON parse error: {e}")
                     continue
 
         # Fallback
+        print("[VLM] Could not parse JSON, returning default")
         return {"found": False, "x": 0.0, "y": 0.5, "confidence": 0.0}
+
+    def warmup(self):
+        """Warmup the model with a dummy inference."""
+        print("[VLM] Warming up model...")
+        dummy_image = np.zeros((256, 256, 3), dtype=np.uint8)
+        dummy_image[100:150, 100:150] = [255, 0, 0]  # Red square
+        self.ground_object(dummy_image, "red box")
+        print("[VLM] Warmup complete!")
 
 
 class NavigationController:
@@ -239,10 +298,10 @@ class NavigationController:
     """
 
     def __init__(
-            self,
-            max_linear_vel: float = 1.0,
-            max_angular_vel: float = 1.0,
-            goal_threshold: float = 0.15,
+        self,
+        max_linear_vel: float = 1.0,
+        max_angular_vel: float = 1.0,
+        goal_threshold: float = 0.15,
     ):
         self.max_linear_vel = max_linear_vel
         self.max_angular_vel = max_angular_vel
@@ -298,35 +357,54 @@ class NavigationController:
 # ============== Standalone Test ==============
 if __name__ == "__main__":
     import sys
+    import time
 
-    print("=" * 50)
-    print("VLM Wrapper Test")
-    print("=" * 50)
+    print("=" * 60)
+    print("VLM Wrapper Test (Windows Compatible)")
+    print("=" * 60)
 
     # Check if image path provided
     if len(sys.argv) < 2:
-        print("Usage: python vlm_wrapper.py <image_path> [command]")
-        print("Example: python vlm_wrapper.py scene.png 'mavi sandalyeye git'")
-        sys.exit(1)
+        print("\nUsage: python vlm_wrapper.py <image_path> [command]")
+        print("Example: python vlm_wrapper.py test_scene.png 'mavi sandalyeye git'")
+        print("\nRunning with dummy image...")
 
-    image_path = sys.argv[1]
-    command = sys.argv[2] if len(sys.argv) > 2 else "mavi sandalyeye git"
+        # Create dummy test image
+        dummy_image = np.zeros((512, 512, 3), dtype=np.uint8)
+        dummy_image[200:300, 150:250] = [0, 0, 255]  # Blue box
+        dummy_image[100:200, 300:400] = [255, 0, 0]  # Red box
+        image_np = dummy_image
+        command = "mavi kutu"
+        print(f"[Test] Using dummy image with blue and red boxes")
+    else:
+        image_path = sys.argv[1]
+        command = sys.argv[2] if len(sys.argv) > 2 else "mavi sandalyeye git"
 
-    # Load image
-    print(f"\n[Test] Loading image: {image_path}")
-    image = Image.open(image_path).convert("RGB")
-    image_np = np.array(image)
-    print(f"[Test] Image shape: {image_np.shape}")
+        # Load image
+        print(f"\n[Test] Loading image: {image_path}")
+        image = Image.open(image_path).convert("RGB")
+        image_np = np.array(image)
+        print(f"[Test] Image shape: {image_np.shape}")
 
     # Initialize VLM
-    print("\n[Test] Initializing VLM...")
-    vlm = VLMWrapper()
+    print("\n[Test] Initializing VLM (this may take a minute)...")
+    start_load = time.time()
+    vlm = VLMWrapper(low_memory=True)
+    load_time = time.time() - start_load
+    print(f"[Test] Model loaded in {load_time:.1f}s")
+
+    # Warmup
+    print("\n[Test] Warming up...")
+    vlm.warmup()
 
     # Ground object
     print(f"\n[Test] Command: '{command}'")
+    start = time.time()
     result = vlm.ground_object(image_np, command)
+    elapsed = time.time() - start
 
-    print("\n[Test] Result:")
+    print(f"\n[Test] Results:")
+    print(f"  Inference time: {elapsed*1000:.1f}ms")
     print(f"  Found: {result['found']}")
     print(f"  Position: x={result['x']:.2f}, y={result['y']:.2f}")
     print(f"  Confidence: {result['confidence']:.2f}")
@@ -335,7 +413,27 @@ if __name__ == "__main__":
     # Convert to velocity
     nav = NavigationController()
     cmd_vel = nav.target_to_velocity(result)
-    print(f"\n[Test] Velocity command: vx={cmd_vel[0]:.2f}, vy={cmd_vel[1]:.2f}, vyaw={cmd_vel[2]:.2f}")
+    print(f"\n[Test] Velocity command:")
+    print(f"  vx={cmd_vel[0]:.2f} m/s (forward)")
+    print(f"  vy={cmd_vel[1]:.2f} m/s (lateral)")
+    print(f"  vyaw={cmd_vel[2]:.2f} rad/s (rotation)")
 
-    print("\n" + "=" * 50)
+    # Test multiple commands
+    if len(sys.argv) < 2:
+        print("\n[Test] Testing multiple commands...")
+        test_commands = ["kırmızı kutu", "blue box", "yeşil top"]
+        for cmd in test_commands:
+            result = vlm.ground_object(image_np, cmd)
+            print(f"  '{cmd}' -> found={result['found']}, x={result['x']:.2f}, y={result['y']:.2f}")
+
+    # Memory stats
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1e9
+        reserved = torch.cuda.memory_reserved() / 1e9
+        print(f"\n[Test] Final GPU Memory:")
+        print(f"  Allocated: {allocated:.2f} GB")
+        print(f"  Reserved: {reserved:.2f} GB")
+
+    print("\n" + "=" * 60)
     print("Test completed!")
+    print("=" * 60)
