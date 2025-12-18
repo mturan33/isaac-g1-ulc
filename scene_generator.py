@@ -8,6 +8,7 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 import random
 
+
 # ============== Color Definitions ==============
 COLORS = {
     "blue": (0.1, 0.3, 0.9),
@@ -101,11 +102,11 @@ class ObjectSpawner:
         self.spawned_objects = []
 
     def generate_random_scene(
-            self,
-            num_objects: int = 6,
-            arena_size: float = 4.0,
-            min_distance: float = 1.0,
-            robot_safe_radius: float = 1.5,
+        self,
+        num_objects: int = 6,
+        arena_size: float = 4.0,
+        min_distance: float = 1.0,
+        robot_safe_radius: float = 1.5,
     ) -> List[Dict]:
         """
         Generate random object placements.
@@ -132,17 +133,17 @@ class ObjectSpawner:
 
             # Find valid position
             for _ in range(100):  # Max attempts
-                x = random.uniform(-arena_size / 2, arena_size / 2)
-                y = random.uniform(-arena_size / 2, arena_size / 2)
+                x = random.uniform(-arena_size/2, arena_size/2)
+                y = random.uniform(-arena_size/2, arena_size/2)
 
                 # Check robot safe zone
-                if np.sqrt(x ** 2 + y ** 2) < robot_safe_radius:
+                if np.sqrt(x**2 + y**2) < robot_safe_radius:
                     continue
 
                 # Check distance from other objects
                 valid = True
                 for px, py in positions:
-                    if np.sqrt((x - px) ** 2 + (y - py) ** 2) < min_distance:
+                    if np.sqrt((x-px)**2 + (y-py)**2) < min_distance:
                         valid = False
                         break
 
@@ -314,10 +315,10 @@ class VLMNavigationEnvHelper:
         return self.object_positions.get(key)
 
     def compute_distance_reward(
-            self,
-            robot_pos: np.ndarray,
-            target_color: str,
-            target_type: str,
+        self,
+        robot_pos: np.ndarray,
+        target_color: str,
+        target_type: str,
     ) -> float:
         """
         Compute distance-based reward.
@@ -342,11 +343,11 @@ class VLMNavigationEnvHelper:
         return float(reward)
 
     def check_goal_reached(
-            self,
-            robot_pos: np.ndarray,
-            target_color: str,
-            target_type: str,
-            threshold: float = 0.5,
+        self,
+        robot_pos: np.ndarray,
+        target_color: str,
+        target_type: str,
+        threshold: float = 0.5,
     ) -> bool:
         """Check if robot reached the target."""
         target_pos = self.get_target_position(target_color, target_type)
