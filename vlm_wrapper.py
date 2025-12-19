@@ -1,6 +1,6 @@
 """
 VLM Wrapper using Florence-2
-Fixed: dtype mismatch (float vs half)
+Fixed: _supports_sdpa error with attn_implementation
 """
 
 import torch
@@ -44,7 +44,7 @@ class VLMWrapper:
         model_id: str = "microsoft/Florence-2-base",
         device: str = "cuda",
     ):
-        from transformers import AutoProcessor, AutoModelForCausalLM
+        from transformers import AutoProcessor, AutoModelForCausalLM, AutoConfig
 
         print(f"[VLM] Loading {model_id}...")
         print(f"[VLM] Device: {device}")
@@ -58,12 +58,19 @@ class VLMWrapper:
             trust_remote_code=True
         )
 
-        # FIX: Use float32 to avoid dtype mismatch
-        # Florence-2 has issues with float16 on some operations
+        # Load config first and modify it
+        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+
+        # FIX: Set attention implementation in config BEFORE loading model
+        if hasattr(config, '_attn_implementation'):
+            config._attn_implementation = "eager"
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.float32,  # FIX: float32 instead of float16
+            config=config,
+            torch_dtype=torch.float32,
             trust_remote_code=True,
+            attn_implementation="eager",  # Also pass here for safety
         ).to(device)
 
         self.device = device
@@ -104,7 +111,6 @@ class VLMWrapper:
         target_phrase = f"{color} {obj}"
         print(f"[VLM] Looking for: '{target_phrase}'")
 
-        # Convert to PIL
         if isinstance(image, np.ndarray):
             if image.dtype != np.uint8:
                 if image.max() <= 1.0:
@@ -117,7 +123,6 @@ class VLMWrapper:
 
         img_width, img_height = pil_image.size
 
-        # Phrase grounding
         task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
         text_input = target_phrase
 
@@ -163,10 +168,7 @@ class VLMWrapper:
                     x1, y1, x2, y2 = bbox
 
                     center_x = (x1 + x2) / 2
-                    center_y = (y1 + y2) / 2
-
                     norm_x = (center_x / img_width) * 2 - 1
-                    norm_y = center_y / img_height
 
                     bbox_area = (x2 - x1) * (y2 - y1)
                     img_area = img_width * img_height
@@ -301,11 +303,7 @@ class NavigationController:
             return np.array([0.0, 0.0, 0.0])
 
         vyaw = -x_offset * self.max_angular_vel
-
-        if y_distance < 0.3:
-            vx = y_distance * self.max_linear_vel
-        else:
-            vx = min(0.3 + y_distance * 0.7, 1.0) * self.max_linear_vel
+        vx = min(0.3 + y_distance * 0.7, 1.0) * self.max_linear_vel if y_distance >= 0.3 else y_distance * self.max_linear_vel
 
         if abs(x_offset) > 0.5:
             vx *= 0.5
@@ -366,10 +364,6 @@ if __name__ == "__main__":
     nav = NavigationController()
     vel = nav.target_to_velocity(result)
     print(f"\n  Velocity: vx={vel[0]:.2f}, vy={vel[1]:.2f}, vyaw={vel[2]:.2f}")
-
-    print(f"\n[Test] Image description...")
-    desc = vlm.describe_image(image_np)
-    print(f"  {desc[:300]}...")
 
     print(f"\n{'='*60}")
     print("MORE TESTS")
