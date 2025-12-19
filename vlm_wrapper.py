@@ -1,17 +1,15 @@
 """
-VLM Wrapper using Florence-2
-Fixed: _supports_sdpa error with attn_implementation
+Florence-2 VLM Wrapper with Grounding
+Use AFTER running fix_florence.py to patch the cache!
 """
 
 import torch
-import json
-import re
 from PIL import Image
 import numpy as np
-from typing import Optional, Tuple, Dict
+from typing import Dict, Tuple
 
 class VLMWrapper:
-    """Florence-2 wrapper for object grounding."""
+    """Florence-2 with real grounding (bounding boxes)."""
 
     COLOR_MAP = {
         "mavi": "blue", "blue": "blue",
@@ -22,356 +20,210 @@ class VLMWrapper:
         "mor": "purple", "purple": "purple",
         "beyaz": "white", "white": "white",
         "siyah": "black", "black": "black",
-        "kahverengi": "brown", "brown": "brown",
         "pembe": "pink", "pink": "pink",
-        "gri": "gray", "gray": "gray", "grey": "gray",
-        "turkuaz": "cyan", "cyan": "cyan",
     }
 
     OBJECT_MAP = {
         "sandalye": "chair", "chair": "chair",
         "masa": "table", "table": "table",
-        "dolap": "cabinet", "cabinet": "cabinet",
-        "koltuk": "sofa", "sofa": "sofa", "couch": "sofa",
-        "kutu": "box", "box": "box", "cube": "box",
+        "kutu": "box", "box": "box",
         "top": "ball", "ball": "ball",
-        "silindir": "cylinder", "cylinder": "cylinder",
-        "koni": "cone", "cone": "cone",
+        "koltuk": "sofa", "sofa": "sofa",
     }
 
-    def __init__(
-        self,
-        model_id: str = "microsoft/Florence-2-base",
-        device: str = "cuda",
-    ):
-        from transformers import AutoProcessor, AutoModelForCausalLM, AutoConfig
+    def __init__(self, device: str = "cuda"):
+        from transformers import AutoProcessor, AutoModelForCausalLM
 
+        model_id = "microsoft/Florence-2-base"
         print(f"[VLM] Loading {model_id}...")
-        print(f"[VLM] Device: {device}")
 
         if torch.cuda.is_available():
-            total_vram = torch.cuda.get_device_properties(0).total_memory / 1e9
-            print(f"[VLM] Available VRAM: {total_vram:.1f} GB")
+            vram = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"[VLM] VRAM: {vram:.1f} GB")
 
-        self.processor = AutoProcessor.from_pretrained(
-            model_id,
-            trust_remote_code=True
-        )
-
-        # Load config first and modify it
-        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-
-        # FIX: Set attention implementation in config BEFORE loading model
-        if hasattr(config, '_attn_implementation'):
-            config._attn_implementation = "eager"
+        self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            config=config,
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float32,  # float32 for stability
             trust_remote_code=True,
-            attn_implementation="eager",  # Also pass here for safety
         ).to(device)
 
         self.device = device
         self.model.eval()
 
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / 1e9
-            print(f"[VLM] GPU Memory - Allocated: {allocated:.2f} GB")
-
-        print(f"[VLM] Model loaded successfully!")
+        mem = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+        print(f"[VLM] GPU Memory: {mem:.2f} GB")
+        print("[VLM] Ready!")
 
     def parse_command(self, command: str) -> Tuple[str, str]:
-        command_lower = command.lower()
-        command_clean = command_lower
-        for suffix in ["'e", "'a", "ye", "ya", "'ye", "'ya", "e git", "a git", "yi bul", "ı bul", "u bul", "ü bul"]:
-            command_clean = command_clean.replace(suffix, "")
+        cmd = command.lower()
+        for s in ["'e", "'a", "ye", "ya", "e git", "a git"]:
+            cmd = cmd.replace(s, "")
 
-        color = "unknown"
-        obj = "object"
-
+        color, obj = "", "object"
         for tr, en in self.COLOR_MAP.items():
-            if tr in command_clean:
+            if tr in cmd:
                 color = en
                 break
-
         for tr, en in self.OBJECT_MAP.items():
-            if tr in command_clean:
+            if tr in cmd:
                 obj = en
                 break
 
         return color, obj
 
     def ground_object(self, image: np.ndarray, command: str) -> Dict:
+        """Find object with bounding box."""
         import time
-        start = time.time()
+        t0 = time.time()
 
         color, obj = self.parse_command(command)
-        target_phrase = f"{color} {obj}"
-        print(f"[VLM] Looking for: '{target_phrase}'")
+        target = f"{color} {obj}".strip()
+        print(f"[VLM] Looking for: '{target}'")
 
+        # To PIL
         if isinstance(image, np.ndarray):
             if image.dtype != np.uint8:
-                if image.max() <= 1.0:
-                    image = (image * 255).astype(np.uint8)
-                else:
-                    image = image.astype(np.uint8)
-            pil_image = Image.fromarray(image)
+                image = (image * 255).astype(np.uint8) if image.max() <= 1 else image.astype(np.uint8)
+            pil = Image.fromarray(image)
         else:
-            pil_image = image
+            pil = image
 
-        img_width, img_height = pil_image.size
+        w, h = pil.size
 
-        task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
-        text_input = target_phrase
-
-        inputs = self.processor(
-            text=task_prompt + text_input,
-            images=pil_image,
-            return_tensors="pt"
-        ).to(self.device)
+        # Grounding task
+        task = "<CAPTION_TO_PHRASE_GROUNDING>"
+        inputs = self.processor(text=task + target, images=pil, return_tensors="pt").to(self.device)
 
         with torch.no_grad():
-            generated_ids = self.model.generate(
+            out = self.model.generate(
                 input_ids=inputs["input_ids"],
                 pixel_values=inputs["pixel_values"],
                 max_new_tokens=1024,
                 num_beams=3,
             )
 
-        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        parsed = self.processor.post_process_generation(
-            generated_text,
-            task=task_prompt,
-            image_size=(img_width, img_height)
-        )
+        text = self.processor.batch_decode(out, skip_special_tokens=False)[0]
+        parsed = self.processor.post_process_generation(text, task=task, image_size=(w, h))
 
-        elapsed = time.time() - start
-        print(f"[VLM] Inference time: {elapsed*1000:.0f}ms")
-        print(f"[VLM] Raw output: {parsed}")
+        dt = time.time() - t0
+        print(f"[VLM] Time: {dt*1000:.0f}ms")
+        print(f"[VLM] Result: {parsed}")
 
-        result = self._parse_grounding_result(parsed, img_width, img_height, color, obj)
+        # Parse result
+        result = self._parse(parsed, w, h, color, obj)
 
         if not result["found"]:
-            print("[VLM] Grounding failed, trying object detection...")
-            result = self._try_object_detection(pil_image, target_phrase, color, obj)
+            print("[VLM] Trying object detection fallback...")
+            result = self._detect(pil, color, obj)
 
         return result
 
-    def _parse_grounding_result(self, parsed: dict, img_width: int, img_height: int, color: str, obj: str) -> Dict:
+    def _parse(self, parsed, w, h, color, obj):
         try:
-            if "<CAPTION_TO_PHRASE_GROUNDING>" in parsed:
-                grounding_data = parsed["<CAPTION_TO_PHRASE_GROUNDING>"]
-                if "bboxes" in grounding_data and len(grounding_data["bboxes"]) > 0:
-                    bbox = grounding_data["bboxes"][0]
-                    x1, y1, x2, y2 = bbox
+            key = "<CAPTION_TO_PHRASE_GROUNDING>"
+            if key in parsed and parsed[key].get("bboxes"):
+                bbox = parsed[key]["bboxes"][0]
+                x1, y1, x2, y2 = bbox
 
-                    center_x = (x1 + x2) / 2
-                    norm_x = (center_x / img_width) * 2 - 1
+                cx = (x1 + x2) / 2
+                x_norm = (cx / w) * 2 - 1  # -1 to 1
 
-                    bbox_area = (x2 - x1) * (y2 - y1)
-                    img_area = img_width * img_height
-                    size_ratio = bbox_area / img_area
-                    distance = 1.0 - min(size_ratio * 5, 0.9)
+                area = (x2-x1) * (y2-y1) / (w*h)
+                dist = max(0.1, 1.0 - area * 5)
 
-                    return {
-                        "found": True,
-                        "x": float(norm_x),
-                        "y": float(distance),
-                        "confidence": 0.9,
-                        "color": color,
-                        "object": obj,
-                        "bbox": [x1, y1, x2, y2],
-                    }
+                return {"found": True, "x": x_norm, "y": dist, "confidence": 0.9,
+                        "color": color, "object": obj, "bbox": list(bbox)}
         except Exception as e:
             print(f"[VLM] Parse error: {e}")
 
-        return {"found": False, "x": 0.0, "y": 0.5, "confidence": 0.0, "color": color, "object": obj}
+        return {"found": False, "x": 0, "y": 0.5, "confidence": 0, "color": color, "object": obj}
 
-    def _try_object_detection(self, pil_image: Image, target: str, color: str, obj: str) -> Dict:
-        img_width, img_height = pil_image.size
-        task_prompt = "<OD>"
+    def _detect(self, pil, color, obj):
+        """Object detection fallback."""
+        w, h = pil.size
+        task = "<OD>"
 
-        inputs = self.processor(
-            text=task_prompt,
-            images=pil_image,
-            return_tensors="pt"
-        ).to(self.device)
-
+        inputs = self.processor(text=task, images=pil, return_tensors="pt").to(self.device)
         with torch.no_grad():
-            generated_ids = self.model.generate(
-                input_ids=inputs["input_ids"],
-                pixel_values=inputs["pixel_values"],
-                max_new_tokens=1024,
-                num_beams=3,
-            )
+            out = self.model.generate(input_ids=inputs["input_ids"],
+                                       pixel_values=inputs["pixel_values"],
+                                       max_new_tokens=1024, num_beams=3)
 
-        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        parsed = self.processor.post_process_generation(
-            generated_text,
-            task=task_prompt,
-            image_size=(img_width, img_height)
-        )
-
-        print(f"[VLM] Object detection: {parsed}")
+        text = self.processor.batch_decode(out, skip_special_tokens=False)[0]
+        parsed = self.processor.post_process_generation(text, task=task, image_size=(w, h))
 
         if "<OD>" in parsed:
-            od_data = parsed["<OD>"]
-            if "bboxes" in od_data and "labels" in od_data:
-                for i, label in enumerate(od_data["labels"]):
-                    label_lower = label.lower()
-                    if obj in label_lower or label_lower in obj:
-                        bbox = od_data["bboxes"][i]
-                        x1, y1, x2, y2 = bbox
-                        center_x = (x1 + x2) / 2
-                        norm_x = (center_x / img_width) * 2 - 1
+            data = parsed["<OD>"]
+            for i, label in enumerate(data.get("labels", [])):
+                if obj in label.lower():
+                    bbox = data["bboxes"][i]
+                    cx = (bbox[0] + bbox[2]) / 2
+                    x_norm = (cx / w) * 2 - 1
+                    area = (bbox[2]-bbox[0]) * (bbox[3]-bbox[1]) / (w*h)
+                    dist = max(0.1, 1.0 - area * 5)
+                    return {"found": True, "x": x_norm, "y": dist, "confidence": 0.7,
+                            "color": color, "object": obj, "bbox": list(bbox), "label": label}
 
-                        bbox_area = (x2 - x1) * (y2 - y1)
-                        img_area = img_width * img_height
-                        size_ratio = bbox_area / img_area
-                        distance = 1.0 - min(size_ratio * 5, 0.9)
-
-                        return {
-                            "found": True,
-                            "x": float(norm_x),
-                            "y": float(distance),
-                            "confidence": 0.7,
-                            "color": color,
-                            "object": obj,
-                            "bbox": [x1, y1, x2, y2],
-                            "label": label,
-                        }
-
-        return {"found": False, "x": 0.0, "y": 0.5, "confidence": 0.0, "color": color, "object": obj}
-
-    def describe_image(self, image: np.ndarray) -> str:
-        if isinstance(image, np.ndarray):
-            if image.dtype != np.uint8:
-                image = (image * 255).astype(np.uint8) if image.max() <= 1.0 else image.astype(np.uint8)
-            pil_image = Image.fromarray(image)
-        else:
-            pil_image = image
-
-        task_prompt = "<DETAILED_CAPTION>"
-
-        inputs = self.processor(
-            text=task_prompt,
-            images=pil_image,
-            return_tensors="pt"
-        ).to(self.device)
-
-        with torch.no_grad():
-            generated_ids = self.model.generate(
-                input_ids=inputs["input_ids"],
-                pixel_values=inputs["pixel_values"],
-                max_new_tokens=256,
-                num_beams=3,
-            )
-
-        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        parsed = self.processor.post_process_generation(
-            generated_text,
-            task=task_prompt,
-            image_size=pil_image.size
-        )
-
-        return parsed.get("<DETAILED_CAPTION>", "No caption generated")
+        return {"found": False, "x": 0, "y": 0.5, "confidence": 0, "color": color, "object": obj}
 
     def warmup(self):
-        print("[VLM] Warming up...")
+        print("[VLM] Warmup...")
         dummy = np.zeros((256, 256, 3), dtype=np.uint8)
         dummy[100:150, 100:150] = [255, 0, 0]
         self.ground_object(dummy, "red box")
-        print("[VLM] Warmup complete!")
+        print("[VLM] Warmup done!")
 
 
 class NavigationController:
-    def __init__(self, max_linear_vel: float = 1.0, max_angular_vel: float = 1.0, goal_threshold: float = 0.15):
-        self.max_linear_vel = max_linear_vel
-        self.max_angular_vel = max_angular_vel
-        self.goal_threshold = goal_threshold
+    def __init__(self, max_v=1.0, max_w=1.0, thresh=0.15):
+        self.max_v, self.max_w, self.thresh = max_v, max_w, thresh
 
-    def target_to_velocity(self, target: Dict) -> np.ndarray:
-        if not target.get("found", False):
-            return np.array([0.0, 0.0, 0.3])
-
-        x_offset = target["x"]
-        y_distance = target["y"]
-
-        if y_distance < self.goal_threshold and abs(x_offset) < 0.2:
-            return np.array([0.0, 0.0, 0.0])
-
-        vyaw = -x_offset * self.max_angular_vel
-        vx = min(0.3 + y_distance * 0.7, 1.0) * self.max_linear_vel if y_distance >= 0.3 else y_distance * self.max_linear_vel
-
-        if abs(x_offset) > 0.5:
-            vx *= 0.5
-
-        return np.array([vx, 0.0, vyaw])
-
-    def is_goal_reached(self, target: Dict) -> bool:
-        if not target.get("found", False):
-            return False
-        return target["y"] < self.goal_threshold and abs(target["x"]) < 0.2
+    def target_to_velocity(self, t: Dict) -> np.ndarray:
+        if not t.get("found"):
+            return np.array([0, 0, 0.3])
+        x, y = t["x"], t["y"]
+        if y < self.thresh and abs(x) < 0.2:
+            return np.array([0, 0, 0])
+        w = -x * self.max_w
+        v = min(0.3 + y*0.7, 1) * self.max_v * (0.5 if abs(x) > 0.5 else 1)
+        return np.array([v, 0, w])
 
 
 if __name__ == "__main__":
-    import sys
-    import time
+    import sys, time
 
-    print("=" * 60)
-    print("Florence-2 VLM Test")
-    print("=" * 60)
+    print("="*60)
+    print("Florence-2 Grounding Test")
+    print("="*60)
 
     if len(sys.argv) >= 2:
-        image_path = sys.argv[1]
-        command = sys.argv[2] if len(sys.argv) > 2 else "mavi sandalyeye git"
-        print(f"\n[Test] Loading: {image_path}")
-        image = Image.open(image_path).convert("RGB")
-        image_np = np.array(image)
-        print(f"[Test] Image shape: {image_np.shape}")
+        path = sys.argv[1]
+        cmd = sys.argv[2] if len(sys.argv) > 2 else "blue chair"
+        img = np.array(Image.open(path).convert("RGB"))
+        print(f"\n[Test] Image: {path}, shape: {img.shape}")
     else:
-        print("\n[Test] No image, using dummy")
-        image_np = np.zeros((512, 512, 3), dtype=np.uint8)
-        image_np[200:300, 150:250] = [0, 0, 255]
-        image_np[100:200, 300:400] = [255, 0, 0]
-        command = "blue box"
+        img = np.zeros((512, 512, 3), dtype=np.uint8)
+        img[200:350, 150:300] = [50, 100, 200]  # Blue box
+        cmd = "blue box"
+        print("\n[Test] Using dummy image")
 
-    print("\n[Test] Loading Florence-2...")
-    start = time.time()
+    print("\n[Test] Loading model...")
     vlm = VLMWrapper()
-    print(f"[Test] Loaded in {time.time()-start:.1f}s")
-
     vlm.warmup()
 
-    print(f"\n[Test] Command: '{command}'")
-    start = time.time()
-    result = vlm.ground_object(image_np, command)
-    elapsed = time.time() - start
+    print(f"\n[Test] Command: '{cmd}'")
+    result = vlm.ground_object(img, cmd)
 
     print(f"\n{'='*60}")
-    print("RESULTS")
-    print('='*60)
-    print(f"  Time: {elapsed*1000:.0f}ms")
+    print("RESULT")
+    print("="*60)
     print(f"  Found: {result['found']}")
     if result['found']:
         print(f"  Position: x={result['x']:.2f}, y={result['y']:.2f}")
-        print(f"  Confidence: {result['confidence']:.2f}")
-        if 'bbox' in result:
-            print(f"  BBox: {result['bbox']}")
+        print(f"  BBox: {result.get('bbox')}")
 
     nav = NavigationController()
     vel = nav.target_to_velocity(result)
-    print(f"\n  Velocity: vx={vel[0]:.2f}, vy={vel[1]:.2f}, vyaw={vel[2]:.2f}")
-
-    print(f"\n{'='*60}")
-    print("MORE TESTS")
-    print('='*60)
-    for cmd in ["blue chair", "mavi sandalye", "chair", "sandalye"]:
-        start = time.time()
-        r = vlm.ground_object(image_np, cmd)
-        print(f"  '{cmd}' -> found={r['found']}, x={r['x']:.2f}, y={r['y']:.2f} ({(time.time()-start)*1000:.0f}ms)")
-
-    print("\n" + "=" * 60)
-    print("Done!")
+    print(f"  Velocity: vx={vel[0]:.2f}, vyaw={vel[2]:.2f}")
