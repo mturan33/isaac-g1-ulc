@@ -1,12 +1,81 @@
 """
 Florence-2 VLM Wrapper with Grounding
-Use AFTER running fix_florence.py to patch the cache!
+Complete fake flash_attn module with __spec__ attribute
 """
 
 import torch
+import sys
+import os
 from PIL import Image
 import numpy as np
 from typing import Dict, Tuple
+import importlib.util
+import types
+
+# ============================================================
+# PATCH: Complete fake flash_attn module
+# Must include __spec__ for importlib.util.find_spec() check
+# ============================================================
+
+def create_fake_flash_attn():
+    """Create a complete fake flash_attn module with all required attributes."""
+
+    # Create main module
+    fake_module = types.ModuleType('flash_attn')
+    fake_module.__file__ = __file__
+    fake_module.__path__ = []
+    fake_module.__package__ = 'flash_attn'
+
+    # Create a proper ModuleSpec
+    fake_spec = importlib.util.spec_from_loader('flash_attn', loader=None)
+    fake_module.__spec__ = fake_spec
+
+    # Add fake functions
+    fake_module.flash_attn_func = None
+    fake_module.flash_attn_varlen_func = None
+
+    # Create bert_padding submodule
+    fake_bert_padding = types.ModuleType('flash_attn.bert_padding')
+    fake_bert_padding.__file__ = __file__
+    fake_bert_padding.__package__ = 'flash_attn.bert_padding'
+    fake_bert_padding_spec = importlib.util.spec_from_loader('flash_attn.bert_padding', loader=None)
+    fake_bert_padding.__spec__ = fake_bert_padding_spec
+
+    # Add placeholder functions to bert_padding
+    def index_first_axis(*args, **kwargs):
+        raise NotImplementedError("flash_attn not available")
+    def pad_input(*args, **kwargs):
+        raise NotImplementedError("flash_attn not available")
+    def unpad_input(*args, **kwargs):
+        raise NotImplementedError("flash_attn not available")
+
+    fake_bert_padding.index_first_axis = index_first_axis
+    fake_bert_padding.pad_input = pad_input
+    fake_bert_padding.unpad_input = unpad_input
+
+    # Install modules
+    sys.modules['flash_attn'] = fake_module
+    sys.modules['flash_attn.bert_padding'] = fake_bert_padding
+
+    print("[PATCH] Installed complete fake flash_attn module")
+
+# Install fake module BEFORE any imports
+create_fake_flash_attn()
+
+# Also patch the availability check function
+def patch_flash_attn_check():
+    """Patch transformers to think flash_attn is NOT available."""
+    try:
+        from transformers.utils import import_utils
+        # Override the check function to always return False
+        import_utils.is_flash_attn_2_available = lambda: False
+        print("[PATCH] Patched is_flash_attn_2_available to return False")
+    except Exception as e:
+        print(f"[PATCH] Could not patch import_utils: {e}")
+
+patch_flash_attn_check()
+# ============================================================
+
 
 class VLMWrapper:
     """Florence-2 with real grounding (bounding boxes)."""
@@ -32,7 +101,7 @@ class VLMWrapper:
     }
 
     def __init__(self, device: str = "cuda"):
-        from transformers import AutoProcessor, AutoModelForCausalLM
+        from transformers import AutoProcessor, AutoModelForCausalLM, AutoConfig
 
         model_id = "microsoft/Florence-2-base"
         print(f"[VLM] Loading {model_id}...")
@@ -43,9 +112,18 @@ class VLMWrapper:
 
         self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
+        # Load config and force eager attention
+        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+        config._attn_implementation = "eager"
+        if hasattr(config, 'text_config'):
+            config.text_config._attn_implementation = "eager"
+        if hasattr(config, 'vision_config'):
+            config.vision_config._attn_implementation = "eager"
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.float32,  # float32 for stability
+            config=config,
+            torch_dtype=torch.float32,
             trust_remote_code=True,
         ).to(device)
 
@@ -128,7 +206,7 @@ class VLMWrapper:
                 x1, y1, x2, y2 = bbox
 
                 cx = (x1 + x2) / 2
-                x_norm = (cx / w) * 2 - 1  # -1 to 1
+                x_norm = (cx / w) * 2 - 1
 
                 area = (x2-x1) * (y2-y1) / (w*h)
                 dist = max(0.1, 1.0 - area * 5)
@@ -153,6 +231,8 @@ class VLMWrapper:
 
         text = self.processor.batch_decode(out, skip_special_tokens=False)[0]
         parsed = self.processor.post_process_generation(text, task=task, image_size=(w, h))
+
+        print(f"[VLM] Detection: {parsed}")
 
         if "<OD>" in parsed:
             data = parsed["<OD>"]
@@ -192,20 +272,22 @@ class NavigationController:
 
 
 if __name__ == "__main__":
-    import sys, time
+    import time
 
     print("="*60)
     print("Florence-2 Grounding Test")
     print("="*60)
 
-    if len(sys.argv) >= 2:
-        path = sys.argv[1]
-        cmd = sys.argv[2] if len(sys.argv) > 2 else "blue chair"
+    args = sys.argv[1:]
+
+    if len(args) >= 1:
+        path = args[0]
+        cmd = args[1] if len(args) > 1 else "blue chair"
         img = np.array(Image.open(path).convert("RGB"))
         print(f"\n[Test] Image: {path}, shape: {img.shape}")
     else:
         img = np.zeros((512, 512, 3), dtype=np.uint8)
-        img[200:350, 150:300] = [50, 100, 200]  # Blue box
+        img[200:350, 150:300] = [50, 100, 200]
         cmd = "blue box"
         print("\n[Test] Using dummy image")
 
@@ -227,3 +309,7 @@ if __name__ == "__main__":
     nav = NavigationController()
     vel = nav.target_to_velocity(result)
     print(f"  Velocity: vx={vel[0]:.2f}, vyaw={vel[2]:.2f}")
+
+    print("\n" + "="*60)
+    print("SUCCESS!")
+    print("="*60)
