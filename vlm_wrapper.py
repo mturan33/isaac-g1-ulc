@@ -1,7 +1,6 @@
 """
 VLM Wrapper using Florence-2
-Fast object grounding for robot navigation
-Fixed: _supports_sdpa attribute error
+Fixed: dtype mismatch (float vs half)
 """
 
 import torch
@@ -12,9 +11,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict
 
 class VLMWrapper:
-    """
-    Florence-2 wrapper for object grounding.
-    """
+    """Florence-2 wrapper for object grounding."""
 
     COLOR_MAP = {
         "mavi": "blue", "blue": "blue",
@@ -46,12 +43,11 @@ class VLMWrapper:
         self,
         model_id: str = "microsoft/Florence-2-base",
         device: str = "cuda",
-        dtype: torch.dtype = torch.float16,
     ):
         from transformers import AutoProcessor, AutoModelForCausalLM
 
         print(f"[VLM] Loading {model_id}...")
-        print(f"[VLM] Device: {device}, Dtype: {dtype}")
+        print(f"[VLM] Device: {device}")
 
         if torch.cuda.is_available():
             total_vram = torch.cuda.get_device_properties(0).total_memory / 1e9
@@ -62,12 +58,12 @@ class VLMWrapper:
             trust_remote_code=True
         )
 
-        # FIX: Explicitly set attn_implementation to avoid SDPA check
+        # FIX: Use float32 to avoid dtype mismatch
+        # Florence-2 has issues with float16 on some operations
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=dtype,
+            torch_dtype=torch.float32,  # FIX: float32 instead of float16
             trust_remote_code=True,
-            attn_implementation="eager",  # FIX: Avoid _supports_sdpa error
         ).to(device)
 
         self.device = device
@@ -121,7 +117,7 @@ class VLMWrapper:
 
         img_width, img_height = pil_image.size
 
-        # Try phrase grounding
+        # Phrase grounding
         task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
         text_input = target_phrase
 
