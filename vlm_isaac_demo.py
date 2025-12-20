@@ -249,6 +249,9 @@ class VLMController:
         self.device = device
         self._command = torch.zeros(1, 3, device=device)
 
+        # Default forward motion (used when VLM has no result)
+        self._default_command = torch.tensor([[0.3, 0.0, 0.1]], device=device)  # Forward + slight turn
+
         # Navigation targets
         self.targets = [
             "mavi kutuya git",
@@ -261,7 +264,7 @@ class VLMController:
 
         # VLM state
         self.vlm_result = None
-        self.vlm_interval = 10  # Run VLM every N steps
+        self.vlm_interval = 30  # Run VLM every N steps (less frequent to allow navigation)
 
     def next_target(self):
         self.target_idx = (self.target_idx + 1) % len(self.targets)
@@ -291,6 +294,9 @@ class VLMController:
                 self._command[0] = torch.tensor([linear, 0.0, angular], device=self.device)
 
     def get_command(self) -> torch.Tensor:
+        # If no VLM result yet, use default forward motion
+        if self.vlm_result is None:
+            return self._default_command
         return self._command
 
     def print_status(self):
@@ -347,6 +353,94 @@ class KeyboardHandler:
             self.vlm_toggle = False
             return True
         return False
+
+
+# ============================================================
+# Object Spawning
+# ============================================================
+def spawn_target_objects():
+    """Spawn colored objects in the scene for VLM navigation."""
+    import omni.usd
+    from pxr import UsdGeom, Gf, UsdShade, Sdf
+
+    stage = omni.usd.get_context().get_stage()
+
+    # Define objects with positions and colors
+    objects = [
+        {"name": "blue_box", "type": "cube", "pos": (3.0, 2.0, 0.3), "scale": 0.3, "color": (0.1, 0.3, 0.9)},
+        {"name": "red_ball", "type": "sphere", "pos": (-2.0, 3.0, 0.25), "scale": 0.25, "color": (0.9, 0.1, 0.1)},
+        {"name": "green_box", "type": "cube", "pos": (2.0, -2.5, 0.3), "scale": 0.3, "color": (0.1, 0.8, 0.2)},
+        {"name": "yellow_cone", "type": "cone", "pos": (-3.0, -2.0, 0.4), "scale": 0.4, "color": (0.9, 0.9, 0.1)},
+        {"name": "orange_box", "type": "cube", "pos": (0.0, 4.0, 0.35), "scale": 0.35, "color": (1.0, 0.5, 0.0)},
+    ]
+
+    for obj in objects:
+        prim_path = f"/World/Targets/{obj['name']}"
+
+        # Create geometry
+        if obj["type"] == "cube":
+            geom = UsdGeom.Cube.Define(stage, prim_path)
+            geom.GetSizeAttr().Set(obj["scale"] * 2)
+        elif obj["type"] == "sphere":
+            geom = UsdGeom.Sphere.Define(stage, prim_path)
+            geom.GetRadiusAttr().Set(obj["scale"])
+        elif obj["type"] == "cone":
+            geom = UsdGeom.Cone.Define(stage, prim_path)
+            geom.GetRadiusAttr().Set(obj["scale"])
+            geom.GetHeightAttr().Set(obj["scale"] * 2)
+
+        # Set position
+        xform = UsdGeom.Xformable(geom.GetPrim())
+        xform.ClearXformOpOrder()
+        translate_op = xform.AddTranslateOp()
+        translate_op.Set(Gf.Vec3d(*obj["pos"]))
+
+        # Create and apply material with color
+        mat_path = f"{prim_path}/material"
+        material = UsdShade.Material.Define(stage, mat_path)
+        shader = UsdShade.Shader.Define(stage, f"{mat_path}/shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*obj["color"]))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        # Bind material to geometry
+        UsdShade.MaterialBindingAPI(geom.GetPrim()).Bind(material)
+
+        print(f"[SPAWN] Created {obj['name']} at {obj['pos']}")
+
+    print(f"[SPAWN] Total {len(objects)} objects spawned!")
+
+
+def capture_viewport_image():
+    """Capture current viewport as numpy array."""
+    try:
+        from omni.kit.viewport.utility import get_active_viewport
+        import omni.kit.viewport.utility as vp_utils
+
+        viewport = get_active_viewport()
+        if viewport is None:
+            return None
+
+        # Get viewport texture
+        texture = viewport.get_rendered_texture()
+        if texture is None:
+            return None
+
+        # Convert to numpy
+        import omni.ui as ui
+        from PIL import Image
+        import io
+
+        # Alternative: use capture_next_frame
+        frame_data = viewport.schedule_capture_next_frame()
+        if frame_data is not None:
+            return np.array(frame_data)
+
+        return None
+    except Exception as e:
+        return None
 
 
 # ============================================================
@@ -451,6 +545,10 @@ def main():
     obs_dict, _ = env.reset()
     obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
 
+    # Spawn target objects after environment is ready
+    print("\n[SPAWN] Creating target objects...")
+    spawn_target_objects()
+
     step = 0
 
     # Main loop
@@ -472,23 +570,21 @@ def main():
         if vlm is not None and step % vlm_ctrl.vlm_interval == 0:
             # Get camera image from environment
             try:
-                # Try to get RGB image from env
-                if hasattr(unwrapped, "_render_camera"):
-                    camera_img = unwrapped._render_camera()
-                elif hasattr(unwrapped, "scene") and hasattr(unwrapped.scene, "sensors"):
-                    # Try to access camera sensor
+                camera_img = None
+
+                # Method 1: Try viewport capture
+                camera_img = capture_viewport_image()
+
+                # Method 2: Try env.render()
+                if camera_img is None:
+                    camera_img = env.render()
+
+                # Method 3: Try sensor access
+                if camera_img is None and hasattr(unwrapped, "scene") and hasattr(unwrapped.scene, "sensors"):
                     for name, sensor in unwrapped.scene.sensors.items():
                         if "camera" in name.lower():
                             camera_img = sensor.data.output["rgb"][0].cpu().numpy()
                             break
-                    else:
-                        camera_img = None
-                else:
-                    camera_img = None
-
-                # If no camera, use render
-                if camera_img is None:
-                    camera_img = env.render()
 
                 if camera_img is not None:
                     vlm_result = vlm.find_object(camera_img, vlm_ctrl.current_target)
@@ -499,6 +595,10 @@ def main():
                     print(f"\n[VLM] Step {step} | {status} | '{vlm_result['target']}' | "
                           f"x={vlm_result['x']:.2f} | dist={vlm_result['distance']:.2f} | "
                           f"{vlm_result['time_ms']:.0f}ms")
+                else:
+                    if step == 0:
+                        print("[VLM] No camera image available - VLM disabled")
+                        print("[VLM] Robot will use default velocity commands")
 
             except Exception as e:
                 if step == 0:
@@ -507,10 +607,19 @@ def main():
         # Set velocity command from VLM
         cmd = vlm_ctrl.get_command()
         try:
+            # Method 1: Direct _commands access (Direct-based envs)
             if hasattr(unwrapped, "_commands"):
                 unwrapped._commands[:] = cmd
-        except:
-            pass
+            # Method 2: Command manager access (Manager-Based envs)
+            elif hasattr(unwrapped, "command_manager"):
+                # Get the base_velocity command term
+                cmd_term = unwrapped.command_manager.get_term("base_velocity")
+                if cmd_term is not None and hasattr(cmd_term, "vel_command_b"):
+                    # vel_command_b shape: (num_envs, 3) - [vx, vy, vyaw]
+                    cmd_term.vel_command_b[:] = cmd
+        except Exception as e:
+            if step == 0:
+                print(f"[CMD] Error setting command: {e}")
 
         # Get action from policy
         with torch.no_grad():
