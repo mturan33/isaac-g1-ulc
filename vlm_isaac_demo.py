@@ -116,6 +116,15 @@ try:
 except ImportError:
     print("[VIEWPORT] OpenCV not available")
 
+# Isaac Sim Viewport (alternative to OpenCV)
+OMNI_UI_AVAILABLE = False
+try:
+    import omni.ui as ui
+    from omni.kit.viewport.utility import get_active_viewport
+    OMNI_UI_AVAILABLE = True
+except ImportError:
+    pass
+
 
 # ============================================================
 # Robot-Mounted Camera (NEW in v9)
@@ -242,10 +251,6 @@ class RobotMountedCamera:
         if not self.initialized:
             return None
 
-        self.warmup_counter += 1
-        if self.warmup_counter < self.warmup_frames:
-            return None
-
         try:
             data = self.rgb_annotator.get_data()
 
@@ -259,6 +264,7 @@ class RobotMountedCamera:
                     if img.shape[2] == 4:  # RGBA -> RGB
                         img = img[:, :, :3]
                     self.last_image = img
+                    self.warmup_counter += 1  # Increment on successful capture
                     return img
 
             return self.last_image
@@ -266,8 +272,106 @@ class RobotMountedCamera:
         except Exception as e:
             return self.last_image
 
+    def update(self):
+        """Update camera (call every step for warmup)"""
+        if not self.initialized:
+            return
+        # Just get image to increment warmup counter
+        self.get_image()
+
     def is_ready(self) -> bool:
         return self.initialized and self.warmup_counter >= self.warmup_frames
+
+
+# ============================================================
+# Isaac Sim Viewport Window (Alternative to OpenCV)
+# ============================================================
+class IsaacSimViewport:
+    """Isaac Sim UI ile kamera görüntüsü göster"""
+
+    def __init__(self, camera_path: str, width: int = 320, height: int = 240):
+        self.camera_path = camera_path
+        self.width = width
+        self.height = height
+        self.window = None
+        self.image_provider = None
+        self.enabled = False
+
+    def setup(self):
+        """Isaac Sim'de viewport window oluştur"""
+        if not OMNI_UI_AVAILABLE:
+            print("[ISAAC_VIEWPORT] omni.ui not available")
+            return False
+
+        try:
+            # Create window
+            self.window = ui.Window("Robot Camera View", width=400, height=350)
+
+            with self.window.frame:
+                with ui.VStack():
+                    ui.Label("Go2 Front Camera", height=20, alignment=ui.Alignment.CENTER)
+
+                    # Image widget with byte provider
+                    self.image_provider = ui.ByteImageProvider()
+                    ui.ImageWithProvider(
+                        self.image_provider,
+                        width=self.width,
+                        height=self.height,
+                        alignment=ui.Alignment.CENTER
+                    )
+
+                    # Info labels
+                    self.target_label = ui.Label("Target: -", height=20)
+                    self.status_label = ui.Label("Status: IDLE", height=20)
+
+            self.enabled = True
+            print("[ISAAC_VIEWPORT] Window created!")
+            return True
+
+        except Exception as e:
+            print(f"[ISAAC_VIEWPORT] Setup failed: {e}")
+            return False
+
+    def update(self, image: np.ndarray, target: str = "", status: str = "IDLE", bbox: list = None):
+        """Viewport'u güncelle"""
+        if not self.enabled or image is None:
+            return
+
+        try:
+            # Draw bbox if available
+            if bbox is not None and CV2_AVAILABLE:
+                img = image.copy()
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            else:
+                img = image
+
+            # Convert to RGBA for omni.ui
+            if img.shape[2] == 3:
+                rgba = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
+                rgba[:, :, :3] = img
+                rgba[:, :, 3] = 255
+            else:
+                rgba = img
+
+            # Update image provider
+            self.image_provider.set_bytes_data(
+                rgba.flatten().tolist(),
+                [self.width, self.height]
+            )
+
+            # Update labels
+            if hasattr(self, 'target_label'):
+                self.target_label.text = f"Target: {target}"
+            if hasattr(self, 'status_label'):
+                self.status_label.text = f"Status: {status}"
+
+        except Exception as e:
+            pass  # Silently fail to avoid spam
+
+    def close(self):
+        if self.window:
+            self.window.visible = False
 
 
 # ============================================================
@@ -709,8 +813,15 @@ def main():
 
     # Setup viewport display (NEW in v9)
     viewport = ViewportDisplay()
+    isaac_viewport = None
+
     if camera is not None:
         viewport.setup()
+
+        # Also try Isaac Sim native viewport
+        if OMNI_UI_AVAILABLE and not args_cli.no_viewport:
+            isaac_viewport = IsaacSimViewport(camera.camera_path, 320, 240)
+            isaac_viewport.setup()
 
     # Setup VLM
     vlm = None
@@ -744,7 +855,8 @@ def main():
     print(f"\n[START] Target: {targets[target_idx]}")
     print(f"[START] VLM: {vlm is not None}, Camera: {camera is not None}")
     viewport_status = "GUI" if viewport.window_created else ("Save" if viewport.save_mode else "Off")
-    print(f"[START] Viewport: {viewport_status}\n")
+    isaac_vp_status = "On" if (isaac_viewport is not None and isaac_viewport.enabled) else "Off"
+    print(f"[START] Viewport: {viewport_status}, Isaac UI: {isaac_vp_status}\n")
 
     step = 0
     vlm_interval = 30  # VLM every 30 steps (~0.6s at 50Hz)
@@ -778,6 +890,10 @@ def main():
                 img = camera.get_image()
                 if img is not None:
                     viewport.save_now(img)
+
+        # Update camera every step (for warmup)
+        if camera is not None:
+            camera.update()
 
         # Debug every 100 steps
         if step % 100 == 0:
@@ -818,6 +934,10 @@ def main():
                             status=nav_status,
                             bbox=last_bbox
                         )
+
+                        # Update Isaac Sim viewport
+                        if isaac_viewport is not None:
+                            isaac_viewport.update(img, targets[target_idx], nav_status, last_bbox)
                     else:
                         if step % 100 == 0:
                             print(f"[DEBUG] Camera returned None image")
@@ -829,14 +949,17 @@ def main():
 
         # Update viewport even without VLM (for camera preview)
         elif camera is not None and camera.is_ready() and step % 5 == 0:
-            if viewport.window_created or viewport.save_mode:
-                img = camera.get_image()
-                viewport.update(
-                    image=img,
-                    target=targets[target_idx],
-                    cmd=tuple(command[0].cpu().tolist()),
-                    status=nav_status
-                )
+            img = camera.get_image()
+            if img is not None:
+                if viewport.window_created or viewport.save_mode:
+                    viewport.update(
+                        image=img,
+                        target=targets[target_idx],
+                        cmd=tuple(command[0].cpu().tolist()),
+                        status=nav_status
+                    )
+                if isaac_viewport is not None:
+                    isaac_viewport.update(img, targets[target_idx], nav_status)
 
         # Apply velocity command
         if cmd_term is not None:
@@ -867,6 +990,8 @@ def main():
 
     print("\n[EXIT] Cleaning up...")
     viewport.close()
+    if isaac_viewport is not None:
+        isaac_viewport.close()
     env.close()
     simulation_app.close()
 
