@@ -263,10 +263,6 @@ class RobotMountedCamera:
                 if len(img.shape) == 3:
                     if img.shape[2] == 4:  # RGBA -> RGB
                         img = img[:, :, :3]
-
-                    # Rotate image to correct orientation (90 degrees counter-clockwise)
-                    img = np.rot90(img, k=1)
-
                     self.last_image = img
                     self.warmup_counter += 1  # Increment on successful capture
                     return img
@@ -800,7 +796,7 @@ def main():
             width=320,
             height=240,
             offset=(0.40, 0.0, 0.10),      # Forward, left, up
-            rotation=(0.0, -90.0, 0.0)     # Y-axis: look forward (image rotated in software)
+            rotation=(0.0, -90.0, 90.0)    # Y: look forward, Z: fix roll
         )
 
         # Wait a few frames for simulation to stabilize
