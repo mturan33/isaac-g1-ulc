@@ -556,8 +556,8 @@ class VLMNavigator:
         # Navigation parameters (NEW in v9)
         self.forward_speed = 0.4
         self.turn_gain = 0.6
-        self.approach_threshold = 0.2  # Screen center threshold
-        self.reached_distance = 0.25
+        self.approach_threshold = 0.15  # Screen center threshold (tighter)
+        self.reached_distance = 0.15    # Closer before declaring reached
 
     def find_object(self, image: np.ndarray, command: str):
         import time
@@ -607,12 +607,17 @@ class VLMNavigator:
         if key in parsed and parsed[key].get("bboxes"):
             bbox = parsed[key]["bboxes"][0]
             x1, y1, x2, y2 = bbox
-            cx = (x1+x2)/2
-            result["x"] = (cx / w) * 2 - 1  # Normalized [-1, 1]
+
+            # Calculate area
             area = (x2-x1) * (y2-y1) / (w*h)
-            result["distance"] = max(0.1, 1.0 - area * 5)
-            result["found"] = True
-            result["bbox"] = bbox
+
+            # Filter out very small or very large detections (likely false positives)
+            if area > 0.01 and area < 0.8:  # Between 1% and 80% of screen
+                cx = (x1+x2)/2
+                result["x"] = (cx / w) * 2 - 1  # Normalized [-1, 1]
+                result["distance"] = max(0.1, 1.0 - area * 5)
+                result["found"] = True
+                result["bbox"] = bbox
 
         return result
 
