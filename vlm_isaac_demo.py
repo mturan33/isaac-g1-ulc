@@ -795,8 +795,8 @@ def main():
             robot_prim_path=robot_prim_path,
             width=320,
             height=240,
-            offset=(0.35, 0.0, 0.15),  # Forward, left, up
-            rotation=(0.0, 15.0, 0.0)   # Pitch down
+            offset=(0.40, 0.0, 0.10),    # Forward, left, up
+            rotation=(90.0, 0.0, 0.0)    # Rotate to look forward (+X direction)
         )
 
         # Wait a few frames for simulation to stabilize
@@ -842,7 +842,8 @@ def main():
     keyboard = KeyboardHandler()
 
     # Navigation state
-    targets = ["mavi kutu", "kırmızı top", "yeşil kutu", "sarı koni", "turuncu kutu"]
+    # Target objects (English for better VLM detection)
+    targets = ["blue box", "red ball", "green box", "yellow cone", "orange box"]
     target_idx = 0
     command = torch.tensor([[0.4, 0.0, 0.0]], device=device, dtype=torch.float32)
     search_dir = 1.0
