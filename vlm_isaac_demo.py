@@ -795,8 +795,8 @@ def main():
             robot_prim_path=robot_prim_path,
             width=320,
             height=240,
-            offset=(0.40, 0.0, 0.10),    # Forward, left, up
-            rotation=(0.0, -90.0, 0.0)   # Y-axis rotation to look forward (+X)
+            offset=(0.40, 0.0, 0.10),      # Forward, left, up
+            rotation=(0.0, -90.0, -90.0)   # Y: look forward, Z: fix roll
         )
 
         # Wait a few frames for simulation to stabilize
