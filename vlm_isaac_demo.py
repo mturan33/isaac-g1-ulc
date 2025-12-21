@@ -1,6 +1,7 @@
 """
-Isaac Lab VLM Navigation Demo - Go2 Robot (v6 - Heavy Debug)
-=============================================================
+Isaac Lab VLM Navigation Demo - Go2 Robot (v7)
+===============================================
+Uses Isaac Lab's native Camera sensor instead of blocking Replicator API
 """
 
 import argparse
@@ -44,7 +45,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--task", type=str, default="Isaac-Velocity-Flat-Unitree-Go2-v0")
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=1)
-parser.add_argument("--no_vlm", action="store_true", help="Disable VLM completely")
+parser.add_argument("--no_vlm", action="store_true", help="Disable VLM")
 parser.add_argument("--no_camera", action="store_true", help="Disable camera")
 parser.add_argument("--disable_fabric", action="store_true")
 
@@ -52,17 +53,24 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.num_envs = 1
 
+# CRITICAL: Enable cameras in AppLauncher
+if not args_cli.no_camera:
+    args_cli.enable_cameras = True
+
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import carb
 import omni.appwindow
 import omni.usd
-import omni.ui as ui
 from pxr import UsdGeom, Gf, UsdShade, Sdf
 import gymnasium as gym
 import isaaclab_tasks
 from isaaclab_tasks.utils import parse_env_cfg
+
+# Isaac Lab sensor imports
+import isaaclab.sim as sim_utils
+from isaaclab.sensors import Camera, CameraCfg
 
 
 # ============================================================
@@ -100,7 +108,6 @@ class VLMNavigator:
         import time
         t0 = time.time()
 
-        # Parse command
         cmd = command.lower()
         color, obj = "", "object"
         for tr, en in self.COLOR_MAP.items():
@@ -242,7 +249,7 @@ def spawn_target_objects():
 # ============================================================
 def main():
     print("\n" + "="*60)
-    print("     VLM Navigation Demo - Go2 (v6 Debug)")
+    print("     VLM Navigation Demo - Go2 (v7 - Native Camera)")
     print("="*60)
 
     # Create environment
@@ -277,48 +284,45 @@ def main():
         print(f"[ERROR] Policy: {e}")
         return
 
-    # Reset
+    # Reset env first
     obs_dict, _ = env.reset()
     obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
 
     # Spawn objects
     spawn_target_objects()
 
-    # Setup camera (optional)
-    camera_img = None
-    render_product = None
-    rgb_annotator = None
-
+    # Setup Isaac Lab Camera sensor (non-blocking!)
+    camera_sensor = None
     if not args_cli.no_camera:
-        print("\n[CAMERA] Setting up...")
+        print("\n[CAMERA] Setting up Isaac Lab Camera sensor...")
         try:
-            import omni.replicator.core as rep
-            stage = omni.usd.get_context().get_stage()
-
-            # Create camera at fixed position (not attached to robot)
-            camera_path = "/World/VLMCamera"
-            if stage.GetPrimAtPath(camera_path):
-                stage.RemovePrim(camera_path)
-
-            camera = UsdGeom.Camera.Define(stage, camera_path)
-            camera.GetFocalLengthAttr().Set(18.0)
-            camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.1, 100.0))
-
-            xform = UsdGeom.Xformable(camera.GetPrim())
-            xform.ClearXformOpOrder()
-            xform.AddTranslateOp().Set(Gf.Vec3d(0.0, -3.0, 2.0))  # Behind and above
-            xform.AddRotateXYZOp().Set(Gf.Vec3f(30.0, 0.0, 0.0))  # Look down
-
-            render_product = rep.create.render_product(camera_path, (320, 240))
-            rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
-            rgb_annotator.attach([render_product])
-
-            print("[CAMERA] Ready!")
+            # Create camera config - attached to robot base, looking forward
+            camera_cfg = CameraCfg(
+                prim_path="/World/envs/env_0/Robot/base/front_cam",
+                update_period=0.1,  # 10 Hz
+                height=240,
+                width=320,
+                data_types=["rgb"],
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=24.0,
+                    focus_distance=400.0,
+                    horizontal_aperture=20.955,
+                    clipping_range=(0.1, 100.0)
+                ),
+                offset=CameraCfg.OffsetCfg(
+                    pos=(0.35, 0.0, 0.1),  # 35cm forward, 10cm up from base
+                    rot=(0.5, -0.5, 0.5, -0.5),  # Looking forward (ROS convention)
+                    convention="ros"
+                ),
+            )
+            camera_sensor = Camera(camera_cfg)
+            print(f"[CAMERA] Created! Resolution: {camera_cfg.width}x{camera_cfg.height}")
         except Exception as e:
             print(f"[CAMERA] Failed: {e}")
             traceback.print_exc()
+            camera_sensor = None
 
-    # Setup VLM (optional)
+    # Setup VLM
     vlm = None
     if not args_cli.no_vlm:
         print("\n[VLM] Initializing...")
@@ -339,8 +343,6 @@ def main():
     # Navigation state
     targets = ["mavi kutu", "kırmızı top", "yeşil kutu", "sarı koni", "turuncu kutu"]
     target_idx = 0
-
-    # Default command - robot should move forward and turn
     command = torch.tensor([[0.4, 0.0, 0.3]], device=device, dtype=torch.float32)
     search_dir = 1.0
 
@@ -348,74 +350,78 @@ def main():
     print("  SPACE - Next target | R - Reset | ESC - Quit")
     print("="*60)
     print(f"\n[START] Target: {targets[target_idx]}")
-    print(f"[START] Default command: {command.cpu().numpy()}")
-    print(f"[START] VLM enabled: {vlm is not None}")
-    print(f"[START] Camera enabled: {rgb_annotator is not None}\n")
+    print(f"[START] VLM: {vlm is not None}, Camera: {camera_sensor is not None}\n")
 
     step = 0
-    vlm_interval = 20
+    vlm_interval = 30  # VLM every 30 steps (~0.6s at 50Hz)
+    sim_dt = 0.02  # 50Hz
 
     # Main loop
     while simulation_app.is_running():
 
-        # Check ESC
+        # Keyboard
         if keyboard.just_pressed("ESCAPE"):
             print("\n[EXIT] ESC pressed")
             break
 
-        # SPACE - next target
         if keyboard.just_pressed("SPACE"):
             target_idx = (target_idx + 1) % len(targets)
             print(f"\n[TARGET] {targets[target_idx]}")
 
-        # R - reset
         if keyboard.just_pressed("R"):
             obs_dict, _ = env.reset()
             obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
+            if camera_sensor:
+                camera_sensor.reset()
             print("\n[RESET]")
 
-        # Debug print every 100 steps
+        # Debug every 100 steps
         if step % 100 == 0:
             print(f"[STEP {step:5d}] cmd=[{command[0,0]:.2f}, {command[0,1]:.2f}, {command[0,2]:.2f}]")
 
-        # Camera capture (every 10 steps)
-        if rgb_annotator is not None and step % 10 == 0:
+        # Update camera sensor (non-blocking!)
+        if camera_sensor is not None:
             try:
-                import omni.replicator.core as rep
-                rep.orchestrator.step(rt_subframes=4, pause_timeline=False)
-                data = rgb_annotator.get_data()
-                if data is not None and len(data) > 0:
-                    camera_img = np.array(data)
-                    if camera_img.ndim == 3 and camera_img.shape[2] == 4:
-                        camera_img = camera_img[:, :, :3]
-                    if step % 100 == 0:
-                        print(f"[CAMERA] Got image: {camera_img.shape}")
+                camera_sensor.update(dt=sim_dt)
             except Exception as e:
                 if step % 100 == 0:
-                    print(f"[CAMERA] Error: {e}")
+                    print(f"[CAMERA] Update error: {e}")
 
-        # VLM inference (every vlm_interval steps)
-        if vlm is not None and camera_img is not None and step % vlm_interval == 0:
+        # VLM inference
+        if vlm is not None and camera_sensor is not None and step % vlm_interval == 0 and step > 0:
             try:
-                result = vlm.find_object(camera_img, targets[target_idx])
+                # Get image from camera sensor
+                rgb_data = camera_sensor.data.output.get("rgb")
+                if rgb_data is not None and rgb_data.numel() > 0:
+                    # Convert to numpy (H, W, C)
+                    img = rgb_data[0].cpu().numpy()  # First env
+                    if img.shape[-1] == 4:  # RGBA -> RGB
+                        img = img[:, :, :3]
 
-                if result["found"]:
-                    x = result["x"]
-                    dist = result["distance"]
-                    print(f"[VLM] FOUND '{result['target']}' x={x:.2f} d={dist:.2f} | {result['time_ms']:.0f}ms")
+                    if step % 100 == 0:
+                        print(f"[CAMERA] Got image: {img.shape}, dtype: {img.dtype}")
 
-                    # Navigate
-                    if dist < 0.3 and abs(x) < 0.25:
-                        command = torch.tensor([[0.0, 0.0, 0.0]], device=device, dtype=torch.float32)
-                        print(f"[VLM] ★ TARGET REACHED ★")
+                    # VLM inference
+                    result = vlm.find_object(img, targets[target_idx])
+
+                    if result["found"]:
+                        x = result["x"]
+                        dist = result["distance"]
+                        print(f"[VLM] FOUND '{result['target']}' x={x:.2f} d={dist:.2f} | {result['time_ms']:.0f}ms")
+
+                        if dist < 0.3 and abs(x) < 0.25:
+                            command = torch.tensor([[0.0, 0.0, 0.0]], device=device, dtype=torch.float32)
+                            print(f"[VLM] ★ TARGET REACHED ★")
+                        else:
+                            angular = -x * 0.5
+                            linear = 0.3 + dist * 0.2
+                            command = torch.tensor([[linear, 0.0, angular]], device=device, dtype=torch.float32)
                     else:
-                        angular = -x * 0.5
-                        linear = 0.3 + dist * 0.2
-                        command = torch.tensor([[linear, 0.0, angular]], device=device, dtype=torch.float32)
+                        print(f"[VLM] SEARCHING '{result['target']}' | {result['time_ms']:.0f}ms")
+                        command = torch.tensor([[0.15, 0.0, 0.4 * search_dir]], device=device, dtype=torch.float32)
                 else:
-                    print(f"[VLM] SEARCHING '{result['target']}' | {result['time_ms']:.0f}ms")
-                    # Search pattern
-                    command = torch.tensor([[0.15, 0.0, 0.4 * search_dir]], device=device, dtype=torch.float32)
+                    if step % 100 == 0:
+                        print(f"[CAMERA] No image data yet")
 
             except Exception as e:
                 print(f"[VLM] Error: {e}")
@@ -444,6 +450,8 @@ def main():
         if (terminated | truncated).any():
             obs_dict, _ = env.reset()
             obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
+            if camera_sensor:
+                camera_sensor.reset()
             print("\n[ENV] Episode reset")
 
         step += 1
