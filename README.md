@@ -1,10 +1,10 @@
-# 🤖 Go2 VLM-RL Navigation
+# 🤖 G1 VLM-RL Navigation
 
-Language-conditioned quadruped navigation using Vision-Language Models (VLM) and Reinforcement Learning.
+Language-conditioned humanoid navigation using Vision-Language Models (VLM) and Reinforcement Learning.
 
 ## 📋 Overview
 
-This project implements a hierarchical VLM-RL system for Unitree Go2 robot navigation:
+This project implements a hierarchical VLM-RL system for Unitree G1 robot navigation:
 
 ```
 "Mavi sandalyeye git" (Go to the blue chair)
@@ -41,7 +41,7 @@ This project implements a hierarchical VLM-RL system for Unitree Go2 robot navig
 pip install transformers accelerate pillow
 
 # Clone/copy files to Isaac Lab
-# C:\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\direct\go2_vlm_rl\
+# C:\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\direct\g1_vlm_rl\
 ```
 
 ## 🚀 Quick Start
