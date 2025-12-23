@@ -1,82 +1,62 @@
 """
-G1 Standalone Test - DDS gerektirmez, sadece simülasyon
+G1 Standalone Test - Minimal working example (FIXED)
 """
 
 import os
-
-# PROJECT_ROOT'u ayarla
 os.environ["PROJECT_ROOT"] = r"C:\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\direct\unitree_sim_isaaclab"
 
 from isaacsim import SimulationApp
+simulation_app = SimulationApp({"headless": False, "width": 1280, "height": 720})
 
-# Simulation başlat
-simulation_app = SimulationApp({"headless": False})
-
-# Isaac imports (SimulationApp'ten sonra!)
 import torch
+from pxr import UsdLux, UsdGeom, Gf, UsdPhysics
 import omni.usd
-from pxr import UsdGeom, Gf
-import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.sim import SimulationContext
-
-# G1 config'i import et
+import isaaclab.sim as sim_utils
 from external.unitree_robots.unitree import G129_CFG_WITH_DEX1_BASE_FIX
 
 
 def main():
-    """G1 robot'u basitçe yükle ve göster."""
+    sim = SimulationContext(sim_utils.SimulationCfg(dt=0.01, device="cuda:0"))
+    sim.set_camera_view(eye=[3.0, 3.0, 2.0], target=[0.0, 0.0, 0.75])
+    stage = omni.usd.get_context().get_stage()
 
-    # Simulation context - design mode'da başlat
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device="cuda:0")
-    sim = SimulationContext(sim_cfg)
+    # Ground Plane
+    ground_prim = stage.DefinePrim("/World/groundPlane", "Xform")
+    plane_prim = stage.DefinePrim("/World/groundPlane/CollisionMesh", "Mesh")
+    mesh = UsdGeom.Mesh(plane_prim)
+    size = 50.0
+    mesh.GetPointsAttr().Set([(-size, 0, -size), (size, 0, -size), (size, 0, size), (-size, 0, size)])
+    mesh.GetFaceVertexCountsAttr().Set([4])
+    mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+    UsdPhysics.CollisionAPI.Apply(plane_prim)
+    UsdPhysics.MeshCollisionAPI.Apply(plane_prim)
 
-    # Stage'i ayarla
-    sim.set_camera_view(eye=[3.0, 3.0, 2.5], target=[0.0, 0.0, 0.75])
+    # Light
+    light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
+    light.GetIntensityAttr().Set(1000.0)
 
-    # Ground plane ekle
-    cfg = sim_utils.GroundPlaneCfg()
-    cfg.func("/World/defaultGroundPlane", cfg)
-
-    # Light ekle
-    cfg_light = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
-    cfg_light.func("/World/Light", cfg_light)
-
-    # G1 Robot'u spawn et
+    # G1 Robot - 0.8m above ground
     robot_cfg = G129_CFG_WITH_DEX1_BASE_FIX.copy()
     robot_cfg.prim_path = "/World/G1"
+    robot_cfg.init_state.pos = (0.0, 0.8, 0.0)
     robot = Articulation(cfg=robot_cfg)
 
-    # Scene'i oluştur ve başlat
     sim.reset()
-
-    # Robot bilgilerini yazdır
-    print("\n" + "="*50)
-    print("G1 Robot başarıyla yüklendi!")
-    print(f"Joint sayısı: {robot.num_joints}")
-    print(f"Body sayısı: {robot.num_bodies}")
-    print(f"Joint isimleri: {robot.joint_names[:10]}...")  # İlk 10
-    print("="*50 + "\n")
-    print("Simülasyonu kapatmak için pencereyi kapat.")
-
-    # Robot'u başlangıç pozisyonuna getir
+    print(f"\n{'='*60}\nG1 Robot yüklendi! Joints: {robot.num_joints}, Bodies: {robot.num_bodies}\n{'='*60}\n")
     robot.reset()
 
-    # Ana döngü
     count = 0
     while simulation_app.is_running():
-        # Her 1000 step'te bir bilgi yazdır
-        if count % 1000 == 0 and count > 0:
-            print(f"[Step {count}] Simülasyon devam ediyor...")
-
-        # Simülasyon adımı
+        if count % 1000 == 0:
+            pos = robot.data.root_pos_w[0]
+            print(f"[Step {count}] Pos: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
         sim.step()
         robot.update(sim.get_physics_dt())
         count += 1
 
-    # Cleanup
     simulation_app.close()
-
 
 if __name__ == "__main__":
     main()
