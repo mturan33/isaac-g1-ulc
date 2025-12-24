@@ -13,7 +13,7 @@ Kullanım:
     # VLM olmadan
     .\isaaclab.bat -p vlm_isaac_demo_v9.py --task ... --checkpoint ... --no_vlm
 
-    # Viewport penceresi kapalı
+    # Viewport penceresi kapalı olarak
     .\isaaclab.bat -p vlm_isaac_demo_v9.py --task ... --checkpoint ... --no_viewport
 
 Kontroller:
