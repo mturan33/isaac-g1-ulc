@@ -1,5 +1,5 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# Modified by Turan for G1 Wave Demo
+# Modified by Turan for G1 Wave Demo - v3 (path fix)
 #
 # Kullanım:
 #   cd C:\IsaacLab
@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import math
 import torch
+import os
+import re
 
 from isaaclab.app import AppLauncher
 
@@ -33,10 +35,33 @@ simulation_app = app_launcher.app
 
 # Post-launch imports
 import gymnasium as gym
-import os
 
 import isaaclab_tasks  # noqa: F401
-from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
+from isaaclab_tasks.utils import parse_env_cfg
+
+
+def find_checkpoint(run_dir: str, checkpoint: str = None) -> str:
+    """Find checkpoint file in run directory."""
+    if not os.path.exists(run_dir):
+        raise FileNotFoundError(f"Run directory not found: {run_dir}")
+
+    # List all model files
+    model_files = [f for f in os.listdir(run_dir) if f.startswith("model_") and f.endswith(".pt")]
+
+    if not model_files:
+        raise FileNotFoundError(f"No model files found in: {run_dir}")
+
+    if checkpoint:
+        # Use specified checkpoint
+        if checkpoint in model_files:
+            return os.path.join(run_dir, checkpoint)
+        else:
+            raise FileNotFoundError(f"Checkpoint {checkpoint} not found in {run_dir}")
+    else:
+        # Get latest checkpoint
+        model_files.sort(key=lambda x: int(re.search(r'model_(\d+)', x).group(1)))
+        latest = model_files[-1]
+        return os.path.join(run_dir, latest)
 
 
 def get_wave_override(time: float, wave_hand: str, wave_freq: float, amplitude: float = 0.5) -> dict:
@@ -81,18 +106,18 @@ def main():
     # Create environment
     env = gym.make(args_cli.task, cfg=env_cfg)
 
-    # Get RSL-RL agent config
-    from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.agents.rsl_rl_ppo_cfg import G1FlatPPORunnerCfg
-    agent_cfg = G1FlatPPORunnerCfg()
-
-    # Find checkpoint
-    log_root = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
-    resume_path = get_checkpoint_path(log_root, args_cli.load_run, args_cli.checkpoint)
+    # Build checkpoint path MANUALLY (no duplicate)
+    run_dir = os.path.join("logs", "rsl_rl", "g1_flat", args_cli.load_run)
+    resume_path = find_checkpoint(run_dir, args_cli.checkpoint)
     print(f"[INFO] Loading: {resume_path}")
 
     # Wrap for RSL-RL
     from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
     env = RslRlVecEnvWrapper(env)
+
+    # Get agent config
+    from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.agents.rsl_rl_ppo_cfg import G1FlatPPORunnerCfg
+    agent_cfg = G1FlatPPORunnerCfg()
 
     # Create runner and load checkpoint
     from rsl_rl.runners import OnPolicyRunner
