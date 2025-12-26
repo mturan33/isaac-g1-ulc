@@ -1,5 +1,5 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# Modified by Turan for G1 Wave Demo - v3 (path fix)
+# Modified by Turan for G1 Wave Demo - v4 FINAL
 #
 # Kullanım:
 #   cd C:\IsaacLab
@@ -131,8 +131,12 @@ def main():
     print(f"[INFO] Wave hand: {args_cli.wave_hand}")
     print(f"[INFO] Wave freq: {args_cli.wave_freq} Hz")
 
-    # Reset
-    obs, _ = env.get_observations()
+    # Reset environment and get initial observation
+    obs = env.get_observations()
+
+    # Handle different return types from get_observations
+    if isinstance(obs, tuple):
+        obs = obs[0]  # First element is observations
 
     # Sim loop
     sim_time = 0.0
@@ -156,8 +160,23 @@ def main():
                 for idx, val in overrides.items():
                     actions[:, idx] = val
 
-            # Step
-            obs, _, _, _ = env.step(actions)
+            # Step environment
+            step_result = env.step(actions)
+
+            # Handle different return formats
+            if isinstance(step_result, tuple):
+                if len(step_result) == 4:
+                    obs, _, _, _ = step_result
+                elif len(step_result) == 5:
+                    obs, _, _, _, _ = step_result
+                else:
+                    obs = step_result[0]
+            else:
+                obs = step_result
+
+            # Handle obs if it's a tuple
+            if isinstance(obs, tuple):
+                obs = obs[0]
 
             sim_time += dt
             step_count += 1
