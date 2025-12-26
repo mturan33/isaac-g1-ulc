@@ -1,37 +1,40 @@
 # Copyright (c) 2025, Turan - VLM-RL Project
-# G1 Loco-Manipulation Demo: Wave while Walking (No Pink IK Required)
-#
-# Bu script, G1 humanoid robotun yürürken el sallamasını gösterir.
-# Lower body: PPO locomotion policy (ayakta durma/yürüme)
-# Upper body: Sinusoidal joint control (el sallama)
+# G1 Loco-Manipulation Demo: Wave while Standing
+# Isaac Lab 2.3.1 Compatible Version
 #
 # Kullanım:
 #   cd C:\IsaacLab
-#   .\isaaclab.bat -p <path_to_this_script>
+#   .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\g1_wave_demo.py --num_envs 4
 
 """
-G1 Wave Demo - Pink IK olmadan loco-manipulation demonstrasyonu.
+G1 Wave Demo - El sallama + Ayakta durma demonstrasyonu.
+Pink IK / Pinocchio GEREKTIRMEZ!
 
-Bu demo gösterir:
-1. G1 robotun masa içeren bir sahnede spawn edilmesi
-2. Lower body'nin PPO ile ayakta tutulması
-3. Upper body arm joint'lerinin sinusoidal kontrolü (el sallama)
-4. Locomotion + manipulation koordinasyonu
-
-NO PINK IK / NO PINOCCHIO REQUIRED!
+Bu demo:
+1. Eğitilmiş G1 locomotion environment'ını kullanır
+2. Policy action'larına arm override ekler (sinusoidal wave)
+3. Lower body PPO ile denge, upper body sinusoidal hareket
 """
+
+from __future__ import annotations
 
 import argparse
 import math
 import torch
-from omni.isaac.lab.app import AppLauncher
 
-# CLI argümanları
-parser = argparse.ArgumentParser(description="G1 Wave Demo - Loco-manipulation without Pink IK")
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLI Arguments - MUST be before AppLauncher
+# ═══════════════════════════════════════════════════════════════════════════════
+parser = argparse.ArgumentParser(description="G1 Wave Demo")
 parser.add_argument("--num_envs", type=int, default=4, help="Number of environments")
-parser.add_argument("--device", type=str, default="cuda:0", help="Device to run on")
+parser.add_argument("--wave_hand", type=str, default="right", choices=["left", "right", "both"])
+parser.add_argument("--wave_freq", type=float, default=2.0, help="Wave frequency (Hz)")
+parser.add_argument("--load_run", type=str, default=None, help="Trained model directory")
 
-# AppLauncher argümanları ekle
+# AppLauncher import ve argüman ekleme
+# Isaac Lab 2.3 için doğru import
+from isaaclab.app import AppLauncher
+
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -39,271 +42,257 @@ args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-# Isaac Lab importları (Isaac Sim başladıktan sonra)
-import omni.isaac.lab.sim as sim_utils
-from omni.isaac.lab.assets import Articulation, ArticulationCfg
-from omni.isaac.lab.scene import InteractiveScene, InteractiveSceneCfg
-from omni.isaac.lab.sim import SimulationCfg
-from omni.isaac.lab.utils import configclass
-from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
+# ═══════════════════════════════════════════════════════════════════════════════
+# Isaac Lab imports (Isaac Sim başladıktan sonra)
+# ═══════════════════════════════════════════════════════════════════════════════
+import gymnasium as gym
 
-# Unitree G1 asset
+# Isaac Lab 2.3 imports
+import isaaclab.sim as sim_utils
+from isaaclab.envs import ManagerBasedRLEnv
+
+# Tasks import
+import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils import parse_env_cfg
+
+# RSL-RL (optional)
 try:
-    from omni.isaac.lab_assets.unitree import UNITREE_G1_CFG
+    from rsl_rl.runners import OnPolicyRunner
+
+    RSL_RL_AVAILABLE = True
 except ImportError:
-    # Isaac Lab 2.3.1 için alternatif import
-    from isaaclab_assets.robots.unitree import G1_29DOF_CFG as UNITREE_G1_CFG
+    RSL_RL_AVAILABLE = False
 
 
-##
-# Scene Configuration
-##
-@configclass
-class G1WaveSceneCfg(InteractiveSceneCfg):
-    """G1 robot ile masa içeren sahne konfigürasyonu."""
-
-    # Ground plane
-    ground = sim_utils.GroundPlaneCfg()
-
-    # Lighting
-    dome_light = sim_utils.DomeLightCfg(
-        intensity=2000.0,
-        color=(0.9, 0.9, 0.9),
-    )
-
-    # G1 Robot - Standing pose
-    robot: ArticulationCfg = UNITREE_G1_CFG.replace(
-        prim_path="{ENV_REGEX_NS}/Robot",
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.8),  # 0.8m height (standing)
-            joint_pos={
-                # Başlangıç pozisyonu - nötr duruş
-                ".*": 0.0,
-            },
-        ),
-    )
-
-    # Table (optional - for future pick&place)
-    table = sim_utils.CuboidCfg(
-        size=(0.8, 0.5, 0.4),
-        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, 0.4, 0.2)),
-        physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.5),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-    )
-
-
-##
-# Arm Wave Controller
-##
+# ═══════════════════════════════════════════════════════════════════════════════
+# Wave Controller
+# ═══════════════════════════════════════════════════════════════════════════════
 class ArmWaveController:
-    """Upper body el sallama kontrolcüsü - joint space sinusoidal kontrol."""
-
-    def __init__(self, num_envs: int, device: str):
-        self.num_envs = num_envs
-        self.device = device
-
-        # Wave parametreleri
-        self.wave_frequency = 2.0  # Hz
-        self.wave_amplitude = 0.5  # radyan
-        self.phase = 0.0
-
-        # G1 arm joint isimleri (29 DoF model için)
-        # Left arm: left_shoulder_pitch, left_shoulder_roll, left_shoulder_yaw, left_elbow
-        # Right arm: right_shoulder_pitch, right_shoulder_roll, right_shoulder_yaw, right_elbow
-        self.arm_joint_names = [
-            "left_shoulder_pitch_joint",
-            "left_shoulder_roll_joint",
-            "left_shoulder_yaw_joint",
-            "left_elbow_joint",
-            "right_shoulder_pitch_joint",
-            "right_shoulder_roll_joint",
-            "right_shoulder_yaw_joint",
-            "right_elbow_joint",
-        ]
-
-    def compute_wave(self, time: float) -> dict[str, float]:
-        """Sinusoidal el sallama joint pozisyonlarını hesapla."""
-
-        # Sağ kol sallama (sol kol sabit)
-        wave_angle = self.wave_amplitude * math.sin(2 * math.pi * self.wave_frequency * time)
-
-        # Joint hedefleri
-        targets = {
-            # Sol kol - nötr pozisyon
-            "left_shoulder_pitch_joint": 0.0,
-            "left_shoulder_roll_joint": 0.2,  # Hafif açık
-            "left_shoulder_yaw_joint": 0.0,
-            "left_elbow_joint": -0.5,  # Hafif bükülü
-
-            # Sağ kol - el sallama
-            "right_shoulder_pitch_joint": -0.8,  # Kol yukarı kaldırılmış
-            "right_shoulder_roll_joint": -0.3 + wave_angle * 0.3,  # Sallama (yanlara)
-            "right_shoulder_yaw_joint": wave_angle * 0.2,  # Hafif rotasyon
-            "right_elbow_joint": -1.2 + wave_angle * 0.3,  # Dirsek bükümü ile sallama
-        }
-
-        return targets
-
-
-##
-# Simple Balance Controller (placeholder for PPO)
-##
-class SimpleBalanceController:
     """
-    Basit denge kontrolcüsü - PPO policy yüklenene kadar placeholder.
+    Sinusoidal el sallama kontrolcüsü.
 
-    Gerçek kullanımda bu, eğitilmiş locomotion policy ile değiştirilecek:
-    - Nucleus'tan indirilen G1 locomotion model
-    - RSL-RL ile eğitilmiş custom model
+    G1 robot joint indeksleri (37 DoF action space):
+    - 0-11: Legs (hip, knee, ankle x2)
+    - 12: Torso
+    - 13-16: Left arm (shoulder_pitch, shoulder_roll, shoulder_yaw, elbow)
+    - 17-20: Right arm
+    - 21-36: Hands/fingers
     """
 
-    def __init__(self, num_envs: int, device: str):
+    # G1 arm joint indices in action space
+    ARM_INDICES = {
+        "left_shoulder_pitch": 13,
+        "left_shoulder_roll": 14,
+        "left_shoulder_yaw": 15,
+        "left_elbow": 16,
+        "right_shoulder_pitch": 17,
+        "right_shoulder_roll": 18,
+        "right_shoulder_yaw": 19,
+        "right_elbow": 20,
+    }
+
+    def __init__(
+            self,
+            num_envs: int,
+            device: str,
+            wave_hand: str = "right",
+            wave_freq: float = 2.0,
+            wave_amplitude: float = 0.4,
+    ):
         self.num_envs = num_envs
         self.device = device
+        self.wave_hand = wave_hand
+        self.wave_freq = wave_freq
+        self.wave_amplitude = wave_amplitude
 
-        # Leg joint isimleri
-        self.leg_joint_names = [
-            "left_hip_pitch_joint",
-            "left_hip_roll_joint",
-            "left_hip_yaw_joint",
-            "left_knee_joint",
-            "left_ankle_pitch_joint",
-            "left_ankle_roll_joint",
-            "right_hip_pitch_joint",
-            "right_hip_roll_joint",
-            "right_hip_yaw_joint",
-            "right_knee_joint",
-            "right_ankle_pitch_joint",
-            "right_ankle_roll_joint",
-        ]
+    def compute_arm_override(self, time: float) -> dict[int, float]:
+        """
+        Zamana bağlı arm joint override değerlerini hesapla.
 
-        # Default standing pose (ayakta durma pozisyonu)
-        self.standing_pose = {
-            "left_hip_pitch_joint": -0.1,
-            "left_hip_roll_joint": 0.0,
-            "left_hip_yaw_joint": 0.0,
-            "left_knee_joint": 0.25,
-            "left_ankle_pitch_joint": -0.15,
-            "left_ankle_roll_joint": 0.0,
-            "right_hip_pitch_joint": -0.1,
-            "right_hip_roll_joint": 0.0,
-            "right_hip_yaw_joint": 0.0,
-            "right_knee_joint": 0.25,
-            "right_ankle_pitch_joint": -0.15,
-            "right_ankle_roll_joint": 0.0,
-        }
+        Returns:
+            dict[joint_idx, target_position]
+        """
+        wave = self.wave_amplitude * math.sin(2 * math.pi * self.wave_freq * time)
 
-    def compute_action(self) -> dict[str, float]:
-        """Standing pose döndür (gerçek PPO policy placeholder)."""
-        return self.standing_pose
+        overrides = {}
+
+        # Sol kol
+        if self.wave_hand in ["left", "both"]:
+            # Kaldırılmış ve sallanan pozisyon
+            overrides[self.ARM_INDICES["left_shoulder_pitch"]] = -1.2  # Yukarı
+            overrides[self.ARM_INDICES["left_shoulder_roll"]] = 0.3 + wave * 0.4  # Sallama
+            overrides[self.ARM_INDICES["left_shoulder_yaw"]] = wave * 0.2
+            overrides[self.ARM_INDICES["left_elbow"]] = -0.8 + wave * 0.3
+        else:
+            # Nötr pozisyon (kollar aşağıda)
+            overrides[self.ARM_INDICES["left_shoulder_pitch"]] = 0.0
+            overrides[self.ARM_INDICES["left_shoulder_roll"]] = 0.1
+            overrides[self.ARM_INDICES["left_shoulder_yaw"]] = 0.0
+            overrides[self.ARM_INDICES["left_elbow"]] = -0.3
+
+        # Sağ kol
+        if self.wave_hand in ["right", "both"]:
+            overrides[self.ARM_INDICES["right_shoulder_pitch"]] = -1.2
+            overrides[self.ARM_INDICES["right_shoulder_roll"]] = -0.3 + wave * 0.4
+            overrides[self.ARM_INDICES["right_shoulder_yaw"]] = -wave * 0.2
+            overrides[self.ARM_INDICES["right_elbow"]] = -0.8 - wave * 0.3
+        else:
+            overrides[self.ARM_INDICES["right_shoulder_pitch"]] = 0.0
+            overrides[self.ARM_INDICES["right_shoulder_roll"]] = -0.1
+            overrides[self.ARM_INDICES["right_shoulder_yaw"]] = 0.0
+            overrides[self.ARM_INDICES["right_elbow"]] = -0.3
+
+        return overrides
+
+    def apply_override(self, action: torch.Tensor, time: float) -> torch.Tensor:
+        """
+        Action tensor'a arm override uygula.
+
+        Args:
+            action: (num_envs, action_dim) policy output
+            time: Simulation time
+
+        Returns:
+            Modified action with arm override
+        """
+        overrides = self.compute_arm_override(time)
+        modified = action.clone()
+
+        for idx, value in overrides.items():
+            if idx < modified.shape[1]:
+                modified[:, idx] = value
+
+        return modified
 
 
-##
-# Main Demo
-##
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════════════════
 def main():
     """G1 Wave Demo ana fonksiyonu."""
 
-    print("\n" + "=" * 60)
-    print("G1 LOCO-MANIPULATION DEMO")
-    print("El sallama + Ayakta durma (Pink IK gerektirmez!)")
-    print("=" * 60 + "\n")
+    print("\n" + "=" * 70)
+    print("  G1 LOCO-MANIPULATION DEMO: Wave While Standing")
+    print("  Pink IK / Pinocchio NOT Required!")
+    print("=" * 70 + "\n")
 
-    # Simulation config
-    sim_cfg = SimulationCfg(
+    # Environment config
+    env_cfg = parse_env_cfg(
+        "Isaac-Velocity-Flat-G1-v0",
         device=args_cli.device,
-        dt=0.01,  # 100 Hz
-        render_interval=2,
+        num_envs=args_cli.num_envs,
     )
 
-    # Simulation context oluştur
-    sim = sim_utils.SimulationContext(sim_cfg)
-    sim.set_camera_view(eye=[2.5, 2.5, 2.0], target=[0.0, 0.0, 0.8])
+    # Environment oluştur
+    env = gym.make("Isaac-Velocity-Flat-G1-v0", cfg=env_cfg)
 
-    # Scene oluştur
-    scene_cfg = G1WaveSceneCfg(num_envs=args_cli.num_envs, env_spacing=3.0)
-    scene = InteractiveScene(scene_cfg)
+    print(f"[INFO] Environment: Isaac-Velocity-Flat-G1-v0")
+    print(f"[INFO] Num envs: {args_cli.num_envs}")
+    print(f"[INFO] Action dim: {env.action_space.shape}")
+    print(f"[INFO] Obs dim: {env.observation_space.shape}")
+    print(f"[INFO] Wave hand: {args_cli.wave_hand}")
 
-    # Controllers oluştur
-    wave_controller = ArmWaveController(args_cli.num_envs, args_cli.device)
-    balance_controller = SimpleBalanceController(args_cli.num_envs, args_cli.device)
+    # Wave controller
+    wave_ctrl = ArmWaveController(
+        num_envs=args_cli.num_envs,
+        device=args_cli.device,
+        wave_hand=args_cli.wave_hand,
+        wave_freq=args_cli.wave_freq,
+    )
 
-    # Simulation başlat
-    sim.reset()
+    # Policy yükle (opsiyonel)
+    policy = None
+    if args_cli.load_run and RSL_RL_AVAILABLE:
+        import os
+        from rsl_rl.modules import ActorCritic
 
-    # Robot'u al
-    robot: Articulation = scene["robot"]
+        # En son checkpoint'ı bul
+        model_dir = os.path.join("logs/rsl_rl/g1_flat", args_cli.load_run)
+        if os.path.exists(model_dir):
+            # model_*.pt dosyalarını bul
+            checkpoints = [f for f in os.listdir(model_dir) if f.startswith("model_") and f.endswith(".pt")]
+            if checkpoints:
+                # En yüksek numaralı checkpoint
+                latest = sorted(checkpoints, key=lambda x: int(x.split("_")[1].split(".")[0]))[-1]
+                checkpoint_path = os.path.join(model_dir, latest)
 
-    # Joint indekslerini bul
-    arm_joint_ids = []
-    leg_joint_ids = []
+                print(f"\n[INFO] Loading policy from: {checkpoint_path}")
 
-    for name in wave_controller.arm_joint_names:
-        idx = robot.find_joints(name)
-        if idx[0]:
-            arm_joint_ids.append(idx[0][0])
+                loaded = torch.load(checkpoint_path, map_location=args_cli.device)
 
-    for name in balance_controller.leg_joint_names:
-        idx = robot.find_joints(name)
-        if idx[0]:
-            leg_joint_ids.append(idx[0][0])
+                # ActorCritic oluştur (G1 için 123 obs, 37 action)
+                actor_critic = ActorCritic(
+                    num_obs=123,
+                    num_actions=37,
+                    init_noise_std=1.0,
+                    actor_hidden_dims=[256, 128, 128],
+                    critic_hidden_dims=[256, 128, 128],
+                ).to(args_cli.device)
 
-    print(f"Arm joint IDs: {arm_joint_ids}")
-    print(f"Leg joint IDs: {leg_joint_ids}")
-    print(f"Total robot joints: {robot.num_joints}")
+                actor_critic.load_state_dict(loaded["model_state_dict"])
+                actor_critic.eval()
+                policy = actor_critic
+                print("[INFO] Policy loaded successfully!")
+
+    if policy is None:
+        print("\n[INFO] No policy loaded - using zero actions (robot will try to stand)")
+        print("[INFO] Use --load_run <dir_name> to load trained policy")
+
+    # Reset
+    obs, info = env.reset()
 
     # Simulation loop
     sim_time = 0.0
-    count = 0
+    dt = env.unwrapped.step_dt
+    step_count = 0
 
-    print("\n[INFO] Simulation başlıyor... (Ctrl+C ile çıkış)")
-    print("[INFO] Robot el sallıyor ve ayakta duruyor!")
+    print("\n" + "-" * 50)
+    print(" Simulation running... Press Ctrl+C to exit")
+    print("-" * 50 + "\n")
 
-    while simulation_app.is_running():
-        # Reset every 1000 steps
-        if count % 1000 == 0:
-            sim_time = 0.0
-            scene.reset()
-            print(f"\n[INFO] Reset at step {count}")
+    try:
+        while simulation_app.is_running():
+            # Action hesapla
+            if policy is not None:
+                with torch.no_grad():
+                    action = policy.act_inference(obs)
+            else:
+                # Zero action (default pose'a dön)
+                action = torch.zeros(
+                    args_cli.num_envs,
+                    env.action_space.shape[0],
+                    device=args_cli.device
+                )
 
-        # Wave controller - arm positions
-        wave_targets = wave_controller.compute_wave(sim_time)
+            # Arm override uygula (wave animation)
+            action = wave_ctrl.apply_override(action, sim_time)
 
-        # Balance controller - leg positions
-        balance_targets = balance_controller.compute_action()
+            # Step
+            obs, reward, terminated, truncated, info = env.step(action)
 
-        # Birleştir: arm + leg hedefleri
-        all_targets = {**wave_targets, **balance_targets}
+            # Reset handling
+            if terminated.any() or truncated.any():
+                # Sadece düşen env'leri logla
+                n_reset = (terminated | truncated).sum().item()
+                if n_reset > 0 and step_count % 100 == 0:
+                    print(f"[Step {step_count}] {n_reset} environments reset")
 
-        # Joint pozisyonlarını ayarla
-        joint_pos = robot.data.default_joint_pos.clone()
+            # Time update
+            sim_time += dt
+            step_count += 1
 
-        for joint_name, target_pos in all_targets.items():
-            idx = robot.find_joints(joint_name)
-            if idx[0]:
-                joint_pos[:, idx[0][0]] = target_pos
+            # Periodic log
+            if step_count % 500 == 0:
+                mean_reward = reward.mean().item()
+                print(f"[Step {step_count:5d}] Time: {sim_time:6.2f}s | Reward: {mean_reward:8.4f}")
 
-        # Robot'a gönder
-        robot.set_joint_position_target(joint_pos)
-        robot.write_data_to_sim()
+    except KeyboardInterrupt:
+        print("\n[INFO] Interrupted by user")
 
-        # Simulation step
-        sim.step()
-        scene.update(sim_cfg.dt)
-
-        # Update time
-        sim_time += sim_cfg.dt
-        count += 1
-
-        # Her 100 step'te bilgi ver
-        if count % 100 == 0:
-            base_pos = robot.data.root_pos_w[0].cpu().numpy()
-            print(f"Step {count}: Base pos = ({base_pos[0]:.2f}, {base_pos[1]:.2f}, {base_pos[2]:.2f})")
+    env.close()
+    print("\n[INFO] Demo finished!")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        simulation_app.close()
+    main()
+    simulation_app.close()
