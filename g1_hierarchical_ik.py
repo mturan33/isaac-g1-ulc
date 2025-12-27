@@ -567,13 +567,21 @@ def main():
                 USE_SIMPLE_TEST = True  # Set True to test without IK
 
                 if USE_SIMPLE_TEST:
-                    # Simple sinusoidal motion for shoulder pitch (index 6)
-                    wave = math.sin(2 * math.pi * 0.5 * sim_time) * 0.5  # ±0.5 rad
-                    actions[:, 6] = wave  # right_shoulder_pitch
-                    actions[:, 18] = wave * 0.5  # right_elbow_pitch
+                    # More aggressive sinusoidal motion - use step_count for reliable timing
+                    phase = step_count * 0.05  # Faster oscillation
+                    wave = math.sin(phase) * 1.0  # ±1.0 rad (larger amplitude)
 
-                    if step_count % 500 == 1:
-                        print(f"[Test] Sinusoidal wave: {wave:.3f}")
+                    # Right arm joint indices: [6, 10, 14, 18, 22]
+                    # right_shoulder_pitch, right_shoulder_roll, right_shoulder_yaw,
+                    # right_elbow_pitch, right_elbow_roll
+                    actions[:, 6] = wave  # right_shoulder_pitch - forward/back
+                    actions[:, 18] = -wave * 0.5  # right_elbow_pitch - bend elbow
+
+                    # Debug every 100 steps
+                    if step_count % 100 == 1:
+                        print(f"[Test] Step {step_count}: wave={wave:.3f}, action[6]={actions[0, 6].item():.3f}")
+                        current_joint = robot.data.joint_pos[0, 6].item()
+                        print(f"[Test] Current joint[6] pos: {current_joint:.3f}")
                 else:
                     # Option 2: Full IK control
                     arm_ik.set_target(target_pos)
