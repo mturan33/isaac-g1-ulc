@@ -46,14 +46,16 @@ from isaaclab.controllers import DifferentialIKController, DifferentialIKControl
 from isaaclab.utils.math import subtract_frame_transforms
 from isaaclab.envs import ManagerBasedRLEnv
 
-# Debug Draw
+# Debug Draw - Isaac Lab's marker visualization
 try:
-    from isaacsim.util.debug_draw import _debug_draw
+    from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+    from isaaclab.markers.config import FRAME_MARKER_CFG, BLUE_ARROW_X_MARKER_CFG
+    import isaaclab.sim as sim_utils
 
     DEBUG_DRAW_AVAILABLE = True
 except ImportError:
     DEBUG_DRAW_AVAILABLE = False
-    print("[Warning] Debug draw not available")
+    print("[Warning] Visualization markers not available")
 
 # Isaac Lab tasks
 import isaaclab_tasks  # noqa: F401
@@ -182,13 +184,20 @@ class CustomActorCritic(nn.Module):
                 # Convert log_std to std if needed
                 new_state_dict["std"] = torch.exp(value)
 
-        # Load with strict=False to handle any mismatches
-        missing, unexpected = self.load_state_dict(new_state_dict, strict=False)
-
-        if missing:
-            print(f"[Policy] Missing keys: {missing}")
-        if unexpected:
-            print(f"[Policy] Unexpected keys: {unexpected}")
+        # Use assign=True to handle any remaining mismatches
+        try:
+            self.load_state_dict(new_state_dict, strict=True)
+            print("[Policy] Loaded with strict=True")
+        except RuntimeError as e:
+            print(f"[Policy] Strict load failed, trying manual assignment: {e}")
+            # Manual assignment for each parameter
+            for name, param in self.named_parameters():
+                if name in new_state_dict:
+                    if param.shape == new_state_dict[name].shape:
+                        param.data.copy_(new_state_dict[name])
+                    else:
+                        print(
+                            f"[Policy] Shape mismatch for {name}: model={param.shape}, ckpt={new_state_dict[name].shape}")
 
         return True
 
@@ -216,48 +225,25 @@ def find_checkpoint(run_dir: str, checkpoint_name: str = None) -> str:
 
 
 ##############################################################################
-# TRAJECTORY VISUALIZER
+# TRAJECTORY VISUALIZER (Simplified - logs to console)
 ##############################################################################
 
 class TrajectoryVisualizer:
-    """Visualize hand trajectory using debug draw."""
+    """Simple trajectory tracker - logs positions to console."""
 
     def __init__(self, num_envs: int, max_points: int = 200):
         self.num_envs = num_envs
         self.max_points = max_points
-        self.enabled = DEBUG_DRAW_AVAILABLE
+        self.enabled = True
 
         # Store trajectory points for each environment
         self.trajectories = [deque(maxlen=max_points) for _ in range(num_envs)]
         self.target_trajectories = [deque(maxlen=max_points) for _ in range(num_envs)]
 
-        # Colors (RGBA)
-        self.hand_colors = [
-            (1.0, 0.0, 0.0, 1.0),  # Red - env 0
-            (0.0, 1.0, 0.0, 1.0),  # Green - env 1
-            (0.0, 0.0, 1.0, 1.0),  # Blue - env 2
-            (1.0, 1.0, 0.0, 1.0),  # Yellow - env 3
-        ]
-        self.target_colors = [
-            (1.0, 0.5, 0.5, 0.5),  # Light red
-            (0.5, 1.0, 0.5, 0.5),  # Light green
-            (0.5, 0.5, 1.0, 0.5),  # Light blue
-            (1.0, 1.0, 0.5, 0.5),  # Light yellow
-        ]
-
-        if self.enabled:
-            self.draw = _debug_draw.acquire_debug_draw_interface()
-            print("[Viz] Trajectory visualizer initialized")
-        else:
-            self.draw = None
-            print("[Viz] Debug draw not available")
+        print("[Viz] Trajectory tracker initialized (console mode)")
 
     def add_point(self, env_id: int, hand_pos: torch.Tensor, target_pos: torch.Tensor):
         """Add a point to the trajectory."""
-        if not self.enabled:
-            return
-
-        # Convert to list for storage
         hand_pt = hand_pos.cpu().tolist() if torch.is_tensor(hand_pos) else hand_pos
         target_pt = target_pos.cpu().tolist() if torch.is_tensor(target_pos) else target_pos
 
@@ -265,48 +251,19 @@ class TrajectoryVisualizer:
         self.target_trajectories[env_id].append(target_pt)
 
     def draw_all(self):
-        """Draw all trajectories."""
-        if not self.enabled or self.draw is None:
-            return
+        """No-op for console mode."""
+        pass
 
-        try:
-            # Clear previous drawings
-            self.draw.clear_lines()
-            self.draw.clear_points()
+    def get_tracking_error(self, env_id: int = 0) -> float:
+        """Get distance between current hand pos and target."""
+        if not self.trajectories[env_id] or not self.target_trajectories[env_id]:
+            return 0.0
 
-            for env_id in range(self.num_envs):
-                traj = list(self.trajectories[env_id])
-                target_traj = list(self.target_trajectories[env_id])
+        hand = self.trajectories[env_id][-1]
+        target = self.target_trajectories[env_id][-1]
 
-                # Draw hand trajectory as connected lines
-                if len(traj) > 1:
-                    for i in range(len(traj) - 1):
-                        p1 = traj[i]
-                        p2 = traj[i + 1]
-                        color = self.hand_colors[env_id % len(self.hand_colors)]
-                        self.draw.draw_line(p1, color, p2, color)
-
-                # Draw target trajectory (dashed effect with points)
-                if len(target_traj) > 1:
-                    for i in range(0, len(target_traj), 3):  # Every 3rd point
-                        pt = target_traj[i]
-                        color = self.target_colors[env_id % len(self.target_colors)]
-                        self.draw.draw_point(pt, color, 5.0)
-
-                # Draw current hand position (larger point)
-                if traj:
-                    current = traj[-1]
-                    color = self.hand_colors[env_id % len(self.hand_colors)]
-                    self.draw.draw_point(current, color, 15.0)
-
-                # Draw current target (sphere-like with multiple points)
-                if target_traj:
-                    target = target_traj[-1]
-                    color = (1.0, 1.0, 1.0, 1.0)  # White
-                    self.draw.draw_point(target, color, 20.0)
-
-        except Exception as e:
-            print(f"[Viz] Draw error: {e}")
+        error = math.sqrt(sum((h - t) ** 2 for h, t in zip(hand, target)))
+        return error
 
     def reset(self, env_ids: torch.Tensor = None):
         """Clear trajectories for reset environments."""
@@ -536,12 +493,13 @@ def main():
         checkpoint_path = find_checkpoint(run_dir, args_cli.checkpoint)
         print(f"\n[Policy] Loading: {checkpoint_path}")
 
-        # Create custom policy
+        # Create custom policy - MUST match checkpoint architecture!
+        # Checkpoint shows: actor.0=[256,123], actor.2=[128,256], actor.4=[128,128], actor.6=[37,128]
         policy = CustomActorCritic(
             num_obs=obs_dim,
             num_actions=action_dim,
-            actor_hidden_dims=[512, 256, 128],
-            critic_hidden_dims=[512, 256, 128],
+            actor_hidden_dims=[256, 128, 128],
+            critic_hidden_dims=[256, 128, 128],
             activation="elu",
         ).to(env.device)
 
@@ -576,8 +534,8 @@ def main():
 
     print("\n" + "-" * 70)
     print("[Info] Starting simulation... Press Ctrl+C to stop")
-    print("[Info] Hand trajectory: Colored lines")
-    print("[Info] Target: White dots")
+    print("[Info] Lower body: PPO locomotion policy")
+    print("[Info] Upper body: IK circle trajectory")
     print("-" * 70)
 
     sim_time = 0.0
@@ -640,12 +598,14 @@ def main():
                 if robot is not None:
                     ee_pos = arm_ik.get_ee_pos_world(robot)[0]
                     ee_str = f"[{ee_pos[0]:.2f}, {ee_pos[1]:.2f}, {ee_pos[2]:.2f}]"
+                    track_err = visualizer.get_tracking_error(0)
                 else:
                     ee_str = "N/A"
+                    track_err = 0.0
 
                 print(f"[Step {step_count:5d}] t={sim_time:6.2f}s | "
                       f"Reward: {mean_reward:7.3f} | Alive: {alive:5.1f}% | "
-                      f"Target: {target_str} | EE: {ee_str}")
+                      f"TrackErr: {track_err:.3f}m")
 
     except KeyboardInterrupt:
         print("\n[Info] Stopped by user")
