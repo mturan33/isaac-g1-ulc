@@ -41,10 +41,10 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 # ==== Post-Launch Imports ====
-import gymnasium as gym
 import torch
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz
+from isaaclab.envs import ManagerBasedRLEnv
 
 # RSL-RL
 try:
@@ -455,23 +455,22 @@ def main():
     print("=" * 70)
 
     # ==== Environment Setup ====
-    env_cfg_entry = "Isaac-Velocity-Flat-G1-v0"
+    from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.flat_env_cfg import G1FlatEnvCfg
+    from isaaclab.envs import ManagerBasedRLEnv
 
-    env = gym.make(
-        env_cfg_entry,
-        num_envs=args_cli.num_envs,
-        device=args_cli.device,
-    )
+    # Create environment config
+    env_cfg = G1FlatEnvCfg()
+    env_cfg.scene.num_envs = args_cli.num_envs
+
+    # Create environment directly (not through gym.make)
+    env = ManagerBasedRLEnv(cfg=env_cfg)
 
     # Get dimensions
-    obs_space = env.observation_space
-    act_space = env.action_space
+    obs_dim = env.observation_space.shape[0] if hasattr(env.observation_space, 'shape') else env.num_observations
+    action_dim = env.action_space.shape[0] if hasattr(env.action_space, 'shape') else env.num_actions
 
-    obs_dim = obs_space.shape[0] if hasattr(obs_space, 'shape') else 123
-    action_dim = act_space.shape[0] if hasattr(act_space, 'shape') else 37
-
-    print(f"\n[Env] Task: {env_cfg_entry}")
-    print(f"[Env] Num envs: {args_cli.num_envs}")
+    print(f"\n[Env] Task: G1 Flat Locomotion")
+    print(f"[Env] Num envs: {env.num_envs}")
     print(f"[Env] Obs dim: {obs_dim}")
     print(f"[Env] Action dim: {action_dim}")
     print(f"[Env] Device: {env.device}")
@@ -482,29 +481,19 @@ def main():
     use_real_ik = False
 
     try:
-        # Access underlying scene
-        unwrapped_env = env.unwrapped
+        # Access scene from ManagerBasedRLEnv
+        scene = env.scene
+        print(f"[Env] Found scene: {type(scene)}")
 
-        if hasattr(unwrapped_env, 'scene'):
-            scene = unwrapped_env.scene
-            print(f"[Env] Found scene: {type(scene)}")
+        # Get robot articulation
+        if hasattr(scene, 'articulations'):
+            articulations = scene.articulations
+            print(f"[Env] Articulations: {list(articulations.keys())}")
 
-            # Try to get robot articulation
-            if hasattr(scene, 'articulations'):
-                articulations = scene.articulations
-                print(
-                    f"[Env] Articulations: {list(articulations.keys()) if hasattr(articulations, 'keys') else articulations}")
-
-                # Get robot (usually named "robot")
-                if 'robot' in articulations:
-                    robot = articulations['robot']
-                    print(f"[Env] Found robot articulation!")
-                    use_real_ik = True
-
-        if robot is None and hasattr(unwrapped_env, 'robot'):
-            robot = unwrapped_env.robot
-            print(f"[Env] Found robot from env.robot")
-            use_real_ik = True
+            if 'robot' in articulations:
+                robot = articulations['robot']
+                print(f"[Env] Found robot articulation!")
+                use_real_ik = True
 
     except Exception as e:
         print(f"[Env] Could not access robot: {e}")
@@ -545,7 +534,7 @@ def main():
 
     if use_real_ik and robot is not None:
         arm_ik = G1ArmIKController(
-            args_cli.num_envs,
+            env.num_envs,
             env.device,
             arm=arm,
             ik_method=args_cli.ik_method,
@@ -553,13 +542,13 @@ def main():
         arm_ik.initialize_from_robot(robot, scene)
         print(f"[IK] Using DifferentialIK with PhysX Jacobians")
     else:
-        arm_ik = SimpleArmIK(args_cli.num_envs, env.device, arm=arm)
+        arm_ik = SimpleArmIK(env.num_envs, env.device, arm=arm)
         print(f"[IK] Using SimpleArmIK fallback")
         use_real_ik = False
 
     # ==== Create Target Generator ====
     target_gen = TargetGenerator(
-        args_cli.num_envs,
+        env.num_envs,
         env.device,
         args_cli.target_mode,
         arm=arm,
@@ -567,14 +556,15 @@ def main():
     print(f"[Target] Mode: {args_cli.target_mode}")
 
     # ==== Reset Environment ====
-    obs, _ = env.reset()
+    obs_dict, _ = env.reset()
+    obs = obs_dict["policy"]  # ManagerBasedRLEnv returns dict
 
     # Initial values
-    actions = torch.zeros(args_cli.num_envs, action_dim, device=env.device)
+    actions = torch.zeros(env.num_envs, action_dim, device=env.device)
     arm_joint_ids = ARM_JOINT_INDICES[arm]
 
     # Approximate EE position tracker (for fallback)
-    approx_ee_pos = target_gen.base_position.unsqueeze(0).expand(args_cli.num_envs, -1).clone()
+    approx_ee_pos = target_gen.base_position.unsqueeze(0).expand(env.num_envs, -1).clone()
 
     # ==== Simulation Loop ====
     print("\n" + "-" * 70)
@@ -626,7 +616,8 @@ def main():
                 approx_ee_pos = 0.9 * approx_ee_pos + 0.1 * target_pos
 
             # ==== Step Environment ====
-            obs, rewards, terminated, truncated, info = env.step(actions)
+            obs_dict, rewards, terminated, truncated, info = env.step(actions)
+            obs = obs_dict["policy"]  # Extract policy observation
 
             # Handle resets
             reset_ids = (terminated | truncated).nonzero(as_tuple=False).squeeze(-1)
