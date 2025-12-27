@@ -465,9 +465,10 @@ def main():
     # Create environment directly (not through gym.make)
     env = ManagerBasedRLEnv(cfg=env_cfg)
 
-    # Get dimensions
-    obs_dim = env.observation_space.shape[0] if hasattr(env.observation_space, 'shape') else env.num_observations
-    action_dim = env.action_space.shape[0] if hasattr(env.action_space, 'shape') else env.num_actions
+    # Get dimensions from observation/action managers
+    # ManagerBasedRLEnv uses observation_manager and action_manager
+    obs_dim = env.observation_manager.group_obs_dim["policy"][0]  # Get policy obs dim
+    action_dim = env.action_manager.total_action_dim
 
     print(f"\n[Env] Task: G1 Flat Locomotion")
     print(f"[Env] Num envs: {env.num_envs}")
