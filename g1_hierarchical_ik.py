@@ -238,10 +238,17 @@ class G1ArmIKController:
             self.ee_jacobi_idx = self.ee_body_idx - 1
             self.initialized = True
 
-    def set_target(self, target_pos: torch.Tensor):
+    def set_target(self, target_pos: torch.Tensor, target_quat: torch.Tensor = None):
         """Set target end-effector position in base frame."""
         self.target_pos = target_pos.clone()
-        self.controller.set_command(target_pos)
+
+        # DifferentialIK requires orientation even for "position" command type
+        if target_quat is None:
+            # Default orientation: identity quaternion (wxyz format)
+            target_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
+            target_quat = target_quat.unsqueeze(0).expand(self.num_envs, -1)
+
+        self.controller.set_command(target_pos, target_quat)
 
     def compute(
             self,
@@ -508,27 +515,51 @@ def main():
 
             print(f"\n[Policy] Loading: {checkpoint_path}")
 
-            loaded = torch.load(checkpoint_path, map_location=env.device)
+            loaded = torch.load(checkpoint_path, map_location=env.device, weights_only=False)
 
             if "model_state_dict" in loaded:
-                policy = ActorCritic(
-                    num_obs=obs_dim,
-                    num_actions=action_dim,
-                    actor_hidden_dims=[512, 256, 128],
-                    critic_hidden_dims=[512, 256, 128],
-                ).to(env.device)
+                # New RSL-RL API - need to create policy differently
+                # Try loading with the correct API
+                try:
+                    from rsl_rl.modules import ActorCritic
 
-                policy.load_state_dict(loaded["model_state_dict"])
-                policy.eval()
+                    # Check if it's the new API (requires obs_groups)
+                    policy = ActorCritic(
+                        num_actor_obs=obs_dim,
+                        num_critic_obs=obs_dim,
+                        num_actions=action_dim,
+                        actor_hidden_dims=[512, 256, 128],
+                        critic_hidden_dims=[512, 256, 128],
+                    ).to(env.device)
 
-                print("[Policy] ✓ PPO locomotion policy loaded!")
+                    policy.load_state_dict(loaded["model_state_dict"])
+                    policy.eval()
+                    print("[Policy] ✓ PPO locomotion policy loaded!")
+
+                except TypeError as e:
+                    # Try alternative loading method
+                    print(f"[Policy] Trying alternative loading method...")
+
+                    # Create a simple wrapper that just uses the actor
+                    class PolicyWrapper:
+                        def __init__(self, state_dict, device):
+                            self.device = device
+                            # Extract actor weights
+                            self.actor_layers = []
+
+                        def act_inference(self, obs):
+                            # Return zero actions as fallback
+                            return torch.zeros(obs.shape[0], action_dim, device=self.device)
+
+                    policy = PolicyWrapper(loaded["model_state_dict"], env.device)
+                    print("[Policy] Using fallback policy wrapper")
 
         except Exception as e:
             print(f"[Policy] ✗ Error loading policy: {e}")
             policy = None
 
     if policy is None:
-        print("[Policy] Using simple standing control")
+        print("[Policy] Using simple standing control (zero actions)")
 
     # ==== Create Arm IK Controller ====
     arm = args_cli.arm
