@@ -245,8 +245,9 @@ class G1ArmIKController:
         # DifferentialIK requires orientation even for "position" command type
         if target_quat is None:
             # Default orientation: identity quaternion (wxyz format)
-            target_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
-            target_quat = target_quat.unsqueeze(0).expand(self.num_envs, -1)
+            # Create directly with correct shape to avoid expand issues
+            target_quat = torch.zeros(self.num_envs, 4, device=self.device)
+            target_quat[:, 0] = 1.0  # w = 1 for identity quaternion
 
         self.controller.set_command(target_pos, target_quat)
 
