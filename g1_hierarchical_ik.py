@@ -14,7 +14,7 @@ Upper Body: DifferentialIKController with PhysX Jacobians
 
 Kullanım:
     cd C:\IsaacLab
-    .\isaaclab.bat -p <path>\g1_hierarchical_ik_v2.py --num_envs 4 --load_run 2025-12-27_00-29-54
+    .\isaaclab.bat -p <path>\g1_hierarchical_ik.py --num_envs 4 --load_run 2025-12-27_00-29-54
 """
 
 import argparse
@@ -87,9 +87,8 @@ G1_EE_BODIES = {
 }
 
 # Arm joint indices in the 37 DoF action space
-# These will be dynamically determined from joint names
 ARM_JOINT_INDICES = {
-    "right": [6, 10, 14, 18, 22],  # Approximate - will verify
+    "right": [6, 10, 14, 18, 22],
     "left": [5, 9, 13, 17, 21],
 }
 
@@ -142,14 +141,15 @@ class G1ArmIKController:
         self.device = device
         self.arm = arm
 
-        # Create DifferentialIK controller
+        # Create DifferentialIK controller config
         self.ik_cfg = DifferentialIKControllerCfg(
-            command_type="position",  # 3D position only (no orientation)
+            command_type="pose",  # 7D pose (position + quaternion)
             use_relative_mode=False,  # Absolute targets
             ik_method=ik_method,
             ik_params={"lambda_val": 0.1} if ik_method == "dls" else {"k_val": 1.0},
         )
 
+        # Create the controller instance
         self.controller = DifferentialIKController(
             self.ik_cfg,
             num_envs=num_envs,
@@ -163,6 +163,8 @@ class G1ArmIKController:
 
         # State buffers
         self.target_pos = torch.zeros(num_envs, 3, device=device)
+        self.target_quat = torch.zeros(num_envs, 4, device=device)
+        self.target_quat[:, 0] = 1.0  # Identity quaternion (w=1)
         self.initialized = False
 
         print(f"[IK] Created G1ArmIKController for {arm} arm (method: {ik_method})")
@@ -239,17 +241,19 @@ class G1ArmIKController:
             self.initialized = True
 
     def set_target(self, target_pos: torch.Tensor, target_quat: torch.Tensor = None):
-        """Set target end-effector position in base frame."""
+        """Set target end-effector pose in base frame."""
         self.target_pos = target_pos.clone()
 
-        # DifferentialIK requires orientation even for "position" command type
+        # Default orientation: identity quaternion (wxyz format)
         if target_quat is None:
-            # Default orientation: identity quaternion (wxyz format)
-            # Create directly with correct shape to avoid expand issues
             target_quat = torch.zeros(self.num_envs, 4, device=self.device)
-            target_quat[:, 0] = 1.0  # w = 1 for identity quaternion
+            target_quat[:, 0] = 1.0  # w = 1 for identity
 
-        self.controller.set_command(target_pos, target_quat)
+        self.target_quat = target_quat.clone()
+
+        # Combine into 7D pose command (x, y, z, qw, qx, qy, qz)
+        pose_command = torch.cat([target_pos, target_quat], dim=-1)
+        self.controller.set_command(pose_command)
 
     def compute(
             self,
@@ -295,8 +299,8 @@ class G1ArmIKController:
                 # Extract Jacobian from PhysX
                 full_jacobian = robot.root_physx_view.get_jacobians()
                 # Shape: (num_envs, num_bodies, 6, num_joints)
-                # Extract EE Jacobian for arm joints only
-                jacobian = full_jacobian[:, self.ee_jacobi_idx, :3, :]  # Position only
+                # Extract full 6DoF Jacobian for arm joints
+                jacobian = full_jacobian[:, self.ee_jacobi_idx, :, :]  # Full 6DoF
                 jacobian = jacobian[:, :, self.arm_joint_ids]  # Arm joints only
 
             # Compute IK
@@ -311,6 +315,8 @@ class G1ArmIKController:
 
         except Exception as e:
             print(f"[IK] Compute error: {e}")
+            import traceback
+            traceback.print_exc()
             # Return current positions as fallback
             return robot.data.joint_pos[:, self.arm_joint_ids] if hasattr(robot.data, 'joint_pos') else \
                 torch.zeros(self.num_envs, len(self.arm_joint_ids), device=self.device)
@@ -319,8 +325,12 @@ class G1ArmIKController:
         """Reset controller state."""
         if env_ids is None:
             self.target_pos.zero_()
+            self.target_quat.zero_()
+            self.target_quat[:, 0] = 1.0
         else:
             self.target_pos[env_ids] = 0.0
+            self.target_quat[env_ids] = 0.0
+            self.target_quat[env_ids, 0] = 1.0
         self.controller.reset(env_ids)
 
 
@@ -474,8 +484,7 @@ def main():
     env = ManagerBasedRLEnv(cfg=env_cfg)
 
     # Get dimensions from observation/action managers
-    # ManagerBasedRLEnv uses observation_manager and action_manager
-    obs_dim = env.observation_manager.group_obs_dim["policy"][0]  # Get policy obs dim
+    obs_dim = env.observation_manager.group_obs_dim["policy"][0]
     action_dim = env.action_manager.total_action_dim
 
     print(f"\n[Env] Task: G1 Flat Locomotion")
@@ -519,12 +528,9 @@ def main():
             loaded = torch.load(checkpoint_path, map_location=env.device, weights_only=False)
 
             if "model_state_dict" in loaded:
-                # New RSL-RL API - need to create policy differently
-                # Try loading with the correct API
                 try:
                     from rsl_rl.modules import ActorCritic
 
-                    # Check if it's the new API (requires obs_groups)
                     policy = ActorCritic(
                         num_actor_obs=obs_dim,
                         num_critic_obs=obs_dim,
@@ -538,18 +544,13 @@ def main():
                     print("[Policy] ✓ PPO locomotion policy loaded!")
 
                 except TypeError as e:
-                    # Try alternative loading method
                     print(f"[Policy] Trying alternative loading method...")
 
-                    # Create a simple wrapper that just uses the actor
                     class PolicyWrapper:
                         def __init__(self, state_dict, device):
                             self.device = device
-                            # Extract actor weights
-                            self.actor_layers = []
 
                         def act_inference(self, obs):
-                            # Return zero actions as fallback
                             return torch.zeros(obs.shape[0], action_dim, device=self.device)
 
                     policy = PolicyWrapper(loaded["model_state_dict"], env.device)
@@ -590,7 +591,7 @@ def main():
 
     # ==== Reset Environment ====
     obs_dict, _ = env.reset()
-    obs = obs_dict["policy"]  # ManagerBasedRLEnv returns dict
+    obs = obs_dict["policy"]
 
     # Initial values
     actions = torch.zeros(env.num_envs, action_dim, device=env.device)
@@ -650,7 +651,7 @@ def main():
 
             # ==== Step Environment ====
             obs_dict, rewards, terminated, truncated, info = env.step(actions)
-            obs = obs_dict["policy"]  # Extract policy observation
+            obs = obs_dict["policy"]
 
             # Handle resets
             reset_ids = (terminated | truncated).nonzero(as_tuple=False).squeeze(-1)
