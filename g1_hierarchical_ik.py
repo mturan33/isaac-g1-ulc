@@ -301,12 +301,12 @@ class G1ArmIKControllerWorking:
     def set_target(self, target_pos: torch.Tensor):
         """Set target position in base frame (3D only)."""
         self.target_pos = target_pos.clone()
-        # Even for position mode, Isaac Lab requires 7D command (pos + quat)
-        # We use identity quaternion since we only care about position
+        # For position mode:
+        # - command = 3D position
+        # - ee_target_quat = 4D quaternion (required, use identity)
         target_quat = torch.zeros(self.num_envs, 4, device=self.device)
         target_quat[:, 0] = 1.0  # Identity quaternion [w, x, y, z]
-        pose_command = torch.cat([target_pos, target_quat], dim=-1)
-        self.controller.set_command(pose_command)
+        self.controller.set_command(target_pos, ee_target_quat=target_quat)
 
     def _transform_jacobian_to_base_frame(self, jacobian_w: torch.Tensor,
                                           root_quat_w: torch.Tensor) -> torch.Tensor:
