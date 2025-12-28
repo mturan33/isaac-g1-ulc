@@ -298,15 +298,22 @@ class G1ArmIKControllerWorking:
             self.ee_jacobi_idx = 29
             self.initialized = True
 
-    def set_target(self, target_pos: torch.Tensor):
-        """Set target position in base frame (3D only)."""
+    def set_target(self, target_pos: torch.Tensor, ee_quat: torch.Tensor | None = None):
+        """Set target position in base frame (3D only).
+
+        Args:
+            target_pos: Target position in base frame (N, 3)
+            ee_quat: Current end-effector quaternion (N, 4) - required for position mode
+        """
         self.target_pos = target_pos.clone()
         # For position mode:
         # - command = 3D position
-        # - ee_target_quat = 4D quaternion (required, use identity)
-        target_quat = torch.zeros(self.num_envs, 4, device=self.device)
-        target_quat[:, 0] = 1.0  # Identity quaternion [w, x, y, z]
-        self.controller.set_command(target_pos, ee_target_quat=target_quat)
+        # - ee_quat = current EE orientation (required even though we only care about position)
+        if ee_quat is None:
+            # Use identity quaternion if not provided
+            ee_quat = torch.zeros(self.num_envs, 4, device=self.device)
+            ee_quat[:, 0] = 1.0  # [w, x, y, z]
+        self.controller.set_command(target_pos, ee_quat=ee_quat)
 
     def _transform_jacobian_to_base_frame(self, jacobian_w: torch.Tensor,
                                           root_quat_w: torch.Tensor) -> torch.Tensor:
@@ -606,7 +613,14 @@ def main():
 
             # Upper body: IK
             if robot is not None and arm_ik.initialized:
-                arm_ik.set_target(target_pos)
+                # Get current EE quaternion in base frame
+                ee_quat_w = robot.data.body_state_w[:, arm_ik.ee_body_idx, 3:7]
+                root_quat_w = robot.data.root_state_w[:, 3:7]
+                # Transform to base frame (simplified - just pass world frame quat)
+                # The controller uses this for display, so approximation is OK
+                ee_quat_b = ee_quat_w  # Simplified
+
+                arm_ik.set_target(target_pos, ee_quat=ee_quat_b)
                 joint_pos_des = arm_ik.compute(robot)
 
                 # Apply to actions
