@@ -650,6 +650,12 @@ def main():
             if policy is not None:
                 with torch.no_grad():
                     actions = policy.act_inference(obs)
+
+                    # IMPORTANT: Zero out arm joints from PPO output
+                    # PPO was trained with arms, but we want IK to control them
+                    if robot is not None and arm_ik.initialized:
+                        for joint_idx in arm_ik.arm_joint_ids:
+                            actions[:, joint_idx] = 0.0
             else:
                 actions.zero_()
 
@@ -665,9 +671,21 @@ def main():
                 arm_ik.set_target(target_pos, ee_quat=ee_quat_b)
                 joint_pos_des = arm_ik.compute(robot)
 
-                # Apply to actions
+                # CRITICAL FIX: Convert IK output to action space
+                # Isaac Lab uses: robot_joint = default + action * scale
+                # So: action = (desired - default) / scale
+                ACTION_SCALE = 0.5  # G1 environment action scale (from config)
+                default_arm_pos = torch.tensor(
+                    G1_ARM_DEFAULT_POS[args_cli.arm],
+                    device=env.device
+                ).unsqueeze(0).expand(env.num_envs, -1)
+
+                # Convert desired position to action offset
+                arm_action = (joint_pos_des - default_arm_pos) / ACTION_SCALE
+
+                # Apply to actions (these are now properly scaled offsets)
                 for i, joint_idx in enumerate(arm_ik.arm_joint_ids):
-                    actions[:, joint_idx] = joint_pos_des[:, i]
+                    actions[:, joint_idx] = arm_action[:, i]
 
             # Step
             obs_dict, rewards, terminated, truncated, info = env.step(actions)
