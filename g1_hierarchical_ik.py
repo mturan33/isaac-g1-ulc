@@ -30,7 +30,7 @@ parser.add_argument("--load_run", type=str, required=True)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--ik_method", type=str, default="dls", choices=["dls", "pinv", "svd", "trans"])
 parser.add_argument("--target_mode", type=str, default="static",
-                    choices=["circle", "static", "wave", "front_reach"])
+                    choices=["circle", "static", "wave", "front_reach", "side_to_side"])
 parser.add_argument("--arm", type=str, default="right", choices=["left", "right"])
 parser.add_argument("--debug", action="store_true", default=True)
 parser.add_argument("--max_joint_delta", type=float, default=0.15, help="Max joint change per step")
@@ -513,9 +513,9 @@ class TargetGenerator:
         self.initialized = False
         self.initial_ee_pos = None
 
-        # Movement parameters
-        self.radius = 0.05  # Small radius for stability
-        self.freq = 0.1  # Slow movement
+        # Movement parameters - LARGER for visible motion
+        self.radius = 0.15  # 15cm radius - much more visible!
+        self.freq = 0.2  # Faster movement for better visualization
 
     def initialize_from_ee(self, ee_pos: torch.Tensor):
         """Initialize target from current EE position."""
@@ -539,9 +539,14 @@ class TargetGenerator:
             wave = math.sin(2 * math.pi * self.freq * time)
             pos[:, 2] += wave * self.radius
         elif self.mode == "front_reach":
-            # Gradually reach forward
-            t = min(time / 10.0, 1.0)
-            pos[:, 0] += t * 0.1  # Reach 10cm forward
+            # Gradually reach forward - VERY VISIBLE
+            t = min(time / 5.0, 1.0)  # Reach target in 5 seconds
+            pos[:, 0] += t * 0.25  # Reach 25cm forward!
+            pos[:, 2] += t * 0.15  # And 15cm up
+        elif self.mode == "side_to_side":
+            # Horizontal sweep - very visible
+            wave = math.sin(2 * math.pi * self.freq * time)
+            pos[:, 1] += wave * 0.15  # 15cm left-right
         # static: just initial position (hold still)
 
         return pos
