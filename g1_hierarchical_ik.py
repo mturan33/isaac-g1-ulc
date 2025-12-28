@@ -238,17 +238,28 @@ class G1ArmIKControllerWorking:
 
     def initialize_from_robot(self, robot, scene):
         """Initialize indices from robot."""
-        print(f"\n[IK INIT] Initializing...")
+        print(f"\n{'=' * 70}")
+        print(f"[IK DEBUG] JOINT NAMES DISCOVERY - V2")
+        print(f"{'=' * 70}")
+
+        # CRITICAL DEBUG - Print ALL joint names FIRST
+        joint_names = robot.joint_names if hasattr(robot, 'joint_names') else []
+        print(f"[IK DEBUG] Total joints: {len(joint_names)}")
+
+        if len(joint_names) > 0:
+            print(f"[IK DEBUG] All joint names:")
+            for i, name in enumerate(joint_names):
+                marker = " <-- RIGHT ARM" if (
+                            "right" in name.lower() and ("shoulder" in name.lower() or "elbow" in name.lower())) else ""
+                print(f"  [{i:2d}] {name}{marker}")
+        else:
+            print(f"[IK DEBUG] WARNING: joint_names is empty!")
+            print(f"[IK DEBUG] robot type: {type(robot)}")
+            print(f"[IK DEBUG] has joint_names attr: {hasattr(robot, 'joint_names')}")
+
+        print(f"{'=' * 70}")
 
         try:
-            # Print ALL joint names for debugging
-            joint_names = robot.joint_names if hasattr(robot, 'joint_names') else []
-            print(f"[IK INIT] Total joints: {len(joint_names)}")
-            print(f"[IK INIT] All joint names:")
-            for i, name in enumerate(joint_names):
-                marker = " <-- ARM?" if "shoulder" in name or "elbow" in name else ""
-                print(f"  [{i:2d}] {name}{marker}")
-
             body_names = robot.body_names if hasattr(robot, 'body_names') else []
             ee_name = G1_EE_BODIES[self.arm]
 
