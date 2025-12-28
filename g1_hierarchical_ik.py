@@ -301,8 +301,12 @@ class G1ArmIKControllerWorking:
     def set_target(self, target_pos: torch.Tensor):
         """Set target position in base frame (3D only)."""
         self.target_pos = target_pos.clone()
-        # For position mode, command is just 3D position
-        self.controller.set_command(target_pos)
+        # Even for position mode, Isaac Lab requires 7D command (pos + quat)
+        # We use identity quaternion since we only care about position
+        target_quat = torch.zeros(self.num_envs, 4, device=self.device)
+        target_quat[:, 0] = 1.0  # Identity quaternion [w, x, y, z]
+        pose_command = torch.cat([target_pos, target_quat], dim=-1)
+        self.controller.set_command(pose_command)
 
     def _transform_jacobian_to_base_frame(self, jacobian_w: torch.Tensor,
                                           root_quat_w: torch.Tensor) -> torch.Tensor:
@@ -310,8 +314,10 @@ class G1ArmIKControllerWorking:
         root_quat_conj = quat_conjugate(root_quat_w)
         rot_matrix = matrix_from_quat(root_quat_conj)
 
-        # For position-only, we only need the first 3 rows
-        jacobian_b = torch.bmm(rot_matrix, jacobian_w)
+        # Transform both linear (0:3) and angular (3:6) parts
+        jacobian_b = jacobian_w.clone()
+        jacobian_b[:, :3, :] = torch.bmm(rot_matrix, jacobian_w[:, :3, :])
+        jacobian_b[:, 3:, :] = torch.bmm(rot_matrix, jacobian_w[:, 3:, :])
         return jacobian_b
 
     def compute(self, robot) -> torch.Tensor:
@@ -339,9 +345,10 @@ class G1ArmIKControllerWorking:
                 root_pos_w, root_quat_w, ee_pos_w, ee_quat_w
             )
 
-            # Get Jacobian - only position part (first 3 rows)
+            # Get Jacobian - full 6 rows (position + orientation)
+            # Even for position mode, controller may need full Jacobian
             full_jacobian = robot.root_physx_view.get_jacobians()
-            jacobian_w = full_jacobian[:, self.ee_jacobi_idx, :3, :]  # Only rows 0:3 for position
+            jacobian_w = full_jacobian[:, self.ee_jacobi_idx, :, :]  # All 6 rows
             jacobian_arm_w = jacobian_w[:, :, self.jacobian_col_ids]
 
             # Transform to base frame
@@ -454,27 +461,26 @@ class TargetGenerator:
         self.device = device
         self.mode = mode
         self.arm = arm
+        self.initialized = False
+        self.initial_ee_pos = None
 
-        # G1 arm workspace (conservative estimates in base frame):
-        # X: 0.1 to 0.4 (forward)
-        # Y: -0.4 to -0.1 for right arm (lateral)
-        # Z: -0.2 to 0.5 (vertical, relative to shoulder)
-
-        # KEY FIX 2: Start with a reachable target!
-        # The initial EE position is around [0.0, -0.23, -0.1]
-        # So we target something close to current but slightly forward/up
-
-        if arm == "right":
-            # Target: slightly forward and down from shoulder
-            self.base_position = torch.tensor([0.15, -0.25, 0.0], device=device)
-        else:
-            self.base_position = torch.tensor([0.15, 0.25, 0.0], device=device)
-
-        self.radius = 0.08  # Small radius for stability
+        # Movement parameters
+        self.radius = 0.05  # Small radius for stability
         self.freq = 0.1  # Slow movement
 
+    def initialize_from_ee(self, ee_pos: torch.Tensor):
+        """Initialize target from current EE position."""
+        self.initial_ee_pos = ee_pos.clone()
+        self.initialized = True
+        print(f"[TARGET] Initialized from EE: [{ee_pos[0, 0]:.3f}, {ee_pos[0, 1]:.3f}, {ee_pos[0, 2]:.3f}]")
+
     def get_target(self, time: float) -> torch.Tensor:
-        pos = self.base_position.unsqueeze(0).expand(self.num_envs, -1).clone()
+        if not self.initialized:
+            # Return a safe default until initialized
+            default = torch.tensor([0.1, -0.2, 0.0], device=self.device)
+            return default.unsqueeze(0).expand(self.num_envs, -1).clone()
+
+        pos = self.initial_ee_pos.clone()
 
         if self.mode == "circle":
             angle = 2 * math.pi * self.freq * time
@@ -485,9 +491,9 @@ class TargetGenerator:
             pos[:, 2] += wave * self.radius
         elif self.mode == "front_reach":
             # Gradually reach forward
-            t = min(time / 10.0, 1.0)  # 10 seconds to full reach
-            pos[:, 0] += t * 0.15  # Reach 15cm forward
-        # static: just base_position
+            t = min(time / 10.0, 1.0)
+            pos[:, 0] += t * 0.1  # Reach 10cm forward
+        # static: just initial position (hold still)
 
         return pos
 
@@ -567,7 +573,6 @@ def main():
     print("\n" + "-" * 70)
     print(f"[Info] Starting simulation...")
     print(f"[Info] Target mode: {args_cli.target_mode}")
-    print(f"[Info] Initial target: {target_gen.base_position.tolist()}")
     print("-" * 70 + "\n")
 
     sim_time = 0.0
@@ -578,8 +583,17 @@ def main():
     error_history = []
     min_error = float('inf')
 
+    # Initialize target from current EE position after first step
+    target_initialized = False
+
     try:
         while simulation_app.is_running():
+            # Initialize target generator from current EE pos
+            if not target_initialized and robot is not None and arm_ik.initialized:
+                ee_pos_b = arm_ik.get_ee_pos_base(robot)
+                target_gen.initialize_from_ee(ee_pos_b)
+                target_initialized = True
+
             # Get target
             target_pos = target_gen.get_target(sim_time)
 
