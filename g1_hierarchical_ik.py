@@ -241,6 +241,14 @@ class G1ArmIKControllerWorking:
         print(f"\n[IK INIT] Initializing...")
 
         try:
+            # Print ALL joint names for debugging
+            joint_names = robot.joint_names if hasattr(robot, 'joint_names') else []
+            print(f"[IK INIT] Total joints: {len(joint_names)}")
+            print(f"[IK INIT] All joint names:")
+            for i, name in enumerate(joint_names):
+                marker = " <-- ARM?" if "shoulder" in name or "elbow" in name else ""
+                print(f"  [{i:2d}] {name}{marker}")
+
             body_names = robot.body_names if hasattr(robot, 'body_names') else []
             ee_name = G1_EE_BODIES[self.arm]
 
@@ -256,11 +264,34 @@ class G1ArmIKControllerWorking:
 
             joint_names = robot.joint_names if hasattr(robot, 'joint_names') else []
             self.arm_joint_ids = []
+
+            # Try exact match first
             for jname in G1_ARM_JOINTS[self.arm]:
                 if jname in joint_names:
                     self.arm_joint_ids.append(joint_names.index(jname))
 
+            # If not found, try searching by pattern
             if len(self.arm_joint_ids) < 5:
+                print(f"[IK INIT] Exact match failed, searching by pattern...")
+                self.arm_joint_ids = []
+
+                # Search patterns for right arm
+                if self.arm == "right":
+                    patterns = ["right_shoulder_pitch", "right_shoulder_roll",
+                                "right_shoulder_yaw", "right_elbow_pitch", "right_elbow_roll"]
+                else:
+                    patterns = ["left_shoulder_pitch", "left_shoulder_roll",
+                                "left_shoulder_yaw", "left_elbow_pitch", "left_elbow_roll"]
+
+                for pattern in patterns:
+                    for i, jname in enumerate(joint_names):
+                        if pattern in jname.lower().replace("_joint", "").replace("-", "_"):
+                            self.arm_joint_ids.append(i)
+                            print(f"[IK INIT] Found: {jname} -> index {i}")
+                            break
+
+            if len(self.arm_joint_ids) < 5:
+                print(f"[IK INIT] WARNING: Only found {len(self.arm_joint_ids)} joints, using fallback!")
                 self.arm_joint_ids = ARM_JOINT_INDICES[self.arm]
 
             # +6 offset for floating-base Jacobian
