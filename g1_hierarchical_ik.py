@@ -30,7 +30,7 @@ parser.add_argument("--load_run", type=str, required=True)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--ik_method", type=str, default="dls", choices=["dls", "pinv", "svd", "trans"])
 parser.add_argument("--target_mode", type=str, default="static",
-                    choices=["circle", "static", "wave", "front_reach", "side_to_side"])
+                    choices=["circle", "static", "wave", "front_reach", "side_to_side", "wave_hello"])
 parser.add_argument("--arm", type=str, default="right", choices=["left", "right"])
 parser.add_argument("--debug", action="store_true", default=True)
 parser.add_argument("--max_joint_delta", type=float, default=0.15, help="Max joint change per step")
@@ -513,9 +513,9 @@ class TargetGenerator:
         self.initialized = False
         self.initial_ee_pos = None
 
-        # Movement parameters - LARGER for visible motion
-        self.radius = 0.15  # 15cm radius - much more visible!
-        self.freq = 0.2  # Faster movement for better visualization
+        # Movement parameters - achievable targets
+        self.radius = 0.10  # 10cm radius - achievable
+        self.freq = 0.3  # Moderate speed
 
     def initialize_from_ee(self, ee_pos: torch.Tensor):
         """Initialize target from current EE position."""
@@ -532,21 +532,31 @@ class TargetGenerator:
         pos = self.initial_ee_pos.clone()
 
         if self.mode == "circle":
+            # Small circle - more achievable
             angle = 2 * math.pi * self.freq * time
-            pos[:, 0] += self.radius * math.cos(angle)
+            pos[:, 0] += self.radius * 0.5 * math.cos(angle)  # Reduced X
             pos[:, 2] += self.radius * math.sin(angle)
         elif self.mode == "wave":
+            # Classic hand wave - vertical motion in front
             wave = math.sin(2 * math.pi * self.freq * time)
             pos[:, 2] += wave * self.radius
+        elif self.mode == "wave_hello":
+            # REALISTIC HAND WAVING - arm extended forward, hand goes up/down
+            # First extend arm forward slightly
+            pos[:, 0] += 0.15  # 15cm forward from default
+            pos[:, 2] += 0.10  # 10cm up from default (raised position)
+            # Then wave up and down
+            wave = math.sin(2 * math.pi * 0.8 * time)  # 0.8 Hz - natural wave speed
+            pos[:, 2] += wave * 0.12  # 12cm up/down wave amplitude
         elif self.mode == "front_reach":
-            # Gradually reach forward - VERY VISIBLE
-            t = min(time / 5.0, 1.0)  # Reach target in 5 seconds
-            pos[:, 0] += t * 0.25  # Reach 25cm forward!
-            pos[:, 2] += t * 0.15  # And 15cm up
+            # Gradually reach forward
+            t = min(time / 5.0, 1.0)
+            pos[:, 0] += t * 0.20  # 20cm forward
+            pos[:, 2] += t * 0.10  # 10cm up
         elif self.mode == "side_to_side":
-            # Horizontal sweep - very visible
+            # Horizontal sweep
             wave = math.sin(2 * math.pi * self.freq * time)
-            pos[:, 1] += wave * 0.15  # 15cm left-right
+            pos[:, 1] += wave * 0.10  # 10cm left-right (reduced)
         # static: just initial position (hold still)
 
         return pos
