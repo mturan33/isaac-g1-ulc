@@ -4,17 +4,6 @@
 """
 Test script for G1 Locomanipulation with Differential IK (no Pink dependency)
 
-Installation Steps:
-1. Copy differential_ik_action.py to:
-   C:\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\manager_based\locomanipulation\pick_place\mdp\
-
-2. Add to mdp/__init__.py:
-   from .differential_ik_action import *
-
-3. Run this script:
-   cd C:\IsaacLab
-   .\isaaclab.bat -p <path>\test_diffik_locomanip.py
-
 Usage:
     cd C:\IsaacLab
     .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_diffik_locomanip.py --num_envs 1
@@ -45,9 +34,12 @@ print("=" * 70 + "\n")
 
 def main():
     try:
-        # Import our modified config
-        from locomanipulation_g1_diffik_env_cfg import LocomanipulationG1DiffIKEnvCfg
+        # CORRECT IMPORT PATH for isaaclab_tasks package
+        from isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g1_diffik_env_cfg import (
+            LocomanipulationG1DiffIKEnvCfg
+        )
 
+        print("[INFO] ✓ Import successful!")
         print("[INFO] Creating environment with Differential IK...")
 
         env_cfg = LocomanipulationG1DiffIKEnvCfg()
@@ -55,8 +47,8 @@ def main():
 
         env = ManagerBasedRLEnv(cfg=env_cfg)
 
-        print(f"[SUCCESS] Environment created!")
-        print(f"  - Observation dim: {env.observation_manager.group_obs_dim}")
+        print(f"[SUCCESS] ✓ Environment created!")
+        print(f"  - Observation groups: {list(env.observation_manager.group_obs_dim.keys())}")
         print(f"  - Action dim: {env.action_manager.total_action_dim}")
 
         # Reset
@@ -67,11 +59,10 @@ def main():
         print(f"  - Total action dim: {action_dim}")
 
         # Run simulation
-        print("\n[INFO] Running simulation...")
+        print("\n[INFO] Running simulation for 500 steps...")
 
         for step in range(500):
             # Create dummy actions
-            # Action format: [left_ee_pos(3), left_ee_quat(4), right_ee_pos(3), right_ee_quat(4), hand_joints(14), lower_body(4)]
             actions = torch.zeros(args_cli.num_envs, action_dim, device=env.device)
 
             # Set identity quaternions for poses (wxyz format)
@@ -82,14 +73,14 @@ def main():
             t = step * 0.02
             wave = 0.1 * math.sin(2 * math.pi * 0.2 * t)
 
-            # Move left arm forward/back
+            # Move left arm forward/back (base frame coordinates)
             actions[:, 0] = 0.3 + wave  # x pos
-            actions[:, 1] = 0.2  # y pos
+            actions[:, 1] = 0.2  # y pos (left side)
             actions[:, 2] = 0.0  # z pos
 
             # Move right arm forward/back
             actions[:, 7] = 0.3 - wave  # x pos
-            actions[:, 8] = -0.2  # y pos
+            actions[:, 8] = -0.2  # y pos (right side)
             actions[:, 9] = 0.0  # z pos
 
             # Step environment
@@ -98,17 +89,32 @@ def main():
             if step % 100 == 0:
                 print(f"[Step {step:4d}] Reward: {reward.mean().item():.3f}")
 
-        print("\n[SUCCESS] Simulation completed without errors!")
+        print("\n" + "=" * 70)
+        print("  ✓ SUCCESS! Simulation completed without errors!")
+        print("  Differential IK is working correctly.")
+        print("=" * 70)
         env.close()
 
     except ImportError as e:
         print(f"[ERROR] Import error: {e}")
-        print("\n[INFO] Please install the Differential IK action module:")
-        print("  1. Copy differential_ik_action.py to:")
-        print(
-            "     C:\\IsaacLab\\source\\isaaclab_tasks\\isaaclab_tasks\\manager_based\\locomanipulation\\pick_place\\mdp\\")
-        print("  2. Add to mdp/__init__.py:")
-        print("     from .differential_ik_action import *")
+        print("\n" + "=" * 70)
+        print("  TROUBLESHOOTING")
+        print("=" * 70)
+        print("""
+1. Clear Python cache:
+   cd C:\\IsaacLab\\source\\isaaclab_tasks\\isaaclab_tasks\\manager_based\\locomanipulation\\pick_place
+   Remove-Item -Recurse -Force __pycache__
+   Remove-Item -Recurse -Force mdp\\__pycache__
+
+2. Verify file locations:
+   - differential_ik_action.py → mdp/ folder
+   - locomanipulation_g1_diffik_env_cfg.py → pick_place/ folder
+   - mdp/__init__.py contains: from .differential_ik_action import *
+
+3. Re-run this script after clearing cache.
+""")
+        import traceback
+        traceback.print_exc()
 
     except Exception as e:
         print(f"[ERROR] {e}")
