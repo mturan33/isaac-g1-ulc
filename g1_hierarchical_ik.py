@@ -30,7 +30,7 @@ parser.add_argument("--load_run", type=str, required=True)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--ik_method", type=str, default="dls", choices=["dls", "pinv", "svd", "trans"])
 parser.add_argument("--target_mode", type=str, default="static",
-                    choices=["circle", "static", "wave", "front_reach", "side_to_side", "wave_hello"])
+                    choices=["circle", "static", "wave", "front_reach", "side_to_side", "wave_hello", "direct_wave"])
 parser.add_argument("--arm", type=str, default="right", choices=["left", "right"])
 parser.add_argument("--debug", action="store_true", default=True)
 parser.add_argument("--max_joint_delta", type=float, default=0.15, help="Max joint change per step")
@@ -532,31 +532,26 @@ class TargetGenerator:
         pos = self.initial_ee_pos.clone()
 
         if self.mode == "circle":
-            # Small circle - more achievable
+            # Small circle - achievable
             angle = 2 * math.pi * self.freq * time
-            pos[:, 0] += self.radius * 0.5 * math.cos(angle)  # Reduced X
-            pos[:, 2] += self.radius * math.sin(angle)
+            pos[:, 0] += self.radius * 0.3 * math.cos(angle)  # Small X
+            pos[:, 2] += self.radius * 0.5 * math.sin(angle)  # Small Z
         elif self.mode == "wave":
-            # Classic hand wave - vertical motion in front
             wave = math.sin(2 * math.pi * self.freq * time)
-            pos[:, 2] += wave * self.radius
+            pos[:, 2] += wave * 0.05  # Very small vertical
         elif self.mode == "wave_hello":
-            # REALISTIC HAND WAVING - arm extended forward, hand goes up/down
-            # First extend arm forward slightly
-            pos[:, 0] += 0.15  # 15cm forward from default
-            pos[:, 2] += 0.10  # 10cm up from default (raised position)
-            # Then wave up and down
-            wave = math.sin(2 * math.pi * 0.8 * time)  # 0.8 Hz - natural wave speed
-            pos[:, 2] += wave * 0.12  # 12cm up/down wave amplitude
+            # Small achievable wave - stay close to current position
+            wave = math.sin(2 * math.pi * 0.5 * time)  # 0.5 Hz
+            pos[:, 0] += 0.03  # Only 3cm forward
+            pos[:, 2] += wave * 0.05  # Only 5cm up/down
         elif self.mode == "front_reach":
-            # Gradually reach forward
+            # Gradual small reach
             t = min(time / 5.0, 1.0)
-            pos[:, 0] += t * 0.20  # 20cm forward
-            pos[:, 2] += t * 0.10  # 10cm up
+            pos[:, 0] += t * 0.08  # Only 8cm forward
+            pos[:, 2] += t * 0.05  # Only 5cm up
         elif self.mode == "side_to_side":
-            # Horizontal sweep
             wave = math.sin(2 * math.pi * self.freq * time)
-            pos[:, 1] += wave * 0.10  # 10cm left-right (reduced)
+            pos[:, 1] += wave * 0.05  # Only 5cm left-right
         # static: just initial position (hold still)
 
         return pos
@@ -674,33 +669,56 @@ def main():
             else:
                 actions.zero_()
 
-            # Upper body: IK
+            # Upper body: IK or Direct Control
             if robot is not None and arm_ik.initialized:
-                # Get current EE quaternion in base frame
-                ee_quat_w = robot.data.body_state_w[:, arm_ik.ee_body_idx, 3:7]
-                root_quat_w = robot.data.root_state_w[:, 3:7]
-                # Transform to base frame (simplified - just pass world frame quat)
-                # The controller uses this for display, so approximation is OK
-                ee_quat_b = ee_quat_w  # Simplified
 
-                arm_ik.set_target(target_pos, ee_quat=ee_quat_b)
-                joint_pos_des = arm_ik.compute(robot)
+                # DIRECT WAVE MODE - bypass IK entirely for reliable motion
+                if args_cli.target_mode == "direct_wave":
+                    # Simple sinusoidal joint motion
+                    wave = math.sin(2 * math.pi * 0.5 * sim_time)  # 0.5 Hz
 
-                # CRITICAL FIX: Convert IK output to action space
-                # Isaac Lab uses: robot_joint = default + action * scale
-                # So: action = (desired - default) / scale
-                ACTION_SCALE = 0.5  # G1 environment action scale (from config)
-                default_arm_pos = torch.tensor(
-                    G1_ARM_DEFAULT_POS[args_cli.arm],
-                    device=env.device
-                ).unsqueeze(0).expand(env.num_envs, -1)
+                    # Joint indices for right arm:
+                    # [6] shoulder_pitch, [10] shoulder_roll, [14] shoulder_yaw
+                    # [18] elbow_pitch, [22] elbow_roll
 
-                # Convert desired position to action offset
-                arm_action = (joint_pos_des - default_arm_pos) / ACTION_SCALE
+                    ACTION_SCALE = 0.5
 
-                # Apply to actions (these are now properly scaled offsets)
-                for i, joint_idx in enumerate(arm_ik.arm_joint_ids):
-                    actions[:, joint_idx] = arm_action[:, i]
+                    # Raise arm forward and wave
+                    shoulder_pitch_offset = -0.5 + wave * 0.3  # Raise arm, oscillate
+                    elbow_pitch_offset = -0.4 + wave * 0.2  # Bend elbow, oscillate
+
+                    # Convert to action space
+                    actions[:, arm_ik.arm_joint_ids[0]] = shoulder_pitch_offset / ACTION_SCALE  # shoulder pitch
+                    actions[:, arm_ik.arm_joint_ids[3]] = elbow_pitch_offset / ACTION_SCALE  # elbow pitch
+
+                    # Debug every 50 steps
+                    if step_count % 50 == 1:
+                        print(f"\n[DIRECT WAVE] Step {step_count}")
+                        print(f"  Wave value: {wave:.3f}")
+                        print(f"  Shoulder pitch offset: {shoulder_pitch_offset:.3f}")
+                        print(f"  Elbow pitch offset: {elbow_pitch_offset:.3f}")
+                        print(f"  Actions[shoulder]: {actions[0, arm_ik.arm_joint_ids[0]]:.3f}")
+                        print(f"  Actions[elbow]: {actions[0, arm_ik.arm_joint_ids[3]]:.3f}")
+                else:
+                    # IK-based control
+                    ee_quat_w = robot.data.body_state_w[:, arm_ik.ee_body_idx, 3:7]
+                    root_quat_w = robot.data.root_state_w[:, 3:7]
+                    ee_quat_b = ee_quat_w  # Simplified
+
+                    arm_ik.set_target(target_pos, ee_quat=ee_quat_b)
+                    joint_pos_des = arm_ik.compute(robot)
+
+                    # Convert IK output to action space
+                    ACTION_SCALE = 0.5
+                    default_arm_pos = torch.tensor(
+                        G1_ARM_DEFAULT_POS[args_cli.arm],
+                        device=env.device
+                    ).unsqueeze(0).expand(env.num_envs, -1)
+
+                    arm_action = (joint_pos_des - default_arm_pos) / ACTION_SCALE
+
+                    for i, joint_idx in enumerate(arm_ik.arm_joint_ids):
+                        actions[:, joint_idx] = arm_action[:, i]
 
             # Step
             obs_dict, rewards, terminated, truncated, info = env.step(actions)
