@@ -1,15 +1,10 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# G1 IK Debug with Marker Prims (more reliable than debug draw)
+# G1 IK Debug with Marker Prims (Isaac Sim 5.x compatible)
 
 """
 G1 IK Debug with Visual Marker Prims
 
-Uses USD sphere prims instead of debug draw interface for more reliable visualization.
-
-Features:
-- Blue sphere: Target position
-- Green sphere: Current EE position
-- Visual feedback works reliably
+Uses USD sphere prims for visualization (more reliable than debug draw).
 
 Usage:
     cd C:\IsaacLab
@@ -39,11 +34,11 @@ import os
 from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.controllers.differential_ik import DifferentialIKController
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
-from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.utils.math import subtract_frame_transforms, combine_frame_transforms
 
-# For creating visual markers
-import omni.isaac.core.utils.prims as prim_utils
-from pxr import UsdGeom, Gf
+# For creating visual markers - Isaac Sim 5.x API
+from pxr import UsdGeom, Gf, Sdf
+import omni.usd
 
 print("\n" + "=" * 70)
 print("  G1 IK Debug with Marker Prims")
@@ -53,62 +48,58 @@ print("=" * 70)
 class MarkerVisualization:
     """Visual markers using USD prims instead of debug draw."""
 
-    def __init__(self, stage, num_envs: int):
-        self.stage = stage
+    def __init__(self, num_envs: int):
         self.num_envs = num_envs
-        self.target_prims = []
-        self.ee_prims = []
+        self.stage = omni.usd.get_context().get_stage()
+        self.target_paths = []
+        self.ee_paths = []
+
+        # Create marker parent
+        parent_path = "/World/Markers"
+        if not self.stage.GetPrimAtPath(parent_path):
+            UsdGeom.Xform.Define(self.stage, parent_path)
 
         # Create marker prims for each environment
         for i in range(num_envs):
             # Target marker (blue)
             target_path = f"/World/Markers/target_{i}"
-            target_prim = self._create_sphere(target_path, radius=0.03, color=(0.2, 0.4, 1.0))
-            self.target_prims.append(target_prim)
+            self._create_sphere(target_path, radius=0.03, color=(0.2, 0.4, 1.0))
+            self.target_paths.append(target_path)
 
             # EE marker (green)
             ee_path = f"/World/Markers/ee_{i}"
-            ee_prim = self._create_sphere(ee_path, radius=0.025, color=(0.2, 1.0, 0.4))
-            self.ee_prims.append(ee_prim)
+            self._create_sphere(ee_path, radius=0.025, color=(0.2, 1.0, 0.4))
+            self.ee_paths.append(ee_path)
 
         print(f"[MARKERS] Created {num_envs * 2} visual markers")
 
-    def _create_sphere(self, path: str, radius: float, color: tuple) -> UsdGeom.Sphere:
+    def _create_sphere(self, path: str, radius: float, color: tuple):
         """Create a sphere prim at the given path."""
-        # Create parent xform if needed
-        parent_path = "/World/Markers"
-        if not self.stage.GetPrimAtPath(parent_path):
-            UsdGeom.Xform.Define(self.stage, parent_path)
-
-        # Create sphere
         sphere = UsdGeom.Sphere.Define(self.stage, path)
         sphere.GetRadiusAttr().Set(radius)
-
-        # Set color
         sphere.GetDisplayColorAttr().Set([Gf.Vec3f(*color)])
-
-        # Make it non-physical (visual only)
-        prim = sphere.GetPrim()
-
-        return sphere
 
     def update_target(self, env_idx: int, pos_w: torch.Tensor):
         """Update target marker position (world frame)."""
-        if env_idx < len(self.target_prims):
+        if env_idx < len(self.target_paths):
             pos = pos_w.cpu().numpy()
-            xform = UsdGeom.Xformable(self.target_prims[env_idx])
-            xform.ClearXformOpOrder()
-            translate_op = xform.AddTranslateOp()
-            translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+            prim = self.stage.GetPrimAtPath(self.target_paths[env_idx])
+            if prim:
+                xformable = UsdGeom.Xformable(prim)
+                xformable.ClearXformOpOrder()
+                translate_op = xformable.AddTranslateOp()
+                translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
 
     def update_ee(self, env_idx: int, pos_w: torch.Tensor):
         """Update EE marker position (world frame)."""
-        if env_idx < len(self.ee_prims):
+        if env_idx < len(self.ee_paths):
             pos = pos_w.cpu().numpy()
-            xform = UsdGeom.Xformable(self.ee_prims[env_idx])
-            xform.ClearXformOpOrder()
-            translate_op = xform.AddTranslateOp()
-            translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+            prim = self.stage.GetPrimAtPath(self.ee_paths[env_idx])
+            if prim:
+                xformable = UsdGeom.Xformable(prim)
+                xformable.ClearXformOpOrder()
+                translate_op = xformable.AddTranslateOp()
+                translate_op.Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
 
     def update_all(self, target_positions_w: torch.Tensor, ee_positions_w: torch.Tensor):
         """Update all markers."""
@@ -204,8 +195,7 @@ def main():
     print(f"[IK] Joint indices: {arm_joint_ids}")
 
     # Create marker visualization
-    stage = simulation_app.context.get_stage()
-    markers = MarkerVisualization(stage, num_envs)
+    markers = MarkerVisualization(num_envs)
 
     # Get initial EE position
     env.reset()
@@ -313,14 +303,14 @@ def main():
         # Step
         obs_dict, reward, terminated, truncated, info = env.step(actions)
 
-        # Update markers (world frame)
         # Convert target to world frame for visualization
-        from isaaclab.utils.math import combine_frame_transforms
+        identity_quat = torch.tensor([[1, 0, 0, 0]], device=device, dtype=torch.float32).expand(num_envs, -1)
         target_pos_w, _ = combine_frame_transforms(
             base_pos_w, base_quat_w,
-            target_pos_b, torch.tensor([[1, 0, 0, 0]], device=device).expand(num_envs, -1)
+            target_pos_b, identity_quat
         )
 
+        # Update markers
         markers.update_all(target_pos_w, ee_pos_w)
 
         # Compute error
@@ -336,7 +326,6 @@ def main():
 
         # Reset if needed
         if terminated.any() or truncated.any():
-            reset_ids = (terminated | truncated).nonzero(as_tuple=False).squeeze(-1)
             obs_dict, _ = env.reset()
 
     env.close()
