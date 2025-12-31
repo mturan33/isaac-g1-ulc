@@ -1,10 +1,10 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# Test Differential IK Locomanipulation Environment
+# Test Differential IK Locomanipulation Environment with Locomotion Policy
 
 """
-Test script for G1 Locomanipulation with Differential IK (no Pink dependency)
+Test script for G1 Locomanipulation with Differential IK + Active Locomotion Policy
 
-Robot ayakta durur - current EE pose'u korur, lower body sıfır velocity.
+Robot ayakta durur - Locomotion policy aktif, upper body current pose'u korur.
 
 Usage:
     cd C:\IsaacLab
@@ -14,7 +14,7 @@ Usage:
 import argparse
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="Test Differential IK Locomanipulation")
+parser = argparse.ArgumentParser(description="Test Differential IK Locomanipulation with Locomotion Policy")
 parser.add_argument("--num_envs", type=int, default=1)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -29,19 +29,19 @@ from isaaclab.envs import ManagerBasedRLEnv
 
 print("\n" + "=" * 70)
 print("  Testing G1 Locomanipulation with Differential IK")
-print("  Robot will STAND STILL (holding current pose)")
+print("  + ACTIVE LOCOMOTION POLICY")
 print("=" * 70 + "\n")
 
 
 def main():
     try:
-        # CORRECT IMPORT PATH for isaaclab_tasks package
+        # Import environment config
         from isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g1_diffik_env_cfg import (
             LocomanipulationG1DiffIKEnvCfg
         )
 
         print("[INFO] ✓ Import successful!")
-        print("[INFO] Creating environment with Differential IK...")
+        print("[INFO] Creating environment with Differential IK + Locomotion Policy...")
 
         env_cfg = LocomanipulationG1DiffIKEnvCfg()
         env_cfg.scene.num_envs = args_cli.num_envs
@@ -76,12 +76,30 @@ def main():
         print(f"  - Left EE pos:  {init_left_pos[0].cpu().numpy()}")
         print(f"  - Right EE pos: {init_right_pos[0].cpu().numpy()}")
 
+        # Check if locomotion policy is available
+        # The environment loads it automatically - check action manager
+        action_manager = env.action_manager
+        print(f"\n[INFO] Action terms:")
+        for term_name, term in action_manager._terms.items():
+            print(f"  - {term_name}: {type(term).__name__}")
+
+        # Check if lower_body_policy observation is available
+        has_loco_obs = "lower_body_policy" in obs_dict
+        print(f"\n[INFO] Locomotion policy observation available: {has_loco_obs}")
+        if has_loco_obs:
+            loco_obs_shape = obs_dict["lower_body_policy"].shape
+            print(f"  - Shape: {loco_obs_shape}")
+
         # Run simulation
         print("\n[INFO] Running simulation for 1000 steps...")
-        print("  Robot should stand still, holding arms in place.")
+        print("  - Upper body: Holding current EE poses")
+        print("  - Lower body: LOCOMOTION POLICY ACTIVE (zero velocity command)")
         print("  Press Ctrl+C to stop.\n")
 
         step_count = 0
+
+        # Previous locomotion actions for observation (initialized to zeros)
+        prev_loco_actions = torch.zeros(args_cli.num_envs, 12, device=env.device)
 
         while simulation_app.is_running() and step_count < 1000:
             # Get current EE poses from robot
@@ -90,7 +108,7 @@ def main():
             current_right_pos = robot.data.body_pos_w[:, right_ee_idx]
             current_right_quat = robot.data.body_quat_w[:, right_ee_idx]
 
-            # Create actions - HOLD CURRENT POSE
+            # Create actions
             # Format: [left_ee_pos(3), left_ee_quat(4), right_ee_pos(3), right_ee_quat(4), hands(14), loco(4)] = 32
             actions = torch.zeros(args_cli.num_envs, action_dim, device=env.device)
 
@@ -101,8 +119,13 @@ def main():
             actions[:, 10:14] = current_right_quat  # Right EE quaternion (wxyz)
             actions[:, 14:28] = 0.0  # Hands - neutral
 
-            # Lower body - ZERO velocity (stand still)
-            actions[:, 28:32] = 0.0
+            # Lower body - ZERO velocity command for locomotion policy
+            # The LocomotionPolicyAction term expects velocity commands: [vx, vy, wz, height_offset]
+            # Zero command = stand still
+            actions[:, 28] = 0.0  # vx (forward velocity)
+            actions[:, 29] = 0.0  # vy (lateral velocity)
+            actions[:, 30] = 0.0  # wz (angular velocity)
+            actions[:, 31] = 0.0  # height offset
 
             # Step environment
             obs_dict, reward, terminated, truncated, info = env.step(actions)
@@ -111,7 +134,9 @@ def main():
             # Log every 100 steps
             if step_count % 100 == 0:
                 root_height = robot.data.root_pos_w[:, 2].mean().item()
-                print(f"[Step {step_count:4d}] Height: {root_height:.3f}m | Reward: {reward.mean().item():.4f}")
+                root_vel = robot.data.root_lin_vel_w[:, :2].norm(dim=-1).mean().item()
+                print(
+                    f"[Step {step_count:4d}] Height: {root_height:.3f}m | Velocity: {root_vel:.3f}m/s | Reward: {reward.mean().item():.4f}")
 
             # Reset if terminated
             if terminated.any() or truncated.any():
@@ -120,6 +145,7 @@ def main():
 
         print("\n" + "=" * 70)
         print("  ✓ Test completed!")
+        print("  Locomotion policy was active throughout the test.")
         print("=" * 70)
         env.close()
 
