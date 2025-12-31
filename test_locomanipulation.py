@@ -26,10 +26,8 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import isaaclab_tasks  # noqa: F401
 
-# IMPORTANT: Explicit import to trigger gym registration
-from isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g1_diffik_env_cfg import (
-    G1PickPlaceLocomanipulationDiffIKEnvCfg,
-)
+# Trigger gym registration with wildcard import
+from isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g1_diffik_env_cfg import *
 
 
 def main():
