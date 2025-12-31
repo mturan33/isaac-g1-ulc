@@ -1,15 +1,9 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# Test Differential IK Locomanipulation - V3 Fixed Wave
+# Test Differential IK Locomanipulation - V4 Fixed Wave
 
 """
 Test script for G1 Locomanipulation with Differential IK + Locomotion Policy
-V3: Fixed wave motion with achievable IK targets
-
-Modes:
-  - stand:     Robot stands still
-  - walk:      Robot walks forward
-  - wave:      Robot waves hand while standing
-  - locomanip: Robot walks while waving hand (FULL LOCOMANIPULATION!)
+V4: Fixed sampling artifact - wave actually works now!
 
 Usage:
     cd C:\IsaacLab
@@ -26,7 +20,8 @@ parser.add_argument("--mode", type=str, default="locomanip",
                     choices=["stand", "walk", "wave", "locomanip"],
                     help="Control mode: stand, walk, wave, or locomanip (walk+wave)")
 parser.add_argument("--walk_speed", type=float, default=0.3, help="Forward walking speed (m/s)")
-parser.add_argument("--wave_freq", type=float, default=1.0, help="Wave frequency (Hz)")
+parser.add_argument("--wave_freq", type=float, default=0.5,
+                    help="Wave frequency (Hz) - use non-integer to avoid sampling artifact")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -45,7 +40,7 @@ MODE_DESCRIPTIONS = {
 }
 
 print("\n" + "=" * 70)
-print("  G1 Locomanipulation Test - V3 (Fixed Wave)")
+print("  G1 Locomanipulation Test - V4 (Fixed Wave)")
 print(f"  Mode: {args_cli.mode.upper()}")
 print(f"  Description: {MODE_DESCRIPTIONS[args_cli.mode]}")
 print("=" * 70 + "\n")
@@ -90,14 +85,11 @@ def main():
 
         print(f"\n[INFO] Initial configuration:")
         print(f"  - Base pos: {init_base_pos[0].cpu().numpy()}")
-        print(f"  - Left EE offset: {init_left_offset[0].cpu().numpy()}")
-        print(f"  - Right EE offset: {init_right_offset[0].cpu().numpy()}")
-        print(f"  - Right EE world pos: {init_right_pos[0].cpu().numpy()}")
+        print(f"  - Right EE offset from base: {init_right_offset[0].cpu().numpy()}")
 
-        # SMALLER, ACHIEVABLE wave parameters
-        # Instead of raising hand high, move it FORWARD and back
-        wave_forward_amp = 0.15  # Move hand 15cm forward/back (X axis)
-        wave_side_amp = 0.10  # Move hand 10cm left/right (Y axis)
+        # Wave parameters - LARGER and SLOWER for visibility
+        wave_forward_amp = 0.20  # 20cm forward/back
+        wave_side_amp = 0.15  # 15cm left/right
 
         do_walk = args_cli.mode in ["walk", "locomanip"]
         do_wave = args_cli.mode in ["wave", "locomanip"]
@@ -105,7 +97,16 @@ def main():
         print(f"\n[INFO] Control settings:")
         print(f"  - Walking: {'ON' if do_walk else 'OFF'}" + (f" (vx={args_cli.walk_speed} m/s)" if do_walk else ""))
         print(f"  - Waving:  {'ON' if do_wave else 'OFF'}" + (
-            f" (freq={args_cli.wave_freq}Hz, fwd={wave_forward_amp}m, side={wave_side_amp}m)" if do_wave else ""))
+            f" (freq={args_cli.wave_freq}Hz, fwd_amp={wave_forward_amp}m, side_amp={wave_side_amp}m)" if do_wave else ""))
+
+        if do_wave:
+            print(f"\n[INFO] Wave motion preview (first 2 seconds):")
+            for i in range(0, 100, 10):
+                t = i * 0.02
+                phase = 2 * math.pi * args_cli.wave_freq * t
+                fwd = wave_forward_amp * math.sin(phase)
+                side = wave_side_amp * math.sin(phase)
+                print(f"    Step {i:3d} (t={t:.2f}s): fwd={fwd:+.3f}m, side={side:+.3f}m")
 
         print(f"\n[INFO] Running simulation for 2000 steps (~40 seconds)...")
         print("  Press Ctrl+C to stop.\n")
@@ -128,31 +129,20 @@ def main():
             actions[:, 0:3] = target_left_pos
             actions[:, 3:7] = init_left_quat
 
-            if do_wave:
-                # Right arm: WAVE MOTION
-                # Simple forward-back + side-to-side motion
-                wave_phase = 2 * math.pi * args_cli.wave_freq * t
+            # Calculate wave offsets
+            wave_phase = 2 * math.pi * args_cli.wave_freq * t
 
-                # Offset from initial position
-                forward_offset = wave_forward_amp * math.sin(wave_phase)  # X: forward/back
-                side_offset = wave_side_amp * math.sin(wave_phase * 2)  # Y: side (2x freq)
+            if do_wave:
+                forward_offset = wave_forward_amp * math.sin(wave_phase)
+                side_offset = wave_side_amp * math.sin(wave_phase)
 
                 # Target = base + initial_offset + wave_motion
                 target_right_pos = current_base_pos + init_right_offset.clone()
-                target_right_pos[:, 0] += forward_offset  # Forward/back
-                target_right_pos[:, 1] += side_offset  # Side to side
-                # Keep Z the same (no raising)
+                target_right_pos[:, 0] += forward_offset  # X: Forward/back
+                target_right_pos[:, 1] += side_offset  # Y: Side to side
 
                 actions[:, 7:10] = target_right_pos
                 actions[:, 10:14] = init_right_quat
-
-                # Debug: print target vs actual every 50 steps
-                if step_count % 50 == 0 and step_count < 300:
-                    actual_right_pos = robot.data.body_pos_w[:, right_ee_idx]
-                    print(
-                        f"  [Debug] Step {step_count}: Target X offset={forward_offset:.3f}, Y offset={side_offset:.3f}")
-                    print(f"           Target pos: {target_right_pos[0].cpu().numpy()}")
-                    print(f"           Actual pos: {actual_right_pos[0].cpu().numpy()}")
             else:
                 target_right_pos = current_base_pos + init_right_offset
                 actions[:, 7:10] = target_right_pos
@@ -173,26 +163,34 @@ def main():
             obs_dict, reward, terminated, truncated, info = env.step(actions)
             step_count += 1
 
-            # Log every 100 steps (not 200, to see wave motion better)
+            # Debug: Print actual wave values every 25 steps (not multiples of period)
+            if step_count % 25 == 0 and step_count <= 200:
+                actual_right_pos = robot.data.body_pos_w[:, right_ee_idx]
+                expected_offset_x = init_right_offset[0, 0].item()
+                expected_offset_y = init_right_offset[0, 1].item()
+                actual_offset_x = (actual_right_pos[0, 0] - current_base_pos[0, 0]).item()
+                actual_offset_y = (actual_right_pos[0, 1] - current_base_pos[0, 1]).item()
+
+                if do_wave:
+                    print(f"  [Step {step_count:3d}] Wave: fwd={forward_offset:+.3f}, side={side_offset:+.3f}")
+                    print(
+                        f"           Target offset: X={expected_offset_x + forward_offset:.3f}, Y={expected_offset_y + side_offset:.3f}")
+                    print(f"           Actual offset: X={actual_offset_x:.3f}, Y={actual_offset_y:.3f}")
+
+            # Log every 100 steps
             if step_count % 100 == 0:
                 root_height = robot.data.root_pos_w[:, 2].mean().item()
                 root_vel = robot.data.root_lin_vel_w[:, 0].mean().item()
                 distance = (robot.data.root_pos_w[:, :2] - start_pos).norm(dim=-1).mean().item()
-
-                actual_right_pos = robot.data.body_pos_w[:, right_ee_idx]
-                actual_x = actual_right_pos[:, 0].mean().item()
-                actual_y = actual_right_pos[:, 1].mean().item()
 
                 status = []
                 if do_walk:
                     status.append(f"Vel: {root_vel:.2f}m/s")
                     status.append(f"Dist: {distance:.2f}m")
                 if do_wave:
-                    wave_phase = 2 * math.pi * args_cli.wave_freq * t
-                    fwd = math.sin(wave_phase)
-                    side = math.sin(wave_phase * 2)
-                    status.append(f"Wave: fwd={fwd:.2f} side={side:.2f}")
-                    status.append(f"HandXY: ({actual_x:.2f}, {actual_y:.2f})")
+                    fwd = wave_forward_amp * math.sin(wave_phase)
+                    side = wave_side_amp * math.sin(wave_phase)
+                    status.append(f"Wave: fwd={fwd:+.2f} side={side:+.2f}")
 
                 status_str = " | ".join(status) if status else "Holding"
                 print(f"[Step {step_count:4d}] Height: {root_height:.3f}m | {status_str}")
