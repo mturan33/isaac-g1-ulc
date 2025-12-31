@@ -1,9 +1,12 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# Test Differential IK Locomanipulation - V4 Fixed Wave
+# Test Differential IK Locomanipulation - V5 Tiny Wave
 
 """
 Test script for G1 Locomanipulation with Differential IK + Locomotion Policy
-V4: Fixed sampling artifact - wave actually works now!
+V5: TINY wave motion that DiffIK can actually track
+
+Problem: DiffIK has max_joint_delta limit, can't make big movements per step
+Solution: Use MUCH smaller amplitudes (5cm instead of 20cm)
 
 Usage:
     cd C:\IsaacLab
@@ -20,8 +23,7 @@ parser.add_argument("--mode", type=str, default="locomanip",
                     choices=["stand", "walk", "wave", "locomanip"],
                     help="Control mode: stand, walk, wave, or locomanip (walk+wave)")
 parser.add_argument("--walk_speed", type=float, default=0.3, help="Forward walking speed (m/s)")
-parser.add_argument("--wave_freq", type=float, default=0.5,
-                    help="Wave frequency (Hz) - use non-integer to avoid sampling artifact")
+parser.add_argument("--wave_freq", type=float, default=0.3, help="Wave frequency (Hz) - SLOW!")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -40,7 +42,7 @@ MODE_DESCRIPTIONS = {
 }
 
 print("\n" + "=" * 70)
-print("  G1 Locomanipulation Test - V4 (Fixed Wave)")
+print("  G1 Locomanipulation Test - V5 (Tiny Wave for DiffIK)")
 print(f"  Mode: {args_cli.mode.upper()}")
 print(f"  Description: {MODE_DESCRIPTIONS[args_cli.mode]}")
 print("=" * 70 + "\n")
@@ -87,9 +89,8 @@ def main():
         print(f"  - Base pos: {init_base_pos[0].cpu().numpy()}")
         print(f"  - Right EE offset from base: {init_right_offset[0].cpu().numpy()}")
 
-        # Wave parameters - LARGER and SLOWER for visibility
-        wave_forward_amp = 0.20  # 20cm forward/back
-        wave_side_amp = 0.15  # 15cm left/right
+        # TINY wave parameters - DiffIK can track these!
+        wave_amp = 0.05  # Only 5cm! DiffIK can handle this
 
         do_walk = args_cli.mode in ["walk", "locomanip"]
         do_wave = args_cli.mode in ["wave", "locomanip"]
@@ -97,16 +98,7 @@ def main():
         print(f"\n[INFO] Control settings:")
         print(f"  - Walking: {'ON' if do_walk else 'OFF'}" + (f" (vx={args_cli.walk_speed} m/s)" if do_walk else ""))
         print(f"  - Waving:  {'ON' if do_wave else 'OFF'}" + (
-            f" (freq={args_cli.wave_freq}Hz, fwd_amp={wave_forward_amp}m, side_amp={wave_side_amp}m)" if do_wave else ""))
-
-        if do_wave:
-            print(f"\n[INFO] Wave motion preview (first 2 seconds):")
-            for i in range(0, 100, 10):
-                t = i * 0.02
-                phase = 2 * math.pi * args_cli.wave_freq * t
-                fwd = wave_forward_amp * math.sin(phase)
-                side = wave_side_amp * math.sin(phase)
-                print(f"    Step {i:3d} (t={t:.2f}s): fwd={fwd:+.3f}m, side={side:+.3f}m")
+            f" (freq={args_cli.wave_freq}Hz, amp={wave_amp}m - TINY for DiffIK!)" if do_wave else ""))
 
         print(f"\n[INFO] Running simulation for 2000 steps (~40 seconds)...")
         print("  Press Ctrl+C to stop.\n")
@@ -115,6 +107,10 @@ def main():
         max_steps = 2000
 
         start_pos = robot.data.root_pos_w[:, :2].clone()
+
+        # Track IK performance
+        total_error = 0.0
+        error_count = 0
 
         while simulation_app.is_running() and step_count < max_steps:
             t = step_count * 0.02
@@ -129,17 +125,16 @@ def main():
             actions[:, 0:3] = target_left_pos
             actions[:, 3:7] = init_left_quat
 
-            # Calculate wave offsets
+            # Calculate wave offset
             wave_phase = 2 * math.pi * args_cli.wave_freq * t
 
             if do_wave:
-                forward_offset = wave_forward_amp * math.sin(wave_phase)
-                side_offset = wave_side_amp * math.sin(wave_phase)
+                # TINY sinusoidal motion in Y direction (side to side)
+                side_offset = wave_amp * math.sin(wave_phase)
 
-                # Target = base + initial_offset + wave_motion
+                # Target = base + initial_offset + tiny wave
                 target_right_pos = current_base_pos + init_right_offset.clone()
-                target_right_pos[:, 0] += forward_offset  # X: Forward/back
-                target_right_pos[:, 1] += side_offset  # Y: Side to side
+                target_right_pos[:, 1] += side_offset  # Y: side to side only
 
                 actions[:, 7:10] = target_right_pos
                 actions[:, 10:14] = init_right_quat
@@ -163,19 +158,26 @@ def main():
             obs_dict, reward, terminated, truncated, info = env.step(actions)
             step_count += 1
 
-            # Debug: Print actual wave values every 25 steps (not multiples of period)
-            if step_count % 25 == 0 and step_count <= 200:
+            # Measure IK tracking error
+            if do_wave:
                 actual_right_pos = robot.data.body_pos_w[:, right_ee_idx]
-                expected_offset_x = init_right_offset[0, 0].item()
-                expected_offset_y = init_right_offset[0, 1].item()
-                actual_offset_x = (actual_right_pos[0, 0] - current_base_pos[0, 0]).item()
-                actual_offset_y = (actual_right_pos[0, 1] - current_base_pos[0, 1]).item()
+                actual_offset_y = (actual_right_pos[:, 1] - current_base_pos[:, 1]).item()
+                target_offset_y = init_right_offset[0, 1].item() + side_offset
+                error = abs(actual_offset_y - target_offset_y)
+                total_error += error
+                error_count += 1
 
-                if do_wave:
-                    print(f"  [Step {step_count:3d}] Wave: fwd={forward_offset:+.3f}, side={side_offset:+.3f}")
-                    print(
-                        f"           Target offset: X={expected_offset_x + forward_offset:.3f}, Y={expected_offset_y + side_offset:.3f}")
-                    print(f"           Actual offset: X={actual_offset_x:.3f}, Y={actual_offset_y:.3f}")
+            # Debug every 25 steps for first 200
+            if step_count % 25 == 0 and step_count <= 200 and do_wave:
+                actual_right_pos = robot.data.body_pos_w[:, right_ee_idx]
+                actual_offset_y = (actual_right_pos[:, 1] - current_base_pos[:, 1]).item()
+                target_offset_y = init_right_offset[0, 1].item() + side_offset
+                error = abs(actual_offset_y - target_offset_y)
+
+                print(f"  [Step {step_count:3d}] Wave sin={math.sin(wave_phase):+.2f} | "
+                      f"Target Y offset={target_offset_y:.3f} | "
+                      f"Actual Y offset={actual_offset_y:.3f} | "
+                      f"Error={error:.4f}m")
 
             # Log every 100 steps
             if step_count % 100 == 0:
@@ -188,9 +190,9 @@ def main():
                     status.append(f"Vel: {root_vel:.2f}m/s")
                     status.append(f"Dist: {distance:.2f}m")
                 if do_wave:
-                    fwd = wave_forward_amp * math.sin(wave_phase)
-                    side = wave_side_amp * math.sin(wave_phase)
-                    status.append(f"Wave: fwd={fwd:+.2f} side={side:+.2f}")
+                    avg_error = total_error / max(error_count, 1)
+                    status.append(f"Wave: sin={math.sin(wave_phase):+.2f}")
+                    status.append(f"AvgErr: {avg_error:.4f}m")
 
                 status_str = " | ".join(status) if status else "Holding"
                 print(f"[Step {step_count:4d}] Height: {root_height:.3f}m | {status_str}")
@@ -199,10 +201,15 @@ def main():
                 distance = (robot.data.root_pos_w[:, :2] - start_pos).norm(dim=-1).mean().item()
                 print(f"\n[!] Episode ended at step {step_count}")
                 print(f"    Total distance traveled: {distance:.2f}m")
+                if do_wave:
+                    avg_error = total_error / max(error_count, 1)
+                    print(f"    Average IK tracking error: {avg_error:.4f}m")
                 print("    Resetting...")
                 obs_dict, _ = env.reset()
                 start_pos = robot.data.root_pos_w[:, :2].clone()
                 init_base_pos = robot.data.root_pos_w[:, :3].clone()
+                total_error = 0.0
+                error_count = 0
 
         distance = (robot.data.root_pos_w[:, :2] - start_pos).norm(dim=-1).mean().item()
 
@@ -211,6 +218,15 @@ def main():
         print(f"  Mode: {args_cli.mode.upper()}")
         if do_walk:
             print(f"  Distance traveled: {distance:.2f}m")
+        if do_wave:
+            avg_error = total_error / max(error_count, 1)
+            print(f"  Average IK tracking error: {avg_error:.4f}m")
+            if avg_error < 0.01:
+                print(f"  ✓ IK tracking GOOD!")
+            elif avg_error < 0.03:
+                print(f"  ~ IK tracking OK")
+            else:
+                print(f"  ✗ IK tracking POOR - try smaller amplitude")
         print("=" * 70)
         env.close()
 
