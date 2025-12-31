@@ -1,86 +1,88 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# SPDX-License-Identifier: BSD-3-Clause
+# Test Differential IK Locomanipulation Environment
 
-"""Test script for G1 Locomanipulation with Differential IK.
+"""
+Test script for G1 Locomanipulation with Differential IK (no Pink dependency)
 
 Robot ayakta durur - current EE pose'u korur, lower body sıfır velocity.
+
+Usage:
+    cd C:\IsaacLab
+    .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_locomanipulation.py --num_envs 1
 """
 
-from __future__ import annotations
-
 import argparse
-import torch
-
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="Test G1 Locomanipulation DiffIK - Standing")
-parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
-
+parser = argparse.ArgumentParser(description="Test Differential IK Locomanipulation")
+parser.add_argument("--num_envs", type=int, default=1)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-# Post-launch imports
-import gymnasium as gym
-import isaaclab_tasks  # noqa: F401
+import torch
 
-# Trigger gym registration with wildcard import
-from isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g1_diffik_env_cfg import *
+# Import environment components
+from isaaclab.envs import ManagerBasedRLEnv
+
+print("\n" + "=" * 70)
+print("  Testing G1 Locomanipulation with Differential IK")
+print("  Robot will STAND STILL (holding current pose)")
+print("=" * 70 + "\n")
 
 
 def main():
-    print("\n" + "=" * 70)
-    print("  Testing G1 Locomanipulation with Differential IK")
-    print("  Robot will STAND STILL (holding current pose)")
-    print("=" * 70)
-
-    # Create environment
-    env = gym.make(
-        "Isaac-PickPlace-Locomanipulation-G1-DiffIK-v0",
-        num_envs=args_cli.num_envs,
-    )
-
-    device = env.unwrapped.device
-    num_envs = env.unwrapped.num_envs
-
-    print(f"\n[INFO] Environment created!")
-    print(f"  - Device: {device}")
-    print(f"  - Num envs: {num_envs}")
-    print(f"  - Action dim: {env.action_space.shape[-1]}")
-
-    # Reset
-    obs_dict, info = env.reset()
-    print(f"\n[INFO] Environment reset, observation keys: {list(obs_dict.keys())}")
-
-    # Get robot articulation
-    robot = env.unwrapped.scene["robot"]
-
-    # EE body indices (from DiffIK init log)
-    left_ee_idx = 28  # left_wrist_yaw_link
-    right_ee_idx = 29  # right_wrist_yaw_link
-
-    # Get initial EE poses
-    init_left_pos = robot.data.body_pos_w[:, left_ee_idx].clone()
-    init_left_quat = robot.data.body_quat_w[:, left_ee_idx].clone()
-    init_right_pos = robot.data.body_pos_w[:, right_ee_idx].clone()
-    init_right_quat = robot.data.body_quat_w[:, right_ee_idx].clone()
-
-    print(f"\n[INFO] Initial EE poses:")
-    print(f"  - Left EE pos:  {init_left_pos[0].cpu().numpy()}")
-    print(f"  - Right EE pos: {init_right_pos[0].cpu().numpy()}")
-
-    # Action buffer: [left_ee(7), right_ee(7), hands(14), loco(4)] = 32
-    action = torch.zeros(num_envs, 32, device=device)
-
-    print(f"\n[INFO] Running simulation for 1000 steps...")
-    print("  Robot should stand still, holding arms in place.")
-    print("  Press Ctrl+C to stop.\n")
-
-    step_count = 0
-
     try:
+        # CORRECT IMPORT PATH for isaaclab_tasks package
+        from isaaclab_tasks.manager_based.locomanipulation.pick_place.locomanipulation_g1_diffik_env_cfg import (
+            LocomanipulationG1DiffIKEnvCfg
+        )
+
+        print("[INFO] ✓ Import successful!")
+        print("[INFO] Creating environment with Differential IK...")
+
+        env_cfg = LocomanipulationG1DiffIKEnvCfg()
+        env_cfg.scene.num_envs = args_cli.num_envs
+
+        env = ManagerBasedRLEnv(cfg=env_cfg)
+
+        print(f"[SUCCESS] ✓ Environment created!")
+        print(f"  - Observation groups: {list(env.observation_manager.group_obs_dim.keys())}")
+        print(f"  - Action dim: {env.action_manager.total_action_dim}")
+
+        # Reset
+        obs_dict, _ = env.reset()
+
+        # Get action dimension
+        action_dim = env.action_manager.total_action_dim
+        print(f"  - Total action dim: {action_dim}")
+
+        # Get robot articulation
+        robot = env.scene["robot"]
+
+        # EE body indices (from DiffIK init log)
+        left_ee_idx = 28  # left_wrist_yaw_link
+        right_ee_idx = 29  # right_wrist_yaw_link
+
+        # Get initial EE poses
+        init_left_pos = robot.data.body_pos_w[:, left_ee_idx].clone()
+        init_left_quat = robot.data.body_quat_w[:, left_ee_idx].clone()
+        init_right_pos = robot.data.body_pos_w[:, right_ee_idx].clone()
+        init_right_quat = robot.data.body_quat_w[:, right_ee_idx].clone()
+
+        print(f"\n[INFO] Initial EE poses:")
+        print(f"  - Left EE pos:  {init_left_pos[0].cpu().numpy()}")
+        print(f"  - Right EE pos: {init_right_pos[0].cpu().numpy()}")
+
+        # Run simulation
+        print("\n[INFO] Running simulation for 1000 steps...")
+        print("  Robot should stand still, holding arms in place.")
+        print("  Press Ctrl+C to stop.\n")
+
+        step_count = 0
+
         while simulation_app.is_running() and step_count < 1000:
             # Get current EE poses from robot
             current_left_pos = robot.data.body_pos_w[:, left_ee_idx]
@@ -88,16 +90,22 @@ def main():
             current_right_pos = robot.data.body_pos_w[:, right_ee_idx]
             current_right_quat = robot.data.body_quat_w[:, right_ee_idx]
 
-            # Build action - HOLD CURRENT POSE
-            action[:, 0:3] = current_left_pos  # Left EE position
-            action[:, 3:7] = current_left_quat  # Left EE quaternion
-            action[:, 7:10] = current_right_pos  # Right EE position
-            action[:, 10:14] = current_right_quat  # Right EE quaternion
-            action[:, 14:28] = 0.0  # Hands - neutral
-            action[:, 28:32] = 0.0  # Lower body - ZERO velocity
+            # Create actions - HOLD CURRENT POSE
+            # Format: [left_ee_pos(3), left_ee_quat(4), right_ee_pos(3), right_ee_quat(4), hands(14), loco(4)] = 32
+            actions = torch.zeros(args_cli.num_envs, action_dim, device=env.device)
 
-            # Step
-            obs_dict, reward, terminated, truncated, info = env.step(action)
+            # Upper body - hold current EE poses
+            actions[:, 0:3] = current_left_pos  # Left EE position
+            actions[:, 3:7] = current_left_quat  # Left EE quaternion (wxyz)
+            actions[:, 7:10] = current_right_pos  # Right EE position
+            actions[:, 10:14] = current_right_quat  # Right EE quaternion (wxyz)
+            actions[:, 14:28] = 0.0  # Hands - neutral
+
+            # Lower body - ZERO velocity (stand still)
+            actions[:, 28:32] = 0.0
+
+            # Step environment
+            obs_dict, reward, terminated, truncated, info = env.step(actions)
             step_count += 1
 
             # Log every 100 steps
@@ -108,16 +116,22 @@ def main():
             # Reset if terminated
             if terminated.any() or truncated.any():
                 print(f"\n[!] Episode ended at step {step_count}, resetting...")
-                obs_dict, info = env.reset()
+                obs_dict, _ = env.reset()
 
-    except KeyboardInterrupt:
-        print("\n[!] Stopped by user")
+        print("\n" + "=" * 70)
+        print("  ✓ Test completed!")
+        print("=" * 70)
+        env.close()
 
-    print("\n" + "=" * 70)
-    print("  ✓ Test completed!")
-    print("=" * 70)
+    except ImportError as e:
+        print(f"[ERROR] Import error: {e}")
+        import traceback
+        traceback.print_exc()
 
-    env.close()
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
