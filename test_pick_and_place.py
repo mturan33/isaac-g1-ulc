@@ -112,8 +112,8 @@ class G1PickPlaceSceneCfg(InteractiveSceneCfg):
                 # Arms - neutral forward pose
                 "left_shoulder_pitch_joint": 0.3,
                 "right_shoulder_pitch_joint": 0.3,
-                "left_elbow_joint": 0.5,
-                "right_elbow_joint": 0.5,
+                "left_elbow_pitch_joint": 0.5,
+                "right_elbow_pitch_joint": 0.5,
             },
         ),
     )
@@ -222,18 +222,19 @@ def main():
     # NOW we can resolve robot entity (needs PhysX view)
     # Configure robot entity for IK
     # G1 right arm joints and end-effector
+    # G1 right arm joints (G1_MINIMAL_CFG has no wrist joints!)
+    # Available: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow_pitch, elbow_roll
+    # And finger joints: zero, one, two, three, four, five, six
     robot_entity_cfg = SceneEntityCfg(
         "robot",
         joint_names=[
             "right_shoulder_pitch_joint",
             "right_shoulder_roll_joint",
             "right_shoulder_yaw_joint",
-            "right_elbow_joint",
-            "right_wrist_roll_joint",
-            "right_wrist_pitch_joint",
-            "right_wrist_yaw_joint",
+            "right_elbow_pitch_joint",
+            "right_elbow_roll_joint",
         ],
-        body_names=["right_wrist_yaw_link"],  # End-effector
+        body_names=["right_zero_link"],  # End-effector (finger link as EE)
     )
     robot_entity_cfg.resolve(scene)
 
