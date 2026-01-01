@@ -1,13 +1,13 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# G1 Pick-and-Place Demo - V3
-# Uses full G1_CFG (with wrist joints) instead of G1_MINIMAL_CFG
+# G1 Pick-and-Place Demo - V3 (Fixed)
+# Uses G1_29DOF_CFG (29 DOF with wrist joints) + Original Scene
 
 """
-G1 Pick-and-Place Demo V3
-- Uses G1_CFG (full robot with wrist joints = 7-DOF arm)
-- Proper scene setup with table and objects
-- Correct robot spawn position
-- DifferentialIKController with full arm control
+G1 Pick-and-Place Demo V3 Fixed
+- Uses G1_29DOF_CFG (full robot with wrist joints = 7-DOF per arm)
+- Original scene: packing table + steering wheel
+- Added: red cube + blue cylinder for manipulation
+- Correct ground plane using AssetBaseCfg
 
 Usage:
     cd C:\IsaacLab
@@ -30,59 +30,70 @@ simulation_app = app_launcher.app
 
 # Imports after app launch
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
+from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg, RigidObject, RigidObjectCfg
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sim.spawners.shapes import ShapeCfg
+from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.math import subtract_frame_transforms
 
-# Use FULL G1_CFG (not MINIMAL) - this includes wrist joints!
-from isaaclab_assets.robots.unitree import G1_CFG
+# Use G1_29DOF_CFG (with wrist joints) - same as original environment!
+from isaaclab_assets.robots.unitree import G1_29DOF_CFG
 
 print("\n" + "=" * 70)
-print("  G1 Pick-and-Place Demo - V3")
-print("  Using FULL G1_CFG (with wrist joints) + Proper Scene")
+print("  G1 Pick-and-Place Demo - V3 (Fixed)")
+print("  Using G1_29DOF_CFG + Original Scene (Table, Steering Wheel)")
 print("=" * 70 + "\n")
 
 
 # ============================================================================
-# SCENE CONFIGURATION
+# SCENE CONFIGURATION - Same as original locomanipulation environment
 # ============================================================================
 
 @configclass
 class G1PickPlaceSceneCfg(InteractiveSceneCfg):
-    """Scene with G1 robot, table, and manipulation objects."""
+    """Scene with G1 robot, original packing table, steering wheel, and manipulation objects."""
 
-    # Ground plane
-    ground = sim_utils.GroundPlaneCfg()
+    # Ground plane - using AssetBaseCfg wrapper (FIXED!)
+    ground = AssetBaseCfg(
+        prim_path="/World/GroundPlane",
+        spawn=GroundPlaneCfg(),
+    )
 
     # Lighting
-    dome_light = sim_utils.DomeLightCfg(
-        intensity=2000.0,
-        color=(0.9, 0.9, 0.9),
+    light = AssetBaseCfg(
+        prim_path="/World/light",
+        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
 
-    # Table - positioned so robot can reach
-    table = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Table",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.8, 1.2, 0.4),  # width, depth, height
+    # Original Packing Table from locomanipulation environment
+    packing_table = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/PackingTable",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.55, -0.3], rot=[1.0, 0.0, 0.0, 0.0]),
+        spawn=UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/PackingTable/packing_table.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, 0.5, 0.4)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.5, 0.0, 0.2),  # Table center at x=0.5, z=0.2 means top at z=0.4
         ),
     )
 
-    # Target object (red cube) - on the table
-    target_object = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/TargetCube",
+    # Original Steering Wheel object
+    steering_wheel = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/SteeringWheel",
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[-0.35, 0.45, 0.6996], rot=[1, 0, 0, 0]),
+        spawn=UsdFileCfg(
+            usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/pick_place_task/pick_place_assets/steering_wheel.usd",
+            scale=(0.75, 0.75, 0.75),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+        ),
+    )
+
+    # Red cube - manipulation target (on table)
+    red_cube = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/RedCube",
         spawn=sim_utils.CuboidCfg(
             size=(0.05, 0.05, 0.05),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(),
@@ -91,12 +102,12 @@ class G1PickPlaceSceneCfg(InteractiveSceneCfg):
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.2, 0.2)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.5, 0.15, 0.45),  # On table, slightly to the right
+            pos=(0.0, 0.45, 0.75),  # On the packing table
         ),
     )
 
-    # Secondary object (blue cylinder) - for variety
-    secondary_object = RigidObjectCfg(
+    # Blue cylinder - secondary manipulation target
+    blue_cylinder = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/BlueCylinder",
         spawn=sim_utils.CylinderCfg(
             radius=0.025,
@@ -107,49 +118,13 @@ class G1PickPlaceSceneCfg(InteractiveSceneCfg):
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.3, 0.9)),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.5, -0.15, 0.45),  # On table, slightly to the left
+            pos=(0.15, 0.45, 0.75),  # Next to red cube
         ),
     )
 
-    # G1 Robot - FULL CONFIG (with wrist joints!)
-    robot: ArticulationCfg = G1_CFG.replace(
+    # G1 Robot - 29 DOF with wrist joints (same as original environment)
+    robot: ArticulationCfg = G1_29DOF_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.74),  # Standing height
-            joint_pos={
-                # Legs - standing pose
-                "left_hip_pitch_joint": -0.1,
-                "right_hip_pitch_joint": -0.1,
-                "left_hip_roll_joint": 0.0,
-                "right_hip_roll_joint": 0.0,
-                "left_hip_yaw_joint": 0.0,
-                "right_hip_yaw_joint": 0.0,
-                "left_knee_joint": 0.3,
-                "right_knee_joint": 0.3,
-                "left_ankle_pitch_joint": -0.2,
-                "right_ankle_pitch_joint": -0.2,
-                "left_ankle_roll_joint": 0.0,
-                "right_ankle_roll_joint": 0.0,
-                # Arms - ready pose (slightly forward)
-                "left_shoulder_pitch_joint": 0.3,
-                "right_shoulder_pitch_joint": 0.3,
-                "left_shoulder_roll_joint": 0.0,
-                "right_shoulder_roll_joint": 0.0,
-                "left_shoulder_yaw_joint": 0.0,
-                "right_shoulder_yaw_joint": 0.0,
-                "left_elbow_pitch_joint": 0.5,
-                "right_elbow_pitch_joint": 0.5,
-                "left_elbow_roll_joint": 0.0,
-                "right_elbow_roll_joint": 0.0,
-                # Wrist joints (FULL G1_CFG has these!)
-                "left_wrist_pitch_joint": 0.0,
-                "right_wrist_pitch_joint": 0.0,
-                "left_wrist_roll_joint": 0.0,
-                "right_wrist_roll_joint": 0.0,
-                "left_wrist_yaw_joint": 0.0,
-                "right_wrist_yaw_joint": 0.0,
-            },
-        ),
     )
 
 
@@ -165,24 +140,22 @@ class PickPlaceStateMachine:
         self.current_state = 0
         self.state_timer = 0.0
 
-        # Target positions relative to robot (robot at origin)
-        # Table top is at z=0.4, object at z=0.45
-        # Robot base is at z=0.74, so relative z = 0.45 - 0.74 = -0.29 (below base)
-        # But we need world frame positions for IK
+        # Target positions in world frame
+        # Packing table is at y=0.55, z=-0.3, so table surface is around z=0.7
+        # Red cube is at (0.0, 0.45, 0.75)
 
-        # World frame targets (robot at origin, table at x=0.5)
-        ABOVE_OBJECT = [0.45, 0.15, 0.55]  # Above red cube
-        AT_OBJECT = [0.45, 0.15, 0.47]  # At red cube level
-        LIFTED = [0.45, 0.15, 0.60]  # Lifted
-        ABOVE_DROP = [0.45, -0.15, 0.60]  # Above blue cylinder area
-        AT_DROP = [0.45, -0.15, 0.50]  # Drop position
-        HOME = [0.35, 0.0, 0.55]  # Home position
+        HOME = [0.0, 0.3, 0.8]  # Home position (in front of robot)
+        ABOVE_CUBE = [0.0, 0.42, 0.85]  # Above red cube
+        AT_CUBE = [0.0, 0.42, 0.77]  # At red cube level
+        LIFTED = [0.0, 0.42, 0.90]  # Lifted
+        ABOVE_DROP = [0.15, 0.42, 0.90]  # Above blue cylinder area
+        AT_DROP = [0.15, 0.42, 0.80]  # Drop position
 
         self.states = [
             {"name": "HOME", "pos": HOME, "grip": 0, "dur": 2.0},
-            {"name": "APPROACH", "pos": ABOVE_OBJECT, "grip": 0, "dur": 2.0},
-            {"name": "REACH", "pos": AT_OBJECT, "grip": 0, "dur": 1.5},
-            {"name": "GRASP", "pos": AT_OBJECT, "grip": 1, "dur": 1.0},
+            {"name": "APPROACH", "pos": ABOVE_CUBE, "grip": 0, "dur": 2.0},
+            {"name": "REACH", "pos": AT_CUBE, "grip": 0, "dur": 1.5},
+            {"name": "GRASP", "pos": AT_CUBE, "grip": 1, "dur": 1.0},
             {"name": "LIFT", "pos": LIFTED, "grip": 1, "dur": 1.5},
             {"name": "MOVE", "pos": ABOVE_DROP, "grip": 1, "dur": 2.0},
             {"name": "LOWER", "pos": AT_DROP, "grip": 1, "dur": 1.5},
@@ -233,7 +206,7 @@ def main():
     # Simulation settings
     sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
     sim = sim_utils.SimulationContext(sim_cfg)
-    sim.set_camera_view([1.5, 1.0, 1.2], [0.4, 0.0, 0.5])
+    sim.set_camera_view([1.5, 0.5, 1.2], [0.0, 0.4, 0.6])
 
     # Create scene
     scene_cfg = G1PickPlaceSceneCfg(num_envs=args_cli.num_envs, env_spacing=2.5)
@@ -264,47 +237,44 @@ def main():
     for i, name in enumerate(robot.body_names):
         print(f"  [{i:2d}] {name}")
 
-    # Find right arm joints (7-DOF with wrist)
-    # G1_CFG should have: shoulder_pitch, shoulder_roll, shoulder_yaw,
-    #                     elbow_pitch, elbow_roll, wrist_pitch, wrist_roll, wrist_yaw
-    arm_joint_names = []
-    arm_joint_pattern = [
+    # Find right arm joints (7-DOF with wrist for G1_29DOF_CFG)
+    arm_joint_pattern = []
+
+    # Check which joints exist
+    possible_arm_joints = [
         "right_shoulder_pitch_joint",
         "right_shoulder_roll_joint",
         "right_shoulder_yaw_joint",
         "right_elbow_pitch_joint",
         "right_elbow_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_yaw_joint",
     ]
 
-    # Check if wrist joints exist
-    wrist_joints = ["right_wrist_pitch_joint", "right_wrist_roll_joint", "right_wrist_yaw_joint"]
-    for wj in wrist_joints:
-        if wj in robot.joint_names:
-            arm_joint_pattern.append(wj)
+    for jname in possible_arm_joints:
+        if jname in robot.joint_names:
+            arm_joint_pattern.append(jname)
 
-    print(f"\n[INFO] Arm joints to use: {arm_joint_pattern}")
+    print(f"\n[INFO] Found arm joints ({len(arm_joint_pattern)}):")
+    for j in arm_joint_pattern:
+        print(f"  - {j}")
 
     # Find end-effector body
     ee_body_name = None
-    ee_candidates = ["right_wrist_yaw_link", "right_palm_link", "right_hand_link",
-                     "right_elbow_roll_link", "right_wrist_roll_link"]
+    ee_candidates = ["right_wrist_yaw_link", "right_palm_link", "right_hand_link"]
     for candidate in ee_candidates:
         if candidate in robot.body_names:
             ee_body_name = candidate
+            print(f"[INFO] Found end-effector: {ee_body_name}")
             break
 
     if ee_body_name is None:
-        # Use last body in right arm chain
+        # Fallback to last elbow link
         for name in robot.body_names:
-            if "right" in name and ("wrist" in name or "palm" in name or "hand" in name):
+            if "right" in name and "elbow" in name:
                 ee_body_name = name
-                break
-
-    if ee_body_name is None:
-        print("[WARNING] Could not find right arm end-effector, using right_elbow_roll_link")
-        ee_body_name = "right_elbow_roll_link"
-
-    print(f"[INFO] Using end-effector: {ee_body_name}")
+        print(f"[WARNING] Using fallback end-effector: {ee_body_name}")
 
     # Configure robot entity for IK
     robot_entity_cfg = SceneEntityCfg(
@@ -319,7 +289,6 @@ def main():
     ee_body_id = robot_entity_cfg.body_ids[0]
 
     print(f"\n[INFO] Right arm joint IDs: {arm_joint_ids}")
-    print(f"[INFO] Right arm joint names: {[robot.joint_names[i] for i in arm_joint_ids]}")
     print(f"[INFO] EE body ID: {ee_body_id} ({robot.body_names[ee_body_id]})")
 
     # For floating-base robot, Jacobian index equals body index
