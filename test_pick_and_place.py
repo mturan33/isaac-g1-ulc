@@ -206,6 +206,20 @@ def main():
     # Get robot
     robot: Articulation = scene["robot"]
 
+    # Create visualization markers (before reset is OK)
+    frame_marker_cfg = FRAME_MARKER_CFG.copy()
+    frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+    ee_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
+    goal_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_goal"))
+
+    # Create state machine
+    state_machine = PickPlaceStateMachine(device=sim.device)
+
+    # IMPORTANT: Reset simulation FIRST - PhysX view is only available after reset!
+    sim.reset()
+    print("[INFO] Simulation reset complete.")
+
+    # NOW we can resolve robot entity (needs PhysX view)
     # Configure robot entity for IK
     # G1 right arm joints and end-effector
     robot_entity_cfg = SceneEntityCfg(
@@ -255,18 +269,6 @@ def main():
     )
 
     print(f"[INFO] IK Controller created with method: {diff_ik_cfg.ik_method}")
-
-    # Create visualization markers
-    frame_marker_cfg = FRAME_MARKER_CFG.copy()
-    frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
-    ee_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
-    goal_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_goal"))
-
-    # Create state machine
-    state_machine = PickPlaceStateMachine(device=sim.device)
-
-    # Reset simulation
-    sim.reset()
 
     # Store initial joint positions for arm
     joint_pos_des = robot.data.joint_pos[:, arm_joint_ids].clone()
