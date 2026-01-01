@@ -1,9 +1,9 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# Test Direct Joint Control for Wave Motion - V6
+# Test Direct Physics Override - V7
 
 """
-Test script for G1 Locomanipulation with DIRECT JOINT CONTROL
-V6: Bypasses DiffIK completely - controls shoulder joint directly!
+Test script for G1 Locomanipulation with DIRECT PHYSICS OVERRIDE
+V7: Writes joint positions directly to simulation, bypassing DiffIK completely!
 
 Usage:
     cd C:\IsaacLab
@@ -14,14 +14,15 @@ import argparse
 import math
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="Test G1 Locomanipulation with Direct Joint Control")
+parser = argparse.ArgumentParser(description="Test G1 Locomanipulation with Direct Physics Override")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--mode", type=str, default="locomanip",
                     choices=["stand", "walk", "wave", "locomanip"],
                     help="Control mode: stand, walk, wave, or locomanip (walk+wave)")
 parser.add_argument("--walk_speed", type=float, default=0.3, help="Forward walking speed (m/s)")
-parser.add_argument("--wave_freq", type=float, default=0.5, help="Wave frequency (Hz)")
-parser.add_argument("--wave_amp", type=float, default=0.3, help="Wave amplitude (radians)")
+parser.add_argument("--wave_freq", type=float, default=0.7,
+                    help="Wave frequency (Hz) - non-0.5 to avoid sampling artifact")
+parser.add_argument("--wave_amp", type=float, default=0.5, help="Wave amplitude (radians) - ~30 degrees")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -35,12 +36,12 @@ from isaaclab.envs import ManagerBasedRLEnv
 MODE_DESCRIPTIONS = {
     "stand": "Standing still (zero velocity)",
     "walk": f"Walking forward at {args_cli.walk_speed} m/s",
-    "wave": "Waving right hand while standing (DIRECT JOINT CONTROL)",
+    "wave": "Waving right hand while standing (DIRECT PHYSICS OVERRIDE)",
     "locomanip": f"FULL LOCOMANIPULATION: Walking at {args_cli.walk_speed} m/s + Waving hand"
 }
 
 print("\n" + "=" * 70)
-print("  G1 Locomanipulation Test - V6 (Direct Joint Control)")
+print("  G1 Locomanipulation Test - V7 (Direct Physics Override)")
 print(f"  Mode: {args_cli.mode.upper()}")
 print(f"  Description: {MODE_DESCRIPTIONS[args_cli.mode]}")
 print("=" * 70 + "\n")
@@ -73,7 +74,7 @@ def main():
         all_joint_names = robot.data.joint_names
         print(f"\n[INFO] Total joints: {len(all_joint_names)}")
 
-        # Find right shoulder roll joint index
+        # Find wave joints
         right_shoulder_roll_idx = None
         right_shoulder_pitch_idx = None
         right_elbow_idx = None
@@ -93,14 +94,6 @@ def main():
 
         # Get default joint positions
         default_joint_pos = robot.data.default_joint_pos.clone()
-        print(f"\n[INFO] Default positions:")
-        if right_shoulder_roll_idx is not None:
-            print(
-                f"  - right_shoulder_roll: {default_joint_pos[0, right_shoulder_roll_idx]:.3f} rad ({math.degrees(default_joint_pos[0, right_shoulder_roll_idx].item()):.1f}°)")
-        if right_shoulder_pitch_idx is not None:
-            print(f"  - right_shoulder_pitch: {default_joint_pos[0, right_shoulder_pitch_idx]:.3f} rad")
-        if right_elbow_idx is not None:
-            print(f"  - right_elbow: {default_joint_pos[0, right_elbow_idx]:.3f} rad")
 
         # Get EE positions for reference
         left_ee_idx = 28
@@ -126,6 +119,14 @@ def main():
         print(f"  - Waving:  {'ON' if do_wave else 'OFF'}" + (
             f" (freq={wave_freq}Hz, amp={wave_amp}rad = {math.degrees(wave_amp):.1f}°)" if do_wave else ""))
 
+        # Get joint limits for shoulder roll
+        if right_shoulder_roll_idx is not None:
+            joint_limits = robot.data.soft_joint_pos_limits
+            roll_lower = joint_limits[0, right_shoulder_roll_idx, 0].item()
+            roll_upper = joint_limits[0, right_shoulder_roll_idx, 1].item()
+            print(
+                f"\n[INFO] Shoulder roll joint limits: [{math.degrees(roll_lower):.1f}°, {math.degrees(roll_upper):.1f}°]")
+
         print(f"\n[INFO] Running simulation for 2000 steps (~40 seconds)...")
         print("  Press Ctrl+C to stop.\n")
 
@@ -142,12 +143,10 @@ def main():
             actions = torch.zeros(num_envs, action_dim, device=device)
 
             # ===== UPPER BODY CONTROL (DiffIK input - keep EE at current position) =====
-            # Left arm: maintain position
             target_left_pos = current_base_pos + init_left_offset
             actions[:, 0:3] = target_left_pos
             actions[:, 3:7] = init_left_quat
 
-            # Right arm: maintain position (DiffIK will try to keep it here)
             target_right_pos = current_base_pos + init_right_offset
             actions[:, 7:10] = target_right_pos
             actions[:, 10:14] = init_right_quat
@@ -164,37 +163,49 @@ def main():
             else:
                 actions[:, 28:32] = 0.0
 
-            # Step the environment (this applies DiffIK + locomotion policy)
+            # Step the environment (DiffIK + locomotion policy)
             obs_dict, reward, terminated, truncated, info = env.step(actions)
 
-            # ===== DIRECT JOINT OVERRIDE FOR WAVING =====
-            # After DiffIK computes targets, we OVERRIDE the shoulder joint directly
+            # ===== DIRECT PHYSICS OVERRIDE FOR WAVING =====
+            # After env.step(), we DIRECTLY WRITE joint position to simulation
             if do_wave and right_shoulder_roll_idx is not None:
                 wave_phase = 2 * math.pi * wave_freq * t
                 wave_offset = wave_amp * math.sin(wave_phase)
 
-                # Get default and compute new target
-                default_roll = default_joint_pos[0, right_shoulder_roll_idx].item()
-                new_target = default_roll + wave_offset
+                # Get current joint positions
+                current_joint_pos = robot.data.joint_pos.clone()
 
-                # Apply directly to the robot
-                joint_targets = torch.tensor([[new_target]], device=device)
-                robot.set_joint_position_target(joint_targets, joint_ids=[right_shoulder_roll_idx])
+                # Override shoulder roll with wave motion
+                default_roll = default_joint_pos[0, right_shoulder_roll_idx].item()
+                new_roll = default_roll + wave_offset
+
+                # Clamp to joint limits
+                new_roll = max(roll_lower, min(roll_upper, new_roll))
+
+                # Write directly to simulation
+                current_joint_pos[:, right_shoulder_roll_idx] = new_roll
+
+                # Get current velocities
+                current_joint_vel = robot.data.joint_vel.clone()
+
+                # Write joint state directly to simulation
+                robot.write_joint_state_to_sim(
+                    position=current_joint_pos,
+                    velocity=current_joint_vel
+                )
 
             step_count += 1
 
-            # Debug every 50 steps for first 300
-            if step_count % 50 == 0 and step_count <= 300 and do_wave and right_shoulder_roll_idx is not None:
+            # Debug every 30 steps (not 50, to avoid sampling artifact with 0.7Hz)
+            if step_count % 30 == 0 and step_count <= 300 and do_wave and right_shoulder_roll_idx is not None:
                 wave_phase = 2 * math.pi * wave_freq * t
                 wave_val = math.sin(wave_phase)
                 actual_roll = robot.data.joint_pos[0, right_shoulder_roll_idx].item()
                 target_roll = default_joint_pos[0, right_shoulder_roll_idx].item() + wave_amp * wave_val
-                error = abs(actual_roll - target_roll)
 
-                print(f"  [Step {step_count:3d}] Wave sin={wave_val:+.2f} | "
+                print(f"  [Step {step_count:3d}] t={t:.2f}s | Wave sin={wave_val:+.2f} | "
                       f"Target roll={math.degrees(target_roll):+.1f}° | "
-                      f"Actual roll={math.degrees(actual_roll):+.1f}° | "
-                      f"Error={math.degrees(error):.1f}°")
+                      f"Actual roll={math.degrees(actual_roll):+.1f}°")
 
             # Log every 100 steps
             if step_count % 100 == 0:
@@ -210,7 +221,7 @@ def main():
                     wave_phase = 2 * math.pi * wave_freq * t
                     actual_roll = robot.data.joint_pos[0, right_shoulder_roll_idx].item()
                     status.append(f"Wave: sin={math.sin(wave_phase):+.2f}")
-                    status.append(f"ShoulderRoll={math.degrees(actual_roll):.1f}°")
+                    status.append(f"ShoulderRoll={math.degrees(actual_roll):+.1f}°")
 
                 status_str = " | ".join(status) if status else "Holding"
                 print(f"[Step {step_count:4d}] Height: {root_height:.3f}m | {status_str}")
