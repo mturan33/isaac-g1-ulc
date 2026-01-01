@@ -33,7 +33,7 @@ import torch
 import math
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, AssetBaseCfg
+from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkers
@@ -97,9 +97,9 @@ class G1PickPlaceSceneCfg(InteractiveSceneCfg):
     )
 
     # G1 Robot
-    robot: AssetBaseCfg = G1_MINIMAL_CFG.replace(
+    robot: ArticulationCfg = G1_MINIMAL_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
-        init_state=AssetBaseCfg.InitialStateCfg(
+        init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.74),
             joint_pos={
                 # Legs - standing pose
