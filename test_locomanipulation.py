@@ -1,12 +1,9 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# Test Differential IK Locomanipulation - V5 Tiny Wave
+# Test Direct Joint Control for Wave Motion - V6
 
 """
-Test script for G1 Locomanipulation with Differential IK + Locomotion Policy
-V5: TINY wave motion that DiffIK can actually track
-
-Problem: DiffIK has max_joint_delta limit, can't make big movements per step
-Solution: Use MUCH smaller amplitudes (5cm instead of 20cm)
+Test script for G1 Locomanipulation with DIRECT JOINT CONTROL
+V6: Bypasses DiffIK completely - controls shoulder joint directly!
 
 Usage:
     cd C:\IsaacLab
@@ -17,13 +14,14 @@ import argparse
 import math
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="Test G1 Locomanipulation with Different Modes")
+parser = argparse.ArgumentParser(description="Test G1 Locomanipulation with Direct Joint Control")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--mode", type=str, default="locomanip",
                     choices=["stand", "walk", "wave", "locomanip"],
                     help="Control mode: stand, walk, wave, or locomanip (walk+wave)")
 parser.add_argument("--walk_speed", type=float, default=0.3, help="Forward walking speed (m/s)")
-parser.add_argument("--wave_freq", type=float, default=0.3, help="Wave frequency (Hz) - SLOW!")
+parser.add_argument("--wave_freq", type=float, default=0.5, help="Wave frequency (Hz)")
+parser.add_argument("--wave_amp", type=float, default=0.3, help="Wave amplitude (radians)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -37,12 +35,12 @@ from isaaclab.envs import ManagerBasedRLEnv
 MODE_DESCRIPTIONS = {
     "stand": "Standing still (zero velocity)",
     "walk": f"Walking forward at {args_cli.walk_speed} m/s",
-    "wave": "Waving right hand while standing",
+    "wave": "Waving right hand while standing (DIRECT JOINT CONTROL)",
     "locomanip": f"FULL LOCOMANIPULATION: Walking at {args_cli.walk_speed} m/s + Waving hand"
 }
 
 print("\n" + "=" * 70)
-print("  G1 Locomanipulation Test - V5 (Tiny Wave for DiffIK)")
+print("  G1 Locomanipulation Test - V6 (Direct Joint Control)")
 print(f"  Mode: {args_cli.mode.upper()}")
 print(f"  Description: {MODE_DESCRIPTIONS[args_cli.mode]}")
 print("=" * 70 + "\n")
@@ -71,34 +69,62 @@ def main():
 
         robot = env.scene["robot"]
 
+        # Find joint indices for direct control
+        all_joint_names = robot.data.joint_names
+        print(f"\n[INFO] Total joints: {len(all_joint_names)}")
+
+        # Find right shoulder roll joint index
+        right_shoulder_roll_idx = None
+        right_shoulder_pitch_idx = None
+        right_elbow_idx = None
+
+        for i, name in enumerate(all_joint_names):
+            if "right_shoulder_roll" in name:
+                right_shoulder_roll_idx = i
+            elif "right_shoulder_pitch" in name:
+                right_shoulder_pitch_idx = i
+            elif "right_elbow" in name:
+                right_elbow_idx = i
+
+        print(f"\n[INFO] Wave joints found:")
+        print(f"  - right_shoulder_roll: idx={right_shoulder_roll_idx}")
+        print(f"  - right_shoulder_pitch: idx={right_shoulder_pitch_idx}")
+        print(f"  - right_elbow: idx={right_elbow_idx}")
+
+        # Get default joint positions
+        default_joint_pos = robot.data.default_joint_pos.clone()
+        print(f"\n[INFO] Default positions:")
+        if right_shoulder_roll_idx is not None:
+            print(
+                f"  - right_shoulder_roll: {default_joint_pos[0, right_shoulder_roll_idx]:.3f} rad ({math.degrees(default_joint_pos[0, right_shoulder_roll_idx].item()):.1f}°)")
+        if right_shoulder_pitch_idx is not None:
+            print(f"  - right_shoulder_pitch: {default_joint_pos[0, right_shoulder_pitch_idx]:.3f} rad")
+        if right_elbow_idx is not None:
+            print(f"  - right_elbow: {default_joint_pos[0, right_elbow_idx]:.3f} rad")
+
+        # Get EE positions for reference
         left_ee_idx = 28
         right_ee_idx = 29
 
-        # Store INITIAL EE poses
         init_left_pos = robot.data.body_pos_w[:, left_ee_idx].clone()
         init_left_quat = robot.data.body_quat_w[:, left_ee_idx].clone()
         init_right_pos = robot.data.body_pos_w[:, right_ee_idx].clone()
         init_right_quat = robot.data.body_quat_w[:, right_ee_idx].clone()
 
-        # Calculate initial offset from robot base
         init_base_pos = robot.data.root_pos_w[:, :3].clone()
         init_left_offset = init_left_pos - init_base_pos
         init_right_offset = init_right_pos - init_base_pos
 
-        print(f"\n[INFO] Initial configuration:")
-        print(f"  - Base pos: {init_base_pos[0].cpu().numpy()}")
-        print(f"  - Right EE offset from base: {init_right_offset[0].cpu().numpy()}")
-
-        # TINY wave parameters - DiffIK can track these!
-        wave_amp = 0.05  # Only 5cm! DiffIK can handle this
-
         do_walk = args_cli.mode in ["walk", "locomanip"]
         do_wave = args_cli.mode in ["wave", "locomanip"]
+
+        wave_amp = args_cli.wave_amp  # radians
+        wave_freq = args_cli.wave_freq  # Hz
 
         print(f"\n[INFO] Control settings:")
         print(f"  - Walking: {'ON' if do_walk else 'OFF'}" + (f" (vx={args_cli.walk_speed} m/s)" if do_walk else ""))
         print(f"  - Waving:  {'ON' if do_wave else 'OFF'}" + (
-            f" (freq={args_cli.wave_freq}Hz, amp={wave_amp}m - TINY for DiffIK!)" if do_wave else ""))
+            f" (freq={wave_freq}Hz, amp={wave_amp}rad = {math.degrees(wave_amp):.1f}°)" if do_wave else ""))
 
         print(f"\n[INFO] Running simulation for 2000 steps (~40 seconds)...")
         print("  Press Ctrl+C to stop.\n")
@@ -108,10 +134,6 @@ def main():
 
         start_pos = robot.data.root_pos_w[:, :2].clone()
 
-        # Track IK performance
-        total_error = 0.0
-        error_count = 0
-
         while simulation_app.is_running() and step_count < max_steps:
             t = step_count * 0.02
 
@@ -119,29 +141,16 @@ def main():
 
             actions = torch.zeros(num_envs, action_dim, device=device)
 
-            # ===== UPPER BODY CONTROL =====
-            # Left arm: maintain relative offset from body
+            # ===== UPPER BODY CONTROL (DiffIK input - keep EE at current position) =====
+            # Left arm: maintain position
             target_left_pos = current_base_pos + init_left_offset
             actions[:, 0:3] = target_left_pos
             actions[:, 3:7] = init_left_quat
 
-            # Calculate wave offset
-            wave_phase = 2 * math.pi * args_cli.wave_freq * t
-
-            if do_wave:
-                # TINY sinusoidal motion in Y direction (side to side)
-                side_offset = wave_amp * math.sin(wave_phase)
-
-                # Target = base + initial_offset + tiny wave
-                target_right_pos = current_base_pos + init_right_offset.clone()
-                target_right_pos[:, 1] += side_offset  # Y: side to side only
-
-                actions[:, 7:10] = target_right_pos
-                actions[:, 10:14] = init_right_quat
-            else:
-                target_right_pos = current_base_pos + init_right_offset
-                actions[:, 7:10] = target_right_pos
-                actions[:, 10:14] = init_right_quat
+            # Right arm: maintain position (DiffIK will try to keep it here)
+            target_right_pos = current_base_pos + init_right_offset
+            actions[:, 7:10] = target_right_pos
+            actions[:, 10:14] = init_right_quat
 
             # Hands - neutral
             actions[:, 14:28] = 0.0
@@ -155,29 +164,37 @@ def main():
             else:
                 actions[:, 28:32] = 0.0
 
+            # Step the environment (this applies DiffIK + locomotion policy)
             obs_dict, reward, terminated, truncated, info = env.step(actions)
+
+            # ===== DIRECT JOINT OVERRIDE FOR WAVING =====
+            # After DiffIK computes targets, we OVERRIDE the shoulder joint directly
+            if do_wave and right_shoulder_roll_idx is not None:
+                wave_phase = 2 * math.pi * wave_freq * t
+                wave_offset = wave_amp * math.sin(wave_phase)
+
+                # Get default and compute new target
+                default_roll = default_joint_pos[0, right_shoulder_roll_idx].item()
+                new_target = default_roll + wave_offset
+
+                # Apply directly to the robot
+                joint_targets = torch.tensor([[new_target]], device=device)
+                robot.set_joint_position_target(joint_targets, joint_ids=[right_shoulder_roll_idx])
+
             step_count += 1
 
-            # Measure IK tracking error
-            if do_wave:
-                actual_right_pos = robot.data.body_pos_w[:, right_ee_idx]
-                actual_offset_y = (actual_right_pos[:, 1] - current_base_pos[:, 1]).item()
-                target_offset_y = init_right_offset[0, 1].item() + side_offset
-                error = abs(actual_offset_y - target_offset_y)
-                total_error += error
-                error_count += 1
+            # Debug every 50 steps for first 300
+            if step_count % 50 == 0 and step_count <= 300 and do_wave and right_shoulder_roll_idx is not None:
+                wave_phase = 2 * math.pi * wave_freq * t
+                wave_val = math.sin(wave_phase)
+                actual_roll = robot.data.joint_pos[0, right_shoulder_roll_idx].item()
+                target_roll = default_joint_pos[0, right_shoulder_roll_idx].item() + wave_amp * wave_val
+                error = abs(actual_roll - target_roll)
 
-            # Debug every 25 steps for first 200
-            if step_count % 25 == 0 and step_count <= 200 and do_wave:
-                actual_right_pos = robot.data.body_pos_w[:, right_ee_idx]
-                actual_offset_y = (actual_right_pos[:, 1] - current_base_pos[:, 1]).item()
-                target_offset_y = init_right_offset[0, 1].item() + side_offset
-                error = abs(actual_offset_y - target_offset_y)
-
-                print(f"  [Step {step_count:3d}] Wave sin={math.sin(wave_phase):+.2f} | "
-                      f"Target Y offset={target_offset_y:.3f} | "
-                      f"Actual Y offset={actual_offset_y:.3f} | "
-                      f"Error={error:.4f}m")
+                print(f"  [Step {step_count:3d}] Wave sin={wave_val:+.2f} | "
+                      f"Target roll={math.degrees(target_roll):+.1f}° | "
+                      f"Actual roll={math.degrees(actual_roll):+.1f}° | "
+                      f"Error={math.degrees(error):.1f}°")
 
             # Log every 100 steps
             if step_count % 100 == 0:
@@ -189,10 +206,11 @@ def main():
                 if do_walk:
                     status.append(f"Vel: {root_vel:.2f}m/s")
                     status.append(f"Dist: {distance:.2f}m")
-                if do_wave:
-                    avg_error = total_error / max(error_count, 1)
+                if do_wave and right_shoulder_roll_idx is not None:
+                    wave_phase = 2 * math.pi * wave_freq * t
+                    actual_roll = robot.data.joint_pos[0, right_shoulder_roll_idx].item()
                     status.append(f"Wave: sin={math.sin(wave_phase):+.2f}")
-                    status.append(f"AvgErr: {avg_error:.4f}m")
+                    status.append(f"ShoulderRoll={math.degrees(actual_roll):.1f}°")
 
                 status_str = " | ".join(status) if status else "Holding"
                 print(f"[Step {step_count:4d}] Height: {root_height:.3f}m | {status_str}")
@@ -201,15 +219,10 @@ def main():
                 distance = (robot.data.root_pos_w[:, :2] - start_pos).norm(dim=-1).mean().item()
                 print(f"\n[!] Episode ended at step {step_count}")
                 print(f"    Total distance traveled: {distance:.2f}m")
-                if do_wave:
-                    avg_error = total_error / max(error_count, 1)
-                    print(f"    Average IK tracking error: {avg_error:.4f}m")
                 print("    Resetting...")
                 obs_dict, _ = env.reset()
                 start_pos = robot.data.root_pos_w[:, :2].clone()
                 init_base_pos = robot.data.root_pos_w[:, :3].clone()
-                total_error = 0.0
-                error_count = 0
 
         distance = (robot.data.root_pos_w[:, :2] - start_pos).norm(dim=-1).mean().item()
 
@@ -218,15 +231,6 @@ def main():
         print(f"  Mode: {args_cli.mode.upper()}")
         if do_walk:
             print(f"  Distance traveled: {distance:.2f}m")
-        if do_wave:
-            avg_error = total_error / max(error_count, 1)
-            print(f"  Average IK tracking error: {avg_error:.4f}m")
-            if avg_error < 0.01:
-                print(f"  ✓ IK tracking GOOD!")
-            elif avg_error < 0.03:
-                print(f"  ~ IK tracking OK")
-            else:
-                print(f"  ✗ IK tracking POOR - try smaller amplitude")
         print("=" * 70)
         env.close()
 
