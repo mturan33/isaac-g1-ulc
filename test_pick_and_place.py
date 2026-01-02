@@ -241,14 +241,16 @@ def main():
     arm_joint_pattern = []
 
     # Check which joints exist
+    # NOTE: G1_29DOF_CFG uses "right_elbow_joint" (not pitch/roll separate)
     possible_arm_joints = [
         "right_shoulder_pitch_joint",
         "right_shoulder_roll_joint",
         "right_shoulder_yaw_joint",
-        "right_elbow_pitch_joint",
-        "right_elbow_roll_joint",
+        "right_elbow_joint",  # G1_29DOF uses single elbow joint
+        "right_elbow_pitch_joint",  # Fallback for other configs
+        "right_elbow_roll_joint",  # Fallback for other configs
+        "right_wrist_roll_joint",  # Order matters for kinematic chain!
         "right_wrist_pitch_joint",
-        "right_wrist_roll_joint",
         "right_wrist_yaw_joint",
     ]
 
