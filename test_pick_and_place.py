@@ -233,41 +233,69 @@ class AgileLocomotionPolicy:
 
         Plus command input [vx, vy, wz, hip_height] prepended.
         """
-        # Base velocities (in base frame)
-        base_lin_vel = self.robot.data.root_lin_vel_b  # (N, 3)
-        base_ang_vel = self.robot.data.root_ang_vel_b  # (N, 3)
+        # Base velocities (in base frame) - shape: (N, 3)
+        base_lin_vel = self.robot.data.root_lin_vel_b
+        base_ang_vel = self.robot.data.root_ang_vel_b
 
-        # Projected gravity
-        gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device)
-        root_quat = self.robot.data.root_quat_w
-        # Transform gravity to body frame
-        projected_gravity = self._quat_rotate_inverse(root_quat, gravity_vec.unsqueeze(0).repeat(self.num_envs, 1))
+        # Projected gravity - transform world gravity to body frame
+        gravity_vec = torch.tensor([[0.0, 0.0, -1.0]], device=self.device).repeat(self.num_envs, 1)
+        root_quat = self.robot.data.root_quat_w  # (N, 4)
+        projected_gravity = self._quat_rotate_inverse(root_quat, gravity_vec)  # (N, 3)
 
         # Joint positions and velocities (relative to default)
-        joint_pos = self.robot.data.joint_pos
+        joint_pos = self.robot.data.joint_pos  # (N, num_joints)
         joint_vel = self.robot.data.joint_vel * 0.1  # scaled
         default_joint_pos = self.robot.data.default_joint_pos
         joint_pos_rel = joint_pos - default_joint_pos
 
+        # Ensure all tensors are 2D (N, features)
+        if base_lin_vel.dim() == 1:
+            base_lin_vel = base_lin_vel.unsqueeze(0)
+        if base_ang_vel.dim() == 1:
+            base_ang_vel = base_ang_vel.unsqueeze(0)
+        if projected_gravity.dim() == 1:
+            projected_gravity = projected_gravity.unsqueeze(0)
+        if joint_pos_rel.dim() == 1:
+            joint_pos_rel = joint_pos_rel.unsqueeze(0)
+        if joint_vel.dim() == 1:
+            joint_vel = joint_vel.unsqueeze(0)
+
         # Concatenate observations
         obs = torch.cat([
-            base_lin_vel,  # 3
-            base_ang_vel,  # 3
-            projected_gravity,  # 3
-            joint_pos_rel,  # ~43
-            joint_vel,  # ~43
-            self.last_action,  # 12
+            base_lin_vel,  # (N, 3)
+            base_ang_vel,  # (N, 3)
+            projected_gravity,  # (N, 3)
+            joint_pos_rel,  # (N, ~43)
+            joint_vel,  # (N, ~43)
+            self.last_action,  # (N, 12)
         ], dim=-1)
 
         return obs
 
     def _quat_rotate_inverse(self, q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Rotate vector by inverse of quaternion."""
-        q_w = q[:, 0:1]
-        q_vec = q[:, 1:4]
-        a = v * (2.0 * q_w * q_w - 1.0).unsqueeze(-1)
-        b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
-        c = q_vec * torch.bmm(q_vec.view(-1, 1, 3), v.view(-1, 3, 1)).squeeze(-1) * 2.0
+        """Rotate vector by inverse of quaternion.
+
+        Args:
+            q: Quaternion (N, 4) in wxyz format
+            v: Vector (N, 3)
+
+        Returns:
+            Rotated vector (N, 3)
+        """
+        # Ensure proper dimensions
+        if q.dim() == 1:
+            q = q.unsqueeze(0)
+        if v.dim() == 1:
+            v = v.unsqueeze(0)
+
+        q_w = q[:, 0:1]  # (N, 1)
+        q_vec = q[:, 1:4]  # (N, 3)
+
+        # v' = v * (2*w^2 - 1) - 2*w*(q_vec x v) + 2*(q_vec . v)*q_vec
+        a = v * (2.0 * q_w * q_w - 1.0)
+        b = torch.cross(q_vec, v, dim=-1) * q_w * 2.0
+        c = q_vec * (torch.sum(q_vec * v, dim=-1, keepdim=True)) * 2.0
+
         return a - b + c
 
     def get_joint_targets(self, command: torch.Tensor = None) -> torch.Tensor:
@@ -288,14 +316,23 @@ class AgileLocomotionPolicy:
         if command is None:
             command = torch.zeros(self.num_envs, 4, device=self.device)
 
-        # Get observations
-        obs = self.compute_observations()
-
-        # Compose policy input: [command (repeated), observations]
-        # The policy expects command to be prepended
-        policy_input = torch.cat([command, obs], dim=-1)
-
         try:
+            # Get observations
+            obs = self.compute_observations()
+
+            # Debug: print obs shape on first call
+            if not hasattr(self, '_obs_printed'):
+                print(f"[DEBUG] Observation shape: {obs.shape}")
+                self._obs_printed = True
+
+            # Compose policy input: [command, observations]
+            policy_input = torch.cat([command, obs], dim=-1)
+
+            # Debug: print input shape on first call
+            if not hasattr(self, '_input_printed'):
+                print(f"[DEBUG] Policy input shape: {policy_input.shape}")
+                self._input_printed = True
+
             # Run policy
             with torch.no_grad():
                 joint_actions = self.policy.forward(policy_input)
@@ -309,7 +346,11 @@ class AgileLocomotionPolicy:
             return joint_targets
 
         except Exception as e:
-            print(f"[WARNING] Policy forward failed: {e}")
+            # Print error once
+            if not hasattr(self, '_error_printed'):
+                print(f"[WARNING] Policy forward failed: {e}")
+                print(f"[WARNING] Using fallback standing controller")
+                self._error_printed = True
             return self.default_lower_body_pos
 
 
