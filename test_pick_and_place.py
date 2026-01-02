@@ -45,8 +45,8 @@ from isaaclab.utils.math import subtract_frame_transforms
 from isaaclab_assets.robots.unitree import G1_29DOF_CFG
 
 print("\n" + "=" * 70)
-print("  G1 Pick-and-Place Demo - V3 (Fixed)")
-print("  Using G1_29DOF_CFG + Original Scene (Table, Steering Wheel)")
+print("  G1 Pick-and-Place Demo - V3 (Fixed-Base)")
+print("  Using G1_29DOF_CFG with FIXED ROOT for stable IK testing")
 print("=" * 70 + "\n")
 
 
@@ -122,9 +122,67 @@ class G1PickPlaceSceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    # G1 Robot - 29 DOF with wrist joints (same as original environment)
+    # G1 Robot - 29 DOF with wrist joints
+    # Using fixed base for stable IK testing (no locomotion needed)
     robot: ArticulationCfg = G1_29DOF_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.74),  # Standing height
+            joint_pos={
+                # Legs straight for stability
+                "left_hip_pitch_joint": 0.0,
+                "right_hip_pitch_joint": 0.0,
+                "left_hip_roll_joint": 0.0,
+                "right_hip_roll_joint": 0.0,
+                "left_hip_yaw_joint": 0.0,
+                "right_hip_yaw_joint": 0.0,
+                "left_knee_joint": 0.0,
+                "right_knee_joint": 0.0,
+                "left_ankle_pitch_joint": 0.0,
+                "right_ankle_pitch_joint": 0.0,
+                "left_ankle_roll_joint": 0.0,
+                "right_ankle_roll_joint": 0.0,
+                # Arms in neutral position
+                "left_shoulder_pitch_joint": 0.3,
+                "right_shoulder_pitch_joint": 0.3,
+                "left_shoulder_roll_joint": 0.2,
+                "right_shoulder_roll_joint": -0.2,
+                "left_shoulder_yaw_joint": 0.0,
+                "right_shoulder_yaw_joint": 0.0,
+                "left_elbow_joint": 0.5,
+                "right_elbow_joint": 0.5,
+                # Wrists neutral
+                "left_wrist_roll_joint": 0.0,
+                "right_wrist_roll_joint": 0.0,
+                "left_wrist_pitch_joint": 0.0,
+                "right_wrist_pitch_joint": 0.0,
+                "left_wrist_yaw_joint": 0.0,
+                "right_wrist_yaw_joint": 0.0,
+                # Waist straight
+                "waist_yaw_joint": 0.0,
+                "waist_roll_joint": 0.0,
+                "waist_pitch_joint": 0.0,
+            },
+        ),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=G1_29DOF_CFG.spawn.usd_path,
+            activate_contact_sensors=True,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=False,
+                retain_accelerations=False,
+                linear_damping=0.0,
+                angular_damping=0.0,
+                max_linear_velocity=1000.0,
+                max_angular_velocity=1000.0,
+                max_depenetration_velocity=1.0,
+            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                enabled_self_collisions=False,
+                solver_position_iteration_count=4,
+                solver_velocity_iteration_count=0,
+                fix_root_link=True,  # THIS FIXES THE ROBOT IN PLACE!
+            ),
+        ),
     )
 
 
@@ -141,26 +199,27 @@ class PickPlaceStateMachine:
         self.state_timer = 0.0
 
         # Target positions in world frame
-        # Packing table is at y=0.55, z=-0.3, so table surface is around z=0.7
+        # Robot is fixed at (0, 0, 0.74), table at y=0.55
         # Red cube is at (0.0, 0.45, 0.75)
+        # Arm reach is approximately 0.5-0.6m
 
-        HOME = [0.0, 0.3, 0.8]  # Home position (in front of robot)
-        ABOVE_CUBE = [0.0, 0.42, 0.85]  # Above red cube
-        AT_CUBE = [0.0, 0.42, 0.77]  # At red cube level
-        LIFTED = [0.0, 0.42, 0.90]  # Lifted
-        ABOVE_DROP = [0.15, 0.42, 0.90]  # Above blue cylinder area
-        AT_DROP = [0.15, 0.42, 0.80]  # Drop position
+        HOME = [0.15, 0.25, 0.85]  # Home position (arm forward)
+        ABOVE_CUBE = [0.0, 0.35, 0.85]  # Above red cube (closer)
+        AT_CUBE = [0.0, 0.38, 0.78]  # At red cube level
+        LIFTED = [0.0, 0.35, 0.90]  # Lifted
+        ABOVE_DROP = [0.12, 0.35, 0.90]  # Above blue cylinder area
+        AT_DROP = [0.12, 0.38, 0.82]  # Drop position
 
         self.states = [
-            {"name": "HOME", "pos": HOME, "grip": 0, "dur": 2.0},
-            {"name": "APPROACH", "pos": ABOVE_CUBE, "grip": 0, "dur": 2.0},
-            {"name": "REACH", "pos": AT_CUBE, "grip": 0, "dur": 1.5},
-            {"name": "GRASP", "pos": AT_CUBE, "grip": 1, "dur": 1.0},
-            {"name": "LIFT", "pos": LIFTED, "grip": 1, "dur": 1.5},
-            {"name": "MOVE", "pos": ABOVE_DROP, "grip": 1, "dur": 2.0},
-            {"name": "LOWER", "pos": AT_DROP, "grip": 1, "dur": 1.5},
-            {"name": "RELEASE", "pos": AT_DROP, "grip": 0, "dur": 1.0},
-            {"name": "RETRACT", "pos": HOME, "grip": 0, "dur": 2.0},
+            {"name": "HOME", "pos": HOME, "grip": 0, "dur": 3.0},
+            {"name": "APPROACH", "pos": ABOVE_CUBE, "grip": 0, "dur": 3.0},
+            {"name": "REACH", "pos": AT_CUBE, "grip": 0, "dur": 2.0},
+            {"name": "GRASP", "pos": AT_CUBE, "grip": 1, "dur": 1.5},
+            {"name": "LIFT", "pos": LIFTED, "grip": 1, "dur": 2.0},
+            {"name": "MOVE", "pos": ABOVE_DROP, "grip": 1, "dur": 2.5},
+            {"name": "LOWER", "pos": AT_DROP, "grip": 1, "dur": 2.0},
+            {"name": "RELEASE", "pos": AT_DROP, "grip": 0, "dur": 1.5},
+            {"name": "RETRACT", "pos": HOME, "grip": 0, "dur": 3.0},
             {"name": "DONE", "pos": HOME, "grip": 0, "dur": 999.0},
         ]
 
