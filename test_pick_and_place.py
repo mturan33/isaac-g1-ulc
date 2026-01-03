@@ -28,6 +28,7 @@ import math
 # Isaac Lab imports
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
+from isaaclab.actuators import ImplicitActuatorCfg  # Correct import!
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.sim import SimulationContext
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
@@ -90,17 +91,17 @@ def main():
             },
         ),
         actuators={
-            "legs": sim_utils.ImplicitActuatorCfg(
+            "legs": ImplicitActuatorCfg(
                 joint_names_expr=[".*_hip_.*", ".*_knee_.*", ".*_ankle_.*"],
                 stiffness=100.0,
                 damping=5.0,
             ),
-            "arms": sim_utils.ImplicitActuatorCfg(
+            "arms": ImplicitActuatorCfg(
                 joint_names_expr=[".*_shoulder_.*", ".*_elbow_.*", ".*_wrist_.*"],
                 stiffness=40.0,
                 damping=10.0,
             ),
-            "waist": sim_utils.ImplicitActuatorCfg(
+            "waist": ImplicitActuatorCfg(
                 joint_names_expr=["waist_.*"],
                 stiffness=100.0,
                 damping=10.0,
