@@ -9,14 +9,8 @@ This test uses the FIXED DiffIK action term (V4) that properly converts
 positions from WORLD frame to BASE frame before computing IK.
 
 SETUP REQUIRED:
-1. Copy differential_ik_action_v4.py to replace differential_ik_action.py:
-
-   copy C:\Users\mehme\Downloads\differential_ik_action_v4.py ^
-        C:\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\manager_based\locomanipulation\pick_place\mdp\differential_ik_action.py
-
-2. Then run this test:
-   cd C:\IsaacLab
-   .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_pick_and_place.py
+1. Copy differential_ik_action_v4.py to replace differential_ik_action.py
+2. Then run this test
 """
 
 import argparse
@@ -53,7 +47,7 @@ def main():
 
         env = ManagerBasedRLEnv(cfg=env_cfg)
 
-        print(f"[SUCCESS] ✓ Environment created!")
+        print("[SUCCESS] Environment created!")
 
         obs_dict, _ = env.reset()
 
@@ -77,20 +71,13 @@ def main():
         print(f"  - Left EE:  {init_left_pos_w[0].tolist()}")
         print(f"  - Right EE: {init_right_pos_w[0].tolist()}")
 
-        # ============================================================
         # Define target: Move RIGHT arm FORWARD (Y+ in world) by 0.15m
-        # ============================================================
-
         target_right_pos_w = init_right_pos_w.clone()
         target_right_pos_w[:, 1] += 0.15  # Y+ = forward in world frame
         target_right_quat_w = init_right_quat_w.clone()
 
         print(f"\n[INFO] Target RIGHT EE (WORLD frame): {target_right_pos_w[0].tolist()}")
         print(f"[INFO] Movement: +0.15m in Y direction (forward)")
-
-        # ============================================================
-        # Simulation loop - let environment's DiffIK do the work
-        # ============================================================
 
         print("\n" + "=" * 50)
         print("  Starting Control Loop")
@@ -132,7 +119,7 @@ def main():
                 # Calculate movement from initial
                 movement = current_right_pos_w - init_right_pos_w
 
-                status = "✓ STABLE" if root_height > 0.5 else "✗ FALLEN"
+                status = "STABLE" if root_height > 0.5 else "FALLEN"
 
                 print(f"[{step:3d}] EE Error: {ee_error:.4f}m | Base Z: {root_height:.3f}m {status}")
                 print(
@@ -145,10 +132,7 @@ def main():
                 print(f"\n[!] Episode ended at step {step}")
                 break
 
-        # ============================================================
         # Summary
-        # ============================================================
-
         final_right_pos_w = robot.data.body_pos_w[:, right_ee_idx]
         final_movement = final_right_pos_w - init_right_pos_w
         final_error = torch.norm(final_right_pos_w - target_right_pos_w, dim=-1).item()
@@ -165,13 +149,13 @@ def main():
 
         y_movement = final_movement[0, 1].item()
         if y_movement > 0.10:
-            print(f"\n  ✓ SUCCESS! Arm moved forward {y_movement:.3f}m")
+            print(f"\n  SUCCESS! Arm moved forward {y_movement:.3f}m")
         elif y_movement > 0.05:
-            print(f"\n  ⚠ PARTIAL: Arm moved {y_movement:.3f}m (target: 0.15m)")
+            print(f"\n  PARTIAL: Arm moved {y_movement:.3f}m (target: 0.15m)")
         elif y_movement > 0.01:
-            print(f"\n  ⚠ MINIMAL: Arm moved only {y_movement:.3f}m")
+            print(f"\n  MINIMAL: Arm moved only {y_movement:.3f}m")
         else:
-            print(f"\n  ✗ FAILED: Arm didn't move forward (Y={y_movement:.4f})")
+            print(f"\n  FAILED: Arm did not move forward (Y={y_movement:.4f})")
 
         env.close()
 
