@@ -26,7 +26,6 @@ simulation_app = app_launcher.app
 
 import torch
 from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab.utils.math import quat_to_euler
 
 print("\n" + "=" * 70)
 print("  G1 Pick-and-Place Demo - V18")
