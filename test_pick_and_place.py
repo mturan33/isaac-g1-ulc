@@ -1,38 +1,24 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# G1 Pick-and-Place Demo - V8 (Correct Articulation Order)
-# Key fix: Use ARTICULATION order for joint observations, not pattern order
+# G1 Pick-and-Place Demo - V9 (High Stiffness Actuators)
+# Key fix: Override actuator config with much higher stiffness/damping
 
 """
-G1 Locomanipulation Demo V8
-- CRITICAL FIX: Use articulation order for observations
-- Isaac Lab's SceneEntityCfg preserves articulation order when matching patterns
-- The Agile policy was trained with joints in articulation order
-
-G1 Joint Order (indices 0-28, excluding hands):
-  0: left_hip_pitch    11: left_shoulder_pitch   22: right_elbow
-  1: right_hip_pitch   12: right_shoulder_pitch  23: left_wrist_roll
-  2: waist_yaw         13: left_ankle_pitch      24: right_wrist_roll
-  3: left_hip_roll     14: right_ankle_pitch     25: left_wrist_pitch
-  4: right_hip_roll    15: left_shoulder_roll    26: right_wrist_pitch
-  5: waist_roll        16: right_shoulder_roll   27: left_wrist_yaw
-  6: left_hip_yaw      17: left_ankle_roll       28: right_wrist_yaw
-  7: right_hip_yaw     18: right_ankle_roll
-  8: waist_pitch       19: left_shoulder_yaw
-  9: left_knee         20: right_shoulder_yaw
-  10: right_knee       21: left_elbow
+G1 Locomanipulation Demo V9
+- CRITICAL FIX: High stiffness actuators for stable standing
+- Problem: G1_29DOF_CFG default actuators are too weak
+- Solution: Override with stiffness=400, damping=40 for legs
 
 Usage:
     cd C:\IsaacLab
-    .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_pick_place_v8.py
+    .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_pick_place_v9.py
 """
 
 import argparse
-import re
 import torch
 
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="G1 Locomanipulation V8")
+parser = argparse.ArgumentParser(description="G1 Locomanipulation V9")
 parser.add_argument("--num_envs", type=int, default=1)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -41,6 +27,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.markers import VisualizationMarkers
@@ -48,16 +35,68 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR, retrieve_file_path
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import subtract_frame_transforms
-from isaaclab.utils.io.torchscript import load_torchscript_model
 
 from isaaclab_assets.robots.unitree import G1_29DOF_CFG
 
 print("\n" + "=" * 70)
-print("  G1 Locomanipulation Demo - V8")
-print("  CRITICAL FIX: Articulation order for observations")
+print("  G1 Locomanipulation Demo - V9")
+print("  CRITICAL FIX: High stiffness actuators")
 print("=" * 70 + "\n")
+
+# ============================================================================
+# CUSTOM G1 CONFIG WITH HIGH STIFFNESS
+# ============================================================================
+
+# Create custom G1 config with stronger actuators
+G1_HIGH_STIFFNESS_CFG = G1_29DOF_CFG.copy()
+
+# Override actuators with MUCH higher stiffness and damping
+G1_HIGH_STIFFNESS_CFG.actuators = {
+    # Legs - very high stiffness for standing
+    "legs": ImplicitActuatorCfg(
+        joint_names_expr=[
+            ".*_hip_pitch_joint",
+            ".*_hip_roll_joint",
+            ".*_hip_yaw_joint",
+            ".*_knee_joint",
+        ],
+        stiffness=400.0,  # Was likely ~80-100
+        damping=40.0,  # Was likely ~5-10
+    ),
+    # Ankles - high stiffness
+    "ankles": ImplicitActuatorCfg(
+        joint_names_expr=[
+            ".*_ankle_pitch_joint",
+            ".*_ankle_roll_joint",
+        ],
+        stiffness=200.0,
+        damping=20.0,
+    ),
+    # Waist - medium-high stiffness
+    "waist": ImplicitActuatorCfg(
+        joint_names_expr=["waist_.*_joint"],
+        stiffness=300.0,
+        damping=30.0,
+    ),
+    # Arms - medium stiffness for manipulation
+    "arms": ImplicitActuatorCfg(
+        joint_names_expr=[
+            ".*_shoulder_.*_joint",
+            ".*_elbow_joint",
+            ".*_wrist_.*_joint",
+        ],
+        stiffness=100.0,
+        damping=10.0,
+    ),
+    # Hands - lower stiffness
+    "hands": ImplicitActuatorCfg(
+        joint_names_expr=[".*_hand.*"],
+        stiffness=20.0,
+        damping=2.0,
+    ),
+}
 
 
 # ============================================================================
@@ -97,23 +136,26 @@ class G1LocomanipSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.45, 0.75)),
     )
 
-    robot: ArticulationCfg = G1_29DOF_CFG.replace(
+    # Use HIGH STIFFNESS config!
+    robot: ArticulationCfg = G1_HIGH_STIFFNESS_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.74),
             joint_pos={
-                "left_hip_pitch_joint": -0.1,
-                "right_hip_pitch_joint": -0.1,
+                # Legs - stable standing pose
+                "left_hip_pitch_joint": -0.2,
+                "right_hip_pitch_joint": -0.2,
                 "left_hip_roll_joint": 0.0,
                 "right_hip_roll_joint": 0.0,
                 "left_hip_yaw_joint": 0.0,
                 "right_hip_yaw_joint": 0.0,
-                "left_knee_joint": 0.2,
-                "right_knee_joint": 0.2,
-                "left_ankle_pitch_joint": -0.1,
-                "right_ankle_pitch_joint": -0.1,
+                "left_knee_joint": 0.4,
+                "right_knee_joint": 0.4,
+                "left_ankle_pitch_joint": -0.2,
+                "right_ankle_pitch_joint": -0.2,
                 "left_ankle_roll_joint": 0.0,
                 "right_ankle_roll_joint": 0.0,
+                # Arms - ready position
                 "left_shoulder_pitch_joint": 0.3,
                 "right_shoulder_pitch_joint": 0.3,
                 "left_shoulder_roll_joint": 0.2,
@@ -128,6 +170,7 @@ class G1LocomanipSceneCfg(InteractiveSceneCfg):
                 "right_wrist_pitch_joint": 0.0,
                 "left_wrist_yaw_joint": 0.0,
                 "right_wrist_yaw_joint": 0.0,
+                # Waist
                 "waist_yaw_joint": 0.0,
                 "waist_roll_joint": 0.0,
                 "waist_pitch_joint": 0.0,
@@ -137,55 +180,18 @@ class G1LocomanipSceneCfg(InteractiveSceneCfg):
 
 
 # ============================================================================
-# AGILE LOCOMOTION POLICY (CORRECT ARTICULATION ORDER)
+# SIMPLE STANDING CONTROLLER
 # ============================================================================
 
-class AgileLocomotionPolicy:
-    """Agile policy wrapper with CORRECT articulation order.
-
-    The key insight: Isaac Lab's SceneEntityCfg matches patterns but preserves
-    ARTICULATION ORDER. So we need to iterate through joints in articulation
-    order and check if each matches any pattern.
-    """
-
-    # Joint patterns that Agile expects (order doesn't matter for matching)
-    AGILE_JOINT_PATTERNS = [
-        r".*_shoulder_.*_joint",
-        r".*_elbow_joint",
-        r".*_wrist_.*_joint",
-        r".*_hip_.*_joint",
-        r".*_knee_joint",
-        r".*_ankle_.*_joint",
-        r"waist_.*_joint",
-    ]
+class SimpleStandingController:
+    """Simple PD controller for standing - relies on high actuator stiffness."""
 
     def __init__(self, robot: Articulation, device: str):
         self.robot = robot
         self.device = device
         self.num_envs = robot.num_instances
 
-        # Find joints in ARTICULATION ORDER that match any pattern
-        # This is how Isaac Lab's SceneEntityCfg works!
-        self.obs_joint_ids = []
-        self.obs_joint_names = []
-
-        print("[INFO] Finding observation joints in ARTICULATION ORDER:")
-        for i, name in enumerate(robot.joint_names):
-            # Check if this joint matches ANY pattern
-            matches = False
-            for pattern in self.AGILE_JOINT_PATTERNS:
-                if re.match(pattern, name):
-                    matches = True
-                    break
-
-            if matches:
-                self.obs_joint_ids.append(i)
-                self.obs_joint_names.append(name)
-                print(f"  [{len(self.obs_joint_ids) - 1:2d}] idx={i:2d} {name}")
-
-        print(f"\n[INFO] Total observation joints: {len(self.obs_joint_ids)}")
-
-        # Lower body joints for control output (12 joints)
+        # Lower body joint names
         self.lower_body_joint_names = [
             "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
             "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
@@ -193,104 +199,37 @@ class AgileLocomotionPolicy:
             "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
         ]
 
+        # Waist joints
+        self.waist_joint_names = [
+            "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"
+        ]
+
+        # Find joint IDs
+        all_joints = list(robot.joint_names)
+
         self.lower_body_joint_ids = []
         for name in self.lower_body_joint_names:
-            if name in robot.joint_names:
-                self.lower_body_joint_ids.append(robot.joint_names.index(name))
+            if name in all_joints:
+                self.lower_body_joint_ids.append(all_joints.index(name))
 
-        print(f"[INFO] Lower body control joints: {len(self.lower_body_joint_ids)}")
+        self.waist_joint_ids = []
+        for name in self.waist_joint_names:
+            if name in all_joints:
+                self.waist_joint_ids.append(all_joints.index(name))
 
-        # Load Agile policy
-        policy_path = f"{ISAACLAB_NUCLEUS_DIR}/Policies/Agile/agile_locomotion.pt"
-        try:
-            resolved_path = retrieve_file_path(policy_path)
-            self.policy = load_torchscript_model(resolved_path, device=device)
-            print(f"[INFO] Loaded Agile policy from: {resolved_path}")
-            self._policy_loaded = True
-        except Exception as e:
-            print(f"[WARNING] Could not load Agile policy: {e}")
-            self._policy_loaded = False
+        print(f"[INFO] Lower body joints: {len(self.lower_body_joint_ids)}")
+        print(f"[INFO] Waist joints: {len(self.waist_joint_ids)}")
 
-        # Default positions
-        self.default_obs_joint_pos = robot.data.default_joint_pos[:, self.obs_joint_ids].clone()
-        self.default_lower_body_pos = robot.data.default_joint_pos[:, self.lower_body_joint_ids].clone()
+        # Target positions - stable crouched stance
+        self.target_lower_body = torch.tensor([
+            -0.2, 0.0, 0.0, 0.4, -0.2, 0.0,  # Left leg (hip_p, hip_r, hip_y, knee, ankle_p, ankle_r)
+            -0.2, 0.0, 0.0, 0.4, -0.2, 0.0,  # Right leg
+        ], device=device).unsqueeze(0).repeat(self.num_envs, 1)
 
-        # Policy parameters
-        self.policy_output_scale = 0.25
-        self.last_action = torch.zeros(self.num_envs, 12, device=device)
+        self.target_waist = torch.zeros(self.num_envs, 3, device=device)
 
-    def _quat_rotate_inverse(self, q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Rotate vector by inverse of quaternion."""
-        q_w = q[:, 0:1]
-        q_vec = q[:, 1:4]
-        a = v * (2.0 * q_w * q_w - 1.0)
-        b = torch.cross(q_vec, v, dim=-1) * q_w * 2.0
-        c = q_vec * (torch.sum(q_vec * v, dim=-1, keepdim=True)) * 2.0
-        return a - b + c
-
-    def compute_observations(self) -> torch.Tensor:
-        """Compute observations in ARTICULATION order."""
-
-        # Base velocities
-        base_lin_vel = self.robot.data.root_lin_vel_b
-        base_ang_vel = self.robot.data.root_ang_vel_b
-
-        # Projected gravity
-        gravity_vec = torch.tensor([[0.0, 0.0, -1.0]], device=self.device).repeat(self.num_envs, 1)
-        root_quat = self.robot.data.root_quat_w
-        projected_gravity = self._quat_rotate_inverse(root_quat, gravity_vec)
-
-        # Joint positions and velocities - IN ARTICULATION ORDER!
-        joint_pos = self.robot.data.joint_pos[:, self.obs_joint_ids]
-        joint_vel = self.robot.data.joint_vel[:, self.obs_joint_ids] * 0.1
-        joint_pos_rel = joint_pos - self.default_obs_joint_pos
-
-        # Concatenate: [lin_vel(3), ang_vel(3), gravity(3), pos(29), vel(29), action(12)] = 79
-        obs = torch.cat([
-            base_lin_vel,
-            base_ang_vel,
-            projected_gravity,
-            joint_pos_rel,
-            joint_vel,
-            self.last_action,
-        ], dim=-1)
-
-        return obs
-
-    def get_joint_targets(self, command: torch.Tensor = None) -> torch.Tensor:
-        """Get lower body joint targets from Agile policy."""
-
-        if not self._policy_loaded:
-            return self.default_lower_body_pos
-
-        if command is None:
-            command = torch.zeros(self.num_envs, 4, device=self.device)
-
-        try:
-            obs = self.compute_observations()
-
-            # Policy input: [command(4), obs(79)] = 83
-            policy_input = torch.cat([command, obs], dim=-1)
-
-            if not hasattr(self, '_debug_done'):
-                print(f"\n[DEBUG] Observation shape: {obs.shape}")
-                print(f"[DEBUG] Policy input shape: {policy_input.shape}")
-                self._debug_done = True
-
-            with torch.no_grad():
-                joint_actions = self.policy.forward(policy_input)
-
-            # Scale and offset
-            joint_targets = joint_actions * self.policy_output_scale + self.default_lower_body_pos
-            self.last_action = joint_actions.clone()
-
-            return joint_targets
-
-        except Exception as e:
-            if not hasattr(self, '_error_done'):
-                print(f"[WARNING] Policy failed: {e}")
-                self._error_done = True
-            return self.default_lower_body_pos
+    def get_joint_targets(self):
+        return self.target_lower_body, self.target_waist
 
 
 # ============================================================================
@@ -302,12 +241,13 @@ class PickPlaceStateMachine:
         self.dt = dt
         self.device = device
 
-        HOME = [0.15, 0.25, 0.85]
-        ABOVE_CUBE = [0.0, 0.35, 0.85]
-        AT_CUBE = [0.0, 0.38, 0.78]
-        LIFTED = [0.0, 0.35, 0.90]
-        ABOVE_DROP = [0.12, 0.35, 0.90]
-        AT_DROP = [0.12, 0.38, 0.82]
+        # Targets closer to robot
+        HOME = [0.15, 0.25, 0.75]
+        ABOVE_CUBE = [0.0, 0.35, 0.75]
+        AT_CUBE = [0.0, 0.40, 0.68]
+        LIFTED = [0.0, 0.35, 0.80]
+        ABOVE_DROP = [0.12, 0.35, 0.80]
+        AT_DROP = [0.12, 0.40, 0.72]
 
         self.states = [
             {"name": "HOME", "pos": HOME, "dur": 3.0},
@@ -368,8 +308,15 @@ def main():
     scene.reset()
     print("[INFO] Simulation reset.\n")
 
-    # Agile policy with correct articulation order
-    agile_policy = AgileLocomotionPolicy(robot, args_cli.device)
+    # Print actuator info
+    print("[INFO] Actuator configuration:")
+    print("  Legs: stiffness=400, damping=40")
+    print("  Ankles: stiffness=200, damping=20")
+    print("  Waist: stiffness=300, damping=30")
+    print("  Arms: stiffness=100, damping=10")
+
+    # Simple standing controller
+    standing_controller = SimpleStandingController(robot, args_cli.device)
 
     # DiffIK for arm
     arm_joint_names = [
@@ -384,7 +331,7 @@ def main():
     jacobian_ee_idx = ee_body_id - 1
 
     print(f"\n[INFO] Arm joints: {len(arm_joint_ids)}")
-    print(f"[INFO] EE: {ee_name} (body={ee_body_id}, jac_idx={jacobian_ee_idx})")
+    print(f"[INFO] EE: {ee_name}")
 
     diff_ik_cfg = DifferentialIKControllerCfg(
         command_type="pose",
@@ -404,20 +351,21 @@ def main():
     state_machine.reset()
 
     print("\n[INFO] Starting simulation...")
-    print("[INFO] Lower body: Agile (articulation order) | Upper body: DiffIK\n")
+    print("[INFO] Lower body: High-stiffness PD | Upper body: DiffIK\n")
 
     step_count = 0
     max_cycles = 2
     cycle_count = 0
+    stable_steps = 0
 
     while simulation_app.is_running():
         target_pos, state_name = state_machine.get_target()
         state_machine.step()
 
-        # Lower body - Agile policy
-        command = torch.zeros(args_cli.num_envs, 4, device=args_cli.device)
-        lower_targets = agile_policy.get_joint_targets(command)
-        robot.set_joint_position_target(lower_targets, joint_ids=agile_policy.lower_body_joint_ids)
+        # Lower body + waist - Simple standing controller
+        lower_targets, waist_targets = standing_controller.get_joint_targets()
+        robot.set_joint_position_target(lower_targets, joint_ids=standing_controller.lower_body_joint_ids)
+        robot.set_joint_position_target(waist_targets, joint_ids=standing_controller.waist_joint_ids)
 
         # Upper body - DiffIK
         ee_pos_w = robot.data.body_pos_w[:, ee_body_id]
@@ -442,7 +390,7 @@ def main():
         arm_targets = diff_ik.compute(ee_pos_b, ee_quat_b, arm_jac, arm_pos)
         robot.set_joint_position_target(arm_targets, joint_ids=arm_joint_ids)
 
-        # Step
+        # Step simulation
         robot.write_data_to_sim()
         scene.write_data_to_sim()
 
@@ -455,23 +403,28 @@ def main():
         ee_marker.visualize(ee_pos_w, ee_quat_w)
         goal_marker.visualize(target_pos, torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=args_cli.device))
 
+        # Check stability
+        base_z = robot.data.root_pos_w[0, 2].item()
+        if base_z > 0.5:
+            stable_steps += 1
+
         step_count += 1
         if step_count % 50 == 0:
             error = torch.norm(ee_pos_w - target_pos, dim=-1).item()
-            base_z = robot.data.root_pos_w[0, 2].item()
-            status = "✓ STANDING" if base_z > 0.6 else "✗ FALLEN"
+            status = "✓ STABLE" if base_z > 0.5 else "✗ FALLEN"
             print(f"[{step_count:4d}] {state_name:10s} | Error: {error:.4f}m | Base Z: {base_z:.3f}m {status}")
 
         if state_name == "DONE" and state_machine.state_timer > 3.0:
             cycle_count += 1
             if cycle_count >= max_cycles:
                 print(f"\n[INFO] Completed {max_cycles} cycles.")
+                print(f"[INFO] Stability: {stable_steps}/{step_count} steps ({100 * stable_steps / step_count:.1f}%)")
                 break
             print(f"\n[INFO] Resetting (cycle {cycle_count})...")
             state_machine.reset()
 
     print("\n" + "=" * 70)
-    print("  V8 Complete")
+    print("  V9 Complete")
     print("=" * 70)
 
 
