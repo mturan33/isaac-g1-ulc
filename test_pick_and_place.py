@@ -1,22 +1,21 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# G1 Pick-and-Place Demo - V18
-# Position Hold Controller for Lower Body
+# G1 Pick-and-Place Demo - V19
+# FIXED LEGS - Bypass Locomotion Policy Completely
 
 """
-G1 Pick-and-Place Demo V18
+G1 Pick-and-Place Demo V19
 
-Key feature: ROOT POSITION HOLD
-- Records initial root position and yaw
-- Computes position/yaw error each step
-- Sends velocity commands to locomotion to correct drift
-- Acts like a simple path planner that keeps robot at target pose
+Key feature: FIXED LEGS
+- Locomotion policy is given zero velocity command
+- Leg joints are DIRECTLY WRITTEN to default positions each step
+- Upper body uses DiffIK normally
+- Result: Robot stands still while arms move freely
 """
 
 import argparse
-import math
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="G1 Pick-and-Place V18 - Position Hold")
+parser = argparse.ArgumentParser(description="G1 Pick-and-Place V19 - Fixed Legs")
 parser.add_argument("--num_envs", type=int, default=1)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -28,27 +27,9 @@ import torch
 from isaaclab.envs import ManagerBasedRLEnv
 
 print("\n" + "=" * 70)
-print("  G1 Pick-and-Place Demo - V18")
-print("  DiffIK + Root Position Hold Controller")
+print("  G1 Pick-and-Place Demo - V19")
+print("  FIXED LEGS - Locomotion Bypassed")
 print("=" * 70 + "\n")
-
-
-def get_yaw_from_quat(quat: torch.Tensor) -> torch.Tensor:
-    """Extract yaw angle from quaternion [w, x, y, z]."""
-    # quat shape: [num_envs, 4] with [w, x, y, z] format
-    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
-
-    # Yaw from quaternion
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = torch.atan2(siny_cosp, cosy_cosp)
-
-    return yaw
-
-
-def normalize_angle(angle: torch.Tensor) -> torch.Tensor:
-    """Normalize angle to [-pi, pi]."""
-    return torch.atan2(torch.sin(angle), torch.cos(angle))
 
 
 def main():
@@ -79,22 +60,34 @@ def main():
         right_ee_idx = robot.body_names.index("right_wrist_yaw_link")
 
         # ============================================================
-        # POSITION HOLD: Record initial root pose
+        # FIXED LEGS: Find leg joint indices
         # ============================================================
 
-        init_root_pos = robot.data.root_pos_w.clone()  # [num_envs, 3]
-        init_root_quat = robot.data.root_quat_w.clone()  # [num_envs, 4]
-        init_root_yaw = get_yaw_from_quat(init_root_quat)  # [num_envs]
+        all_joint_names = robot.data.joint_names
+        print(f"\n[INFO] Total joints: {len(all_joint_names)}")
 
-        print(f"\n[POSITION HOLD] Initial root pose:")
-        print(f"  Position: [{init_root_pos[0, 0]:.3f}, {init_root_pos[0, 1]:.3f}, {init_root_pos[0, 2]:.3f}]")
-        print(f"  Yaw: {math.degrees(init_root_yaw[0].item()):.1f} degrees")
+        # Find leg joint indices (hip, knee, ankle for both legs)
+        leg_joint_keywords = [
+            "left_hip", "right_hip",
+            "left_knee", "right_knee",
+            "left_ankle", "right_ankle"
+        ]
 
-        # Position hold gains (P controller)
-        Kp_xy = 2.0  # Position gain (m/s per m error)
-        Kp_yaw = 2.0  # Yaw gain (rad/s per rad error)
-        max_vel_xy = 0.5  # Max velocity command (m/s)
-        max_vel_yaw = 1.0  # Max yaw rate command (rad/s)
+        leg_joint_indices = []
+        for i, name in enumerate(all_joint_names):
+            for keyword in leg_joint_keywords:
+                if keyword in name:
+                    leg_joint_indices.append(i)
+                    print(f"  Leg joint [{i}]: {name}")
+                    break
+
+        print(f"\n[INFO] Found {len(leg_joint_indices)} leg joints")
+
+        # Get default leg joint positions
+        default_joint_pos = robot.data.default_joint_pos.clone()
+        default_leg_pos = default_joint_pos[:, leg_joint_indices].clone()
+
+        print(f"[INFO] Default leg positions: {default_leg_pos[0].tolist()}")
 
         # Get initial EE positions
         init_left_pos_w = robot.data.body_pos_w[:, left_ee_idx].clone()
@@ -111,6 +104,9 @@ def main():
 
         print(f"[INFO] Target Right EE (WORLD):  {target_right_pos_w[0].tolist()}")
 
+        # Record initial root position
+        init_root_pos = robot.data.root_pos_w.clone()
+
         # Success tracking
         SUCCESS_THRESHOLD = 0.02
         best_error = float('inf')
@@ -119,53 +115,21 @@ def main():
         success_step = None
 
         print("\n" + "=" * 60)
-        print("  Control Loop with Position Hold")
+        print("  Control Loop with FIXED LEGS")
         print("=" * 60 + "\n")
 
         for step in range(300):
-            # ============================================================
-            # POSITION HOLD: Compute correction velocities
-            # ============================================================
-
-            # Current root pose
-            current_root_pos = robot.data.root_pos_w
-            current_root_quat = robot.data.root_quat_w
-            current_root_yaw = get_yaw_from_quat(current_root_quat)
-
-            # Position error (in world frame)
-            pos_error = init_root_pos - current_root_pos  # [num_envs, 3]
-
-            # Yaw error
-            yaw_error = normalize_angle(init_root_yaw - current_root_yaw)  # [num_envs]
-
-            # Transform position error to robot's local frame
-            # (rotate by negative current yaw)
-            cos_yaw = torch.cos(-current_root_yaw)
-            sin_yaw = torch.sin(-current_root_yaw)
-
-            # Local frame: X = forward, Y = left
-            # World frame: X = right, Y = forward
-            # Robot forward (local X) = World Y
-            # Robot left (local Y) = World -X
-            local_error_x = pos_error[:, 1] * cos_yaw - pos_error[:, 0] * sin_yaw  # Forward error
-            local_error_y = pos_error[:, 1] * sin_yaw + pos_error[:, 0] * cos_yaw  # Left error
-
-            # P controller for velocities
-            vel_x = torch.clamp(Kp_xy * local_error_x, -max_vel_xy, max_vel_xy)  # Forward vel
-            vel_y = torch.clamp(Kp_xy * local_error_y, -max_vel_xy, max_vel_xy)  # Left vel
-            vel_yaw = torch.clamp(Kp_yaw * yaw_error, -max_vel_yaw, max_vel_yaw)  # Yaw rate
-
-            # ============================================================
-            # Create actions
-            # ============================================================
-
             # Get current left arm pose (maintain)
             current_left_pos_w = robot.data.body_pos_w[:, left_ee_idx]
             current_left_quat_w = robot.data.body_quat_w[:, left_ee_idx]
 
+            # ============================================================
+            # Create actions for env.step()
+            # ============================================================
+
             actions = torch.zeros(num_envs, action_dim, device=device)
 
-            # Left arm - maintain position
+            # Left arm - maintain current position
             actions[:, 0:3] = current_left_pos_w
             actions[:, 3:7] = current_left_quat_w
 
@@ -176,29 +140,44 @@ def main():
             # Hands neutral
             actions[:, 14:28] = 0.0
 
-            # ============================================================
-            # Lower body - POSITION HOLD velocity commands
-            # ============================================================
-            # Assuming action format: [vx, vy, vyaw, ?]
-            # These are velocity commands in robot's local frame
+            # Lower body - ZERO velocity (locomotion will be overridden anyway)
+            actions[:, 28:32] = 0.0
 
-            actions[:, 28] = vel_x.unsqueeze(-1) if vel_x.dim() == 1 else vel_x  # Forward velocity
-            actions[:, 29] = vel_y.unsqueeze(-1) if vel_y.dim() == 1 else vel_y  # Lateral velocity
-            actions[:, 30] = vel_yaw.unsqueeze(-1) if vel_yaw.dim() == 1 else vel_yaw  # Yaw rate
-            actions[:, 31] = 0.0  # Height or other
-
-            # Step
+            # Step the environment
             obs_dict, reward, terminated, truncated, info = env.step(actions)
 
-            # Check EE error
+            # ============================================================
+            # FIXED LEGS: Override leg joints AFTER env.step()
+            # ============================================================
+
+            # Get current joint positions and velocities
+            current_joint_pos = robot.data.joint_pos.clone()
+            current_joint_vel = robot.data.joint_vel.clone()
+
+            # Override leg joints with default positions
+            current_joint_pos[:, leg_joint_indices] = default_leg_pos
+
+            # Set leg velocities to zero
+            current_joint_vel[:, leg_joint_indices] = 0.0
+
+            # Write directly to simulation
+            robot.write_joint_state_to_sim(
+                position=current_joint_pos,
+                velocity=current_joint_vel
+            )
+
+            # ============================================================
+            # Check progress
+            # ============================================================
+
             current_right_pos_w = robot.data.body_pos_w[:, right_ee_idx]
             ee_error = torch.norm(current_right_pos_w - target_right_pos_w, dim=-1).item()
             movement = current_right_pos_w - init_right_pos_w
-            root_height = robot.data.root_pos_w[:, 2].mean().item()
 
-            # Root drift from initial
-            root_drift_xy = torch.norm(pos_error[:, :2], dim=-1).item()
-            yaw_drift_deg = math.degrees(abs(yaw_error[0].item()))
+            # Check root drift
+            current_root_pos = robot.data.root_pos_w
+            root_drift = torch.norm(current_root_pos[:, :2] - init_root_pos[:, :2], dim=-1).item()
+            root_height = current_root_pos[:, 2].mean().item()
 
             # Track best
             if ee_error < best_error:
@@ -217,13 +196,9 @@ def main():
                 success_mark = " <-- SUCCESS!" if ee_error < SUCCESS_THRESHOLD else ""
 
                 print(f"[{step:3d}] EE Err: {ee_error:.4f}m | Y move: {movement[0, 1]:.3f}m | "
-                      f"Root drift: {root_drift_xy:.3f}m, {yaw_drift_deg:.1f}deg | {status}{success_mark}")
+                      f"Root drift: {root_drift:.4f}m | Height: {root_height:.3f}m | {status}{success_mark}")
 
-                # Show velocity commands being sent
-                if step % 60 == 0:
-                    print(f"      Vel cmds: vx={vel_x[0]:.3f}, vy={vel_y[0]:.3f}, vyaw={vel_yaw[0]:.3f}")
-
-            # Stop if success held
+            # Stop if success held for 50 steps
             if success_reached and step > success_step + 50:
                 print(f"\n[INFO] Success maintained, stopping at step {step}")
                 break
@@ -234,11 +209,7 @@ def main():
 
         # Final summary
         final_root_pos = robot.data.root_pos_w
-        final_root_quat = robot.data.root_quat_w
-        final_root_yaw = get_yaw_from_quat(final_root_quat)
-
-        final_pos_drift = torch.norm(init_root_pos[:, :2] - final_root_pos[:, :2], dim=-1).item()
-        final_yaw_drift = math.degrees(abs(normalize_angle(init_root_yaw - final_root_yaw)[0].item()))
+        final_root_drift = torch.norm(init_root_pos[:, :2] - final_root_pos[:, :2], dim=-1).item()
 
         final_right_pos_w = robot.data.body_pos_w[:, right_ee_idx]
         final_movement = final_right_pos_w - init_right_pos_w
@@ -252,21 +223,17 @@ def main():
         print(f"    Final EE error: {final_ee_error:.4f}m")
         print(f"    Final Y movement: {final_movement[0, 1]:.4f}m (target: 0.15m)")
 
-        print(f"\n  POSITION HOLD:")
-        print(f"    Initial root: [{init_root_pos[0, 0]:.3f}, {init_root_pos[0, 1]:.3f}]")
-        print(f"    Final root:   [{final_root_pos[0, 0]:.3f}, {final_root_pos[0, 1]:.3f}]")
-        print(f"    Position drift: {final_pos_drift:.4f}m")
-        print(f"    Yaw drift: {final_yaw_drift:.1f} degrees")
+        print(f"\n  FIXED LEGS:")
+        print(f"    Root drift: {final_root_drift:.4f}m")
+        print(f"    Final height: {final_root_pos[0, 2]:.3f}m")
 
         if success_reached:
             print(f"\n  *** ARM SUCCESS! Target reached at step {success_step} ***")
 
-        if final_pos_drift < 0.1 and final_yaw_drift < 15:
-            print(f"  *** POSITION HOLD SUCCESS! Robot stayed in place ***")
-        elif final_pos_drift < 0.2:
-            print(f"  *** POSITION HOLD PARTIAL: Some drift but manageable ***")
+        if final_root_drift < 0.05:
+            print(f"  *** FIXED LEGS SUCCESS! Robot stayed in place ***")
         else:
-            print(f"  *** POSITION HOLD NEEDS TUNING: Significant drift ***")
+            print(f"  *** WARNING: Root drifted {final_root_drift:.3f}m ***")
 
         env.close()
 
