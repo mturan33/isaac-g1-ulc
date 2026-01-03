@@ -1,28 +1,29 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# G1 Pick-and-Place Demo - V15
-# Using OFFICIAL Isaac Lab DifferentialIKController with proper frame transforms
+# G1 Pick-and-Place Demo - V16
+# Uses FIXED differential_ik_action_v4.py
 
 """
-G1 Pick-and-Place Demo V15
+G1 Pick-and-Place Demo V16
 
-Key fixes based on Isaac Lab tutorial:
-1. Uses official DifferentialIKController from isaaclab.controllers
-2. Proper frame transforms: subtract_frame_transforms for world->base conversion
-3. Correct Jacobian body index for floating base robot (NO -1!)
-4. set_command() and compute() pattern from official tutorial
+This test uses the FIXED DiffIK action term (V4) that properly converts
+positions from WORLD frame to BASE frame before computing IK.
 
-Reference: https://isaac-sim.github.io/IsaacLab/main/source/tutorials/05_controllers/run_diff_ik.html
+SETUP REQUIRED:
+1. Copy differential_ik_action_v4.py to replace differential_ik_action.py:
 
-Usage:
-    cd C:\IsaacLab
-    .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_pick_place_v15.py
+   copy C:\Users\mehme\Downloads\differential_ik_action_v4.py ^
+        C:\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\manager_based\locomanipulation\pick_place\mdp\differential_ik_action.py
+
+2. Then run this test:
+   cd C:\IsaacLab
+   .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_pick_and_place.py
 """
 
 import argparse
 import math
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="G1 Pick-and-Place V15 - Official DiffIK")
+parser = argparse.ArgumentParser(description="G1 Pick-and-Place V16 - Fixed DiffIK")
 parser.add_argument("--num_envs", type=int, default=1)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -32,12 +33,10 @@ simulation_app = app_launcher.app
 
 import torch
 from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
-from isaaclab.utils.math import subtract_frame_transforms
 
 print("\n" + "=" * 70)
-print("  G1 Pick-and-Place Demo - V15")
-print("  Official Isaac Lab DifferentialIKController")
+print("  G1 Pick-and-Place Demo - V16")
+print("  Using FIXED DiffIK V4 (BASE frame)")
 print("=" * 70 + "\n")
 
 
@@ -64,184 +63,56 @@ def main():
 
         robot = env.scene["robot"]
 
-        # ============================================================
-        # Setup Official DifferentialIKController
-        # ============================================================
+        # Get body indices
+        left_ee_idx = robot.body_names.index("left_wrist_yaw_link")
+        right_ee_idx = robot.body_names.index("right_wrist_yaw_link")
 
-        # Controller config - using damped least squares (dls) like tutorial
-        diff_ik_cfg = DifferentialIKControllerCfg(
-            command_type="pose",  # Full pose control (position + orientation)
-            use_relative_mode=False,  # Absolute pose commands
-            ik_method="dls",  # Damped least squares
-            ik_params={"lambda_val": 0.05}  # Damping coefficient
-        )
+        # Get initial EE positions (WORLD frame)
+        init_left_pos_w = robot.data.body_pos_w[:, left_ee_idx].clone()
+        init_left_quat_w = robot.data.body_quat_w[:, left_ee_idx].clone()
+        init_right_pos_w = robot.data.body_pos_w[:, right_ee_idx].clone()
+        init_right_quat_w = robot.data.body_quat_w[:, right_ee_idx].clone()
 
-        # Create controller for right arm
-        right_arm_controller = DifferentialIKController(
-            diff_ik_cfg,
-            num_envs=num_envs,
-            device=device
-        )
-
-        print(f"[INFO] DifferentialIKController created:")
-        print(f"  - command_type: {diff_ik_cfg.command_type}")
-        print(f"  - ik_method: {diff_ik_cfg.ik_method}")
-        print(f"  - action_dim: {right_arm_controller.action_dim}")
+        print(f"\n[INFO] Initial EE positions (WORLD frame):")
+        print(f"  - Left EE:  {init_left_pos_w[0].tolist()}")
+        print(f"  - Right EE: {init_right_pos_w[0].tolist()}")
 
         # ============================================================
-        # Find joint and body indices (like tutorial)
+        # Define target: Move RIGHT arm FORWARD (Y+ in world) by 0.15m
         # ============================================================
 
-        # Right arm joints for IK control
-        right_arm_joint_names = [
-            "right_shoulder_pitch_joint",
-            "right_shoulder_roll_joint",
-            "right_shoulder_yaw_joint",
-            "right_elbow_joint",
-            "right_wrist_roll_joint",
-            "right_wrist_pitch_joint",
-            "right_wrist_yaw_joint",
-        ]
+        target_right_pos_w = init_right_pos_w.clone()
+        target_right_pos_w[:, 1] += 0.15  # Y+ = forward in world frame
+        target_right_quat_w = init_right_quat_w.clone()
 
-        # Find joint indices
-        all_joint_names = robot.data.joint_names
-        right_arm_joint_ids = []
-        for name in right_arm_joint_names:
-            for i, jname in enumerate(all_joint_names):
-                if name == jname:
-                    right_arm_joint_ids.append(i)
-                    break
-
-        right_arm_joint_ids = torch.tensor(right_arm_joint_ids, device=device, dtype=torch.long)
-        print(f"\n[INFO] Right arm joints: {right_arm_joint_names}")
-        print(f"[INFO] Right arm joint IDs: {right_arm_joint_ids.tolist()}")
-
-        # Find EE body index
-        right_ee_body_name = "right_wrist_yaw_link"
-        right_ee_body_idx = robot.body_names.index(right_ee_body_name)
-
-        # CRITICAL: Jacobian index for floating base robot
-        # Tutorial says: "For a fixed base robot, the frame index is one less than the body index"
-        # G1 is FLOATING BASE, so we use body_idx directly!
-        if robot.is_fixed_base:
-            right_ee_jacobi_idx = right_ee_body_idx - 1
-            print(f"[INFO] Robot is FIXED BASE - using jacobi_idx = body_idx - 1")
-        else:
-            right_ee_jacobi_idx = right_ee_body_idx
-            print(f"[INFO] Robot is FLOATING BASE - using jacobi_idx = body_idx")
-
-        print(
-            f"[INFO] Right EE body: {right_ee_body_name} (body_idx={right_ee_body_idx}, jacobi_idx={right_ee_jacobi_idx})")
-
-        # ============================================================
-        # Get initial positions (in BASE frame!)
-        # ============================================================
-
-        # Get current EE pose in world frame
-        ee_pose_w = robot.data.body_pose_w[:, right_ee_body_idx]  # [pos(3), quat(4)]
-        ee_pos_w = ee_pose_w[:, 0:3]
-        ee_quat_w = ee_pose_w[:, 3:7]
-
-        # Get root pose in world frame
-        root_pose_w = robot.data.root_pose_w  # [pos(3), quat(4)]
-        root_pos_w = root_pose_w[:, 0:3]
-        root_quat_w = root_pose_w[:, 3:7]
-
-        # CRITICAL: Convert EE pose from world frame to BASE frame!
-        # This is what the tutorial does with subtract_frame_transforms
-        init_ee_pos_b, init_ee_quat_b = subtract_frame_transforms(
-            root_pos_w, root_quat_w, ee_pos_w, ee_quat_w
-        )
-
-        print(f"\n[INFO] Initial positions:")
-        print(f"  - Root (world): {root_pos_w[0].tolist()}")
-        print(f"  - EE (world): {ee_pos_w[0].tolist()}")
-        print(f"  - EE (BASE frame): {init_ee_pos_b[0].tolist()}")
-
-        # ============================================================
-        # Define target pose (in BASE frame!)
-        # ============================================================
-
-        # Target: move EE forward (Y+ in base frame) by 0.15m
-        target_ee_pos_b = init_ee_pos_b.clone()
-        target_ee_pos_b[:, 1] += 0.15  # Forward in base frame
-        target_ee_quat_b = init_ee_quat_b.clone()
-
-        # Create command tensor [pos(3), quat(4)]
-        ik_command = torch.cat([target_ee_pos_b, target_ee_quat_b], dim=-1)
-
-        print(f"\n[INFO] Target EE (BASE frame): {target_ee_pos_b[0].tolist()}")
+        print(f"\n[INFO] Target RIGHT EE (WORLD frame): {target_right_pos_w[0].tolist()}")
         print(f"[INFO] Movement: +0.15m in Y direction (forward)")
 
-        # Set the command
-        right_arm_controller.reset()
-        right_arm_controller.set_command(ik_command)
-
         # ============================================================
-        # Simulation loop
+        # Simulation loop - let environment's DiffIK do the work
         # ============================================================
 
         print("\n" + "=" * 50)
-        print("  Starting IK Control Loop")
+        print("  Starting Control Loop")
         print("=" * 50 + "\n")
 
         dt = env_cfg.sim.dt * env_cfg.decimation
 
         for step in range(300):
-            # Get current states
-            root_pose_w = robot.data.root_pose_w
-            root_pos_w = root_pose_w[:, 0:3]
-            root_quat_w = root_pose_w[:, 3:7]
+            # Get current positions for left arm (keep still)
+            current_left_pos_w = robot.data.body_pos_w[:, left_ee_idx]
+            current_left_quat_w = robot.data.body_quat_w[:, left_ee_idx]
 
-            ee_pose_w = robot.data.body_pose_w[:, right_ee_body_idx]
-            ee_pos_w = ee_pose_w[:, 0:3]
-            ee_quat_w = ee_pose_w[:, 3:7]
-
-            # CRITICAL: Convert to BASE frame!
-            ee_pos_b, ee_quat_b = subtract_frame_transforms(
-                root_pos_w, root_quat_w, ee_pos_w, ee_quat_w
-            )
-
-            # Get Jacobian - proper indexing for floating base
-            jacobians = robot.root_physx_view.get_jacobians()
-            # Shape: [num_envs, num_bodies-1, 6, num_dofs+6]
-            # For floating base: [num_envs, num_bodies-1, 6, num_joints+6]
-            # We need: [num_envs, 6, num_arm_joints]
-
-            # Extract Jacobian for right arm
-            # jacobians[:, jacobi_idx, :, joint_ids+6] for floating base
-            right_jacobian = jacobians[:, right_ee_jacobi_idx, :, :]
-            # Select only the columns for right arm joints (add 6 for floating base DOFs)
-            joint_cols = right_arm_joint_ids + 6  # Add 6 for floating base
-            right_jacobian = right_jacobian[:, :, joint_cols]
-
-            # Get current joint positions for right arm
-            joint_pos = robot.data.joint_pos[:, right_arm_joint_ids]
-
-            # Compute IK
-            joint_pos_des = right_arm_controller.compute(
-                ee_pos_b, ee_quat_b, right_jacobian, joint_pos
-            )
-
-            # Apply joint position targets
-            robot.set_joint_position_target(
-                joint_pos_des,
-                joint_ids=right_arm_joint_ids.tolist()
-            )
-
-            # Create actions for env.step (keeping other components)
+            # Create actions (in WORLD frame - V4 DiffIK will convert to BASE)
             actions = torch.zeros(num_envs, action_dim, device=device)
 
-            # Upper body IK action (simplified - just pass through)
-            # Left arm - keep still
-            left_ee_idx = robot.body_names.index("left_wrist_yaw_link")
-            left_ee_pose_w = robot.data.body_pose_w[:, left_ee_idx]
-            actions[:, 0:3] = left_ee_pose_w[:, 0:3]
-            actions[:, 3:7] = left_ee_pose_w[:, 3:7]
+            # Left arm - maintain current position
+            actions[:, 0:3] = current_left_pos_w
+            actions[:, 3:7] = current_left_quat_w
 
-            # Right arm - pass current target (will be overridden by our direct control)
-            actions[:, 7:10] = ee_pos_w  # Just placeholder
-            actions[:, 10:14] = ee_quat_w
+            # Right arm - move to target
+            actions[:, 7:10] = target_right_pos_w
+            actions[:, 10:14] = target_right_quat_w
 
             # Hands - neutral
             actions[:, 14:28] = 0.0
@@ -249,36 +120,26 @@ def main():
             # Lower body - stand still
             actions[:, 28:32] = 0.0
 
-            # Step environment
+            # Step environment - DiffIK action term will process
             obs_dict, reward, terminated, truncated, info = env.step(actions)
 
             # Log every 20 steps
             if step % 20 == 0:
-                # Error in base frame
-                pos_error = torch.norm(ee_pos_b - target_ee_pos_b, dim=-1).item()
-                root_height = root_pos_w[:, 2].mean().item()
+                current_right_pos_w = robot.data.body_pos_w[:, right_ee_idx]
+                ee_error = torch.norm(current_right_pos_w - target_right_pos_w, dim=-1).item()
+                root_height = robot.data.root_pos_w[:, 2].mean().item()
 
-                # Joint changes
-                current_joints = robot.data.joint_pos[:, right_arm_joint_ids]
-                default_joints = robot.data.default_joint_pos[:, right_arm_joint_ids]
-                joint_changes = current_joints - default_joints
+                # Calculate movement from initial
+                movement = current_right_pos_w - init_right_pos_w
 
                 status = "✓ STABLE" if root_height > 0.5 else "✗ FALLEN"
 
-                print(f"[{step:3d}] EE Error: {pos_error:.4f}m | Base Z: {root_height:.3f}m {status}")
-                print(f"      EE pos (base): [{ee_pos_b[0, 0]:.3f}, {ee_pos_b[0, 1]:.3f}, {ee_pos_b[0, 2]:.3f}]")
+                print(f"[{step:3d}] EE Error: {ee_error:.4f}m | Base Z: {root_height:.3f}m {status}")
                 print(
-                    f"      Target (base): [{target_ee_pos_b[0, 0]:.3f}, {target_ee_pos_b[0, 1]:.3f}, {target_ee_pos_b[0, 2]:.3f}]")
-
-                # Print significant joint changes
-                changes_str = []
-                for i, name in enumerate(right_arm_joint_names):
-                    change_deg = math.degrees(joint_changes[0, i].item())
-                    if abs(change_deg) > 0.5:
-                        short_name = name.replace("right_", "").replace("_joint", "")
-                        changes_str.append(f"{short_name}: {change_deg:+.1f}°")
-                if changes_str:
-                    print(f"      Joints: {', '.join(changes_str)}")
+                    f"      Current: [{current_right_pos_w[0, 0]:.3f}, {current_right_pos_w[0, 1]:.3f}, {current_right_pos_w[0, 2]:.3f}]")
+                print(
+                    f"      Target:  [{target_right_pos_w[0, 0]:.3f}, {target_right_pos_w[0, 1]:.3f}, {target_right_pos_w[0, 2]:.3f}]")
+                print(f"      Movement: X={movement[0, 0]:.4f}, Y={movement[0, 1]:.4f}, Z={movement[0, 2]:.4f}")
 
             if terminated.any() or truncated.any():
                 print(f"\n[!] Episode ended at step {step}")
@@ -288,35 +149,29 @@ def main():
         # Summary
         # ============================================================
 
-        final_ee_pos_b, final_ee_quat_b = subtract_frame_transforms(
-            robot.data.root_pose_w[:, 0:3],
-            robot.data.root_pose_w[:, 3:7],
-            robot.data.body_pose_w[:, right_ee_body_idx, 0:3],
-            robot.data.body_pose_w[:, right_ee_body_idx, 3:7]
-        )
-
-        movement = final_ee_pos_b - init_ee_pos_b
-        final_error = torch.norm(final_ee_pos_b - target_ee_pos_b, dim=-1).item()
+        final_right_pos_w = robot.data.body_pos_w[:, right_ee_idx]
+        final_movement = final_right_pos_w - init_right_pos_w
+        final_error = torch.norm(final_right_pos_w - target_right_pos_w, dim=-1).item()
 
         print("\n" + "=" * 50)
         print("  SUMMARY")
         print("=" * 50)
-        print(f"  Initial EE (base): {init_ee_pos_b[0].tolist()}")
-        print(f"  Final EE (base):   {final_ee_pos_b[0].tolist()}")
-        print(f"  Target (base):     {target_ee_pos_b[0].tolist()}")
-        print(f"  Actual movement:   {movement[0].tolist()}")
-        print(f"  Expected movement: [0.0, 0.15, 0.0]")
-        print(f"  Final error:       {final_error:.4f}m")
+        print(f"  Initial EE:  {init_right_pos_w[0].tolist()}")
+        print(f"  Final EE:    {final_right_pos_w[0].tolist()}")
+        print(f"  Target:      {target_right_pos_w[0].tolist()}")
+        print(
+            f"  Movement:    X={final_movement[0, 0]:.4f}, Y={final_movement[0, 1]:.4f}, Z={final_movement[0, 2]:.4f}")
+        print(f"  Final error: {final_error:.4f}m")
 
-        y_movement = movement[0, 1].item()
+        y_movement = final_movement[0, 1].item()
         if y_movement > 0.10:
             print(f"\n  ✓ SUCCESS! Arm moved forward {y_movement:.3f}m")
         elif y_movement > 0.05:
-            print(f"\n  ⚠ PARTIAL: Arm moved {y_movement:.3f}m (not full 0.15m)")
-        elif y_movement > 0:
+            print(f"\n  ⚠ PARTIAL: Arm moved {y_movement:.3f}m (target: 0.15m)")
+        elif y_movement > 0.01:
             print(f"\n  ⚠ MINIMAL: Arm moved only {y_movement:.3f}m")
         else:
-            print(f"\n  ✗ FAILED: Arm moved backward or not at all")
+            print(f"\n  ✗ FAILED: Arm didn't move forward (Y={y_movement:.4f})")
 
         env.close()
 
