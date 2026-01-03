@@ -1,24 +1,23 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# G1 Pick-and-Place Demo - V10
-# Based on the WORKING test_locomanipulation.py
+# G1 Pick-and-Place Demo - V11
+# Real pick-and-place with object position tracking
 
 """
-G1 Pick-and-Place Demo V10
-- Uses ManagerBasedRLEnv with LocomanipulationG1DiffIKEnvCfg (WORKS!)
-- Adds state machine for pick-and-place task
-- Lower body: Agile policy (automatic via env)
-- Upper body: DiffIK (automatic via env)
+G1 Pick-and-Place Demo V11
+- Reads actual object position from scene
+- Moves EE to object location
+- Picks up and places in crate
 
 Usage:
     cd C:\IsaacLab
-    .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_pick_place_v10.py
+    .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\test_pick_place_v11.py
 """
 
 import argparse
 import math
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="G1 Pick-and-Place V10")
+parser = argparse.ArgumentParser(description="G1 Pick-and-Place V11")
 parser.add_argument("--num_envs", type=int, default=1)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -30,72 +29,142 @@ import torch
 from isaaclab.envs import ManagerBasedRLEnv
 
 print("\n" + "=" * 70)
-print("  G1 Pick-and-Place Demo - V10")
-print("  Using ManagerBasedRLEnv (WORKING!)")
+print("  G1 Pick-and-Place Demo - V11")
+print("  Real Object Tracking + Crate Placement")
 print("=" * 70 + "\n")
 
 
 # ============================================================================
-# STATE MACHINE
+# STATE MACHINE WITH DYNAMIC OBJECT TRACKING
 # ============================================================================
 
 class PickPlaceStateMachine:
-    """State machine for pick-and-place task."""
+    """State machine for pick-and-place with real object tracking."""
 
-    def __init__(self, device: str, init_right_offset: torch.Tensor, init_right_quat: torch.Tensor):
+    def __init__(self, device: str):
         self.device = device
-        self.init_right_offset = init_right_offset  # Default EE offset from base
-        self.init_right_quat = init_right_quat  # Default EE orientation
 
-        # State definitions with EE offsets from robot base
-        # Robot at origin, table at (0, 0.55)
-        # Cube approximately at (0, 0.45, 0.70) on table
+        # State durations
+        self.state_durations = {
+            "HOME": 2.0,
+            "APPROACH": 2.0,
+            "REACH": 2.0,
+            "GRASP": 1.5,
+            "LIFT": 2.0,
+            "MOVE_TO_CRATE": 2.5,
+            "LOWER": 2.0,
+            "RELEASE": 1.0,
+            "RETRACT": 2.0,
+            "DONE": 999.0,
+        }
 
-        # All positions are OFFSETS from robot base (not world positions)
-        # Right hand default offset is approximately (0.15, -0.25, 0.15)
-
-        self.states = [
-            {"name": "HOME", "ee_offset": [0.15, 0.25, 0.20], "dur": 2.0, "gripper": "open"},
-            {"name": "APPROACH", "ee_offset": [0.0, 0.35, 0.15], "dur": 2.0, "gripper": "open"},
-            {"name": "REACH", "ee_offset": [0.0, 0.42, 0.02], "dur": 1.5, "gripper": "open"},
-            {"name": "GRASP", "ee_offset": [0.0, 0.42, 0.02], "dur": 1.0, "gripper": "close"},
-            {"name": "LIFT", "ee_offset": [0.0, 0.35, 0.20], "dur": 1.5, "gripper": "close"},
-            {"name": "MOVE", "ee_offset": [0.15, 0.35, 0.20], "dur": 2.0, "gripper": "close"},
-            {"name": "LOWER", "ee_offset": [0.15, 0.42, 0.05], "dur": 1.5, "gripper": "close"},
-            {"name": "RELEASE", "ee_offset": [0.15, 0.42, 0.05], "dur": 1.0, "gripper": "open"},
-            {"name": "RETRACT", "ee_offset": [0.15, 0.25, 0.20], "dur": 2.0, "gripper": "open"},
-            {"name": "DONE", "ee_offset": [0.15, 0.25, 0.20], "dur": 999.0, "gripper": "open"},
+        self.state_order = [
+            "HOME", "APPROACH", "REACH", "GRASP", "LIFT",
+            "MOVE_TO_CRATE", "LOWER", "RELEASE", "RETRACT", "DONE"
         ]
 
         self.current_state_idx = 0
         self.state_timer = 0.0
         self.cycle_count = 0
 
+        # Will be set dynamically
+        self.object_pos = None
+        self.crate_pos = None
+        self.base_pos = None
+
     def reset(self):
         self.current_state_idx = 0
         self.state_timer = 0.0
-        print(f"\n[State] → {self.states[0]['name']}")
+        print(f"\n[State] → {self.state_order[0]}")
 
     def step(self, dt: float):
         self.state_timer += dt
-        current_state = self.states[self.current_state_idx]
+        current_state = self.state_order[self.current_state_idx]
+        duration = self.state_durations[current_state]
 
-        if self.state_timer >= current_state["dur"]:
-            if self.current_state_idx < len(self.states) - 1:
+        if self.state_timer >= duration:
+            if self.current_state_idx < len(self.state_order) - 1:
                 self.current_state_idx += 1
                 self.state_timer = 0.0
-                print(f"\n[State] → {self.states[self.current_state_idx]['name']}")
+                print(f"\n[State] → {self.state_order[self.current_state_idx]}")
 
-    def get_current_state(self):
-        return self.states[self.current_state_idx]
+    def get_current_state(self) -> str:
+        return self.state_order[self.current_state_idx]
 
-    def get_right_ee_offset(self) -> torch.Tensor:
-        """Get right end-effector offset from base."""
-        state = self.states[self.current_state_idx]
-        return torch.tensor([state["ee_offset"]], device=self.device)
+    def update_positions(self, object_pos: torch.Tensor, crate_pos: torch.Tensor, base_pos: torch.Tensor):
+        """Update object and crate positions."""
+        self.object_pos = object_pos.clone()
+        self.crate_pos = crate_pos.clone()
+        self.base_pos = base_pos.clone()
+
+    def get_ee_target(self) -> torch.Tensor:
+        """Get end-effector target position in world frame."""
+        state = self.get_current_state()
+
+        if self.object_pos is None or self.base_pos is None:
+            # Default position if not initialized
+            return self.base_pos + torch.tensor([[0.15, 0.25, 0.20]], device=self.device)
+
+        # Heights relative to base
+        approach_height = 0.25  # Above object
+        grasp_height = 0.05  # At object level
+        lift_height = 0.35  # Lifted
+
+        if state == "HOME":
+            # Home position - in front of robot
+            return self.base_pos + torch.tensor([[0.15, 0.30, 0.20]], device=self.device)
+
+        elif state == "APPROACH":
+            # Above the object
+            target = self.object_pos.clone()
+            target[:, 2] = self.base_pos[:, 2] + approach_height
+            return target
+
+        elif state == "REACH":
+            # At object height
+            target = self.object_pos.clone()
+            target[:, 2] = self.base_pos[:, 2] + grasp_height
+            return target
+
+        elif state == "GRASP":
+            # Same as reach - holding position
+            target = self.object_pos.clone()
+            target[:, 2] = self.base_pos[:, 2] + grasp_height
+            return target
+
+        elif state == "LIFT":
+            # Lift up
+            target = self.object_pos.clone()
+            target[:, 2] = self.base_pos[:, 2] + lift_height
+            return target
+
+        elif state == "MOVE_TO_CRATE":
+            # Move towards crate, keep lifted
+            target = self.crate_pos.clone()
+            target[:, 2] = self.base_pos[:, 2] + lift_height
+            return target
+
+        elif state == "LOWER":
+            # Lower into crate
+            target = self.crate_pos.clone()
+            target[:, 2] = self.base_pos[:, 2] + 0.15  # Into crate
+            return target
+
+        elif state == "RELEASE":
+            # Same position for release
+            target = self.crate_pos.clone()
+            target[:, 2] = self.base_pos[:, 2] + 0.15
+            return target
+
+        elif state == "RETRACT":
+            # Back to home
+            return self.base_pos + torch.tensor([[0.15, 0.30, 0.25]], device=self.device)
+
+        else:  # DONE
+            return self.base_pos + torch.tensor([[0.15, 0.30, 0.20]], device=self.device)
 
     def is_done(self) -> bool:
-        return self.states[self.current_state_idx]["name"] == "DONE"
+        return self.get_current_state() == "DONE"
 
 
 # ============================================================================
@@ -124,71 +193,85 @@ def main():
         device = env.device
 
         robot = env.scene["robot"]
+        obj = env.scene["object"]
 
         print(f"\n[INFO] Action dimension: {action_dim}")
-        print("[INFO] Action format:")
-        print("  [0:3]   - Left EE position")
-        print("  [3:7]   - Left EE quaternion")
-        print("  [7:10]  - Right EE position")
-        print("  [10:14] - Right EE quaternion")
-        print("  [14:28] - Hand joints")
-        print("  [28:32] - Lower body command (vx, vy, wz, hip_height)")
 
-        # Get initial EE positions (for left arm - keep static)
-        left_ee_idx = 28
-        right_ee_idx = 29
+        # Get body indices
+        left_ee_idx = robot.body_names.index("left_wrist_yaw_link")
+        right_ee_idx = robot.body_names.index("right_wrist_yaw_link")
 
+        print(f"[INFO] Left EE body idx: {left_ee_idx}")
+        print(f"[INFO] Right EE body idx: {right_ee_idx}")
+
+        # Get initial positions
         init_left_pos = robot.data.body_pos_w[:, left_ee_idx].clone()
         init_left_quat = robot.data.body_quat_w[:, left_ee_idx].clone()
-        init_right_pos = robot.data.body_pos_w[:, right_ee_idx].clone()
         init_right_quat = robot.data.body_quat_w[:, right_ee_idx].clone()
 
         init_base_pos = robot.data.root_pos_w[:, :3].clone()
         init_left_offset = init_left_pos - init_base_pos
-        init_right_offset = init_right_pos - init_base_pos
 
-        print(f"\n[INFO] Initial right EE offset from base: {init_right_offset[0].tolist()}")
+        # Get object and crate positions
+        object_pos = obj.data.root_pos_w[:, :3].clone()
+
+        # Crate position (from scene config - approximately)
+        # The packing table crate is at the left side of the table
+        crate_pos = init_base_pos + torch.tensor([[-0.35, 0.45, 0.0]], device=device)
+
+        print(f"\n[INFO] Object position: {object_pos[0].tolist()}")
+        print(f"[INFO] Crate position (approx): {crate_pos[0].tolist()}")
+        print(f"[INFO] Robot base position: {init_base_pos[0].tolist()}")
 
         # Create state machine
-        state_machine = PickPlaceStateMachine(device, init_right_offset, init_right_quat)
+        state_machine = PickPlaceStateMachine(device)
+        state_machine.update_positions(object_pos, crate_pos, init_base_pos)
         state_machine.reset()
 
         print("\n[INFO] Starting simulation...")
         print("[INFO] Lower body: Agile Policy (standing still)")
-        print("[INFO] Upper body: DiffIK (state machine control)\n")
+        print("[INFO] Upper body: DiffIK (object tracking)\n")
 
         step_count = 0
-        max_steps = 3000
+        max_steps = 4000
         max_cycles = 2
 
-        dt = env_cfg.sim.dt * env_cfg.decimation  # Control dt
+        dt = env_cfg.sim.dt * env_cfg.decimation
 
         while simulation_app.is_running() and step_count < max_steps:
-            # Get current base position
+            # Update positions
             current_base_pos = robot.data.root_pos_w[:, :3]
+            current_object_pos = obj.data.root_pos_w[:, :3]
+
+            # Update state machine with current positions
+            state_machine.update_positions(current_object_pos, crate_pos, current_base_pos)
+
+            # Get EE target from state machine
+            right_ee_target = state_machine.get_ee_target()
 
             # Create action tensor
             actions = torch.zeros(num_envs, action_dim, device=device)
 
-            # ===== LEFT ARM - Keep at initial position =====
+            # ===== LEFT ARM - Keep at initial offset =====
             target_left_pos = current_base_pos + init_left_offset
             actions[:, 0:3] = target_left_pos
             actions[:, 3:7] = init_left_quat
 
-            # ===== RIGHT ARM - State machine control =====
-            right_ee_offset = state_machine.get_right_ee_offset()
-            target_right_pos = current_base_pos + right_ee_offset
-            actions[:, 7:10] = target_right_pos
-            actions[:, 10:14] = init_right_quat  # Keep same orientation
+            # ===== RIGHT ARM - Track target =====
+            actions[:, 7:10] = right_ee_target
+            actions[:, 10:14] = init_right_quat
 
-            # ===== HANDS - Neutral =====
-            actions[:, 14:28] = 0.0
+            # ===== HANDS =====
+            current_state = state_machine.get_current_state()
+            if current_state in ["GRASP", "LIFT", "MOVE_TO_CRATE", "LOWER"]:
+                # Close hand (positive values for gripper close)
+                actions[:, 14:28] = 0.5  # Adjust based on hand joint config
+            else:
+                # Open hand
+                actions[:, 14:28] = 0.0
 
             # ===== LOWER BODY - Stand still =====
-            actions[:, 28] = 0.0  # vx
-            actions[:, 29] = 0.0  # vy
-            actions[:, 30] = 0.0  # wz
-            actions[:, 31] = 0.0  # hip_height
+            actions[:, 28:32] = 0.0
 
             # Step environment
             obs_dict, reward, terminated, truncated, info = env.step(actions)
@@ -202,21 +285,23 @@ def main():
             if step_count % 50 == 0:
                 root_height = robot.data.root_pos_w[:, 2].mean().item()
                 right_ee_pos = robot.data.body_pos_w[:, right_ee_idx]
-                ee_error = torch.norm(right_ee_pos - target_right_pos, dim=-1).mean().item()
+                ee_error = torch.norm(right_ee_pos - right_ee_target, dim=-1).mean().item()
+                obj_height = current_object_pos[:, 2].mean().item()
 
-                current_state = state_machine.get_current_state()
                 status = "✓ STABLE" if root_height > 0.5 else "✗ FALLEN"
 
-                print(f"[{step_count:4d}] {current_state['name']:10s} | "
-                      f"EE Error: {ee_error:.3f}m | "
+                print(f"[{step_count:4d}] {current_state:15s} | "
+                      f"EE Err: {ee_error:.3f}m | "
+                      f"Obj Z: {obj_height:.3f}m | "
                       f"Base Z: {root_height:.3f}m {status}")
 
             # Check for episode reset
             if terminated.any() or truncated.any():
                 print(f"\n[!] Episode ended at step {step_count}")
-                print("    Resetting...")
                 obs_dict, _ = env.reset()
                 init_base_pos = robot.data.root_pos_w[:, :3].clone()
+                object_pos = obj.data.root_pos_w[:, :3].clone()
+                state_machine.update_positions(object_pos, crate_pos, init_base_pos)
                 state_machine.reset()
 
             # Check for cycle completion
@@ -229,7 +314,7 @@ def main():
                 state_machine.reset()
 
         print("\n" + "=" * 70)
-        print(f"  ✓ Pick-and-Place Demo V10 Complete!")
+        print(f"  ✓ Pick-and-Place Demo V11 Complete!")
         print(f"  Cycles completed: {state_machine.cycle_count}")
         print("=" * 70)
 
