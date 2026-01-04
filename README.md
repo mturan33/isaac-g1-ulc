@@ -1,4 +1,4 @@
-# 🤖 G1 VLM-ULC Navigation
+# 🤖 G1 VLM-ULC-VLM Navigation
 
 Language-conditioned humanoid navigation using Vision-Language Models (VLM) and ULC Reinforcement Learning.
 
