@@ -405,15 +405,18 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             print(f"[ULC_G1_Stage1] Joint names: {joint_names}")
 
         def _setup_scene(self):
+            """Setup the scene - robot is spawned via scene config."""
             from isaaclab.assets import Articulation
 
+            # Robot is already spawned by scene config, just get reference
             self.robot = Articulation(self.cfg.scene.robot)
             self.scene.articulations["robot"] = self.robot
 
+            # Clone environments
             self.scene.clone_environments(copy_from_source=False)
 
-            light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
-            light_cfg.func("/World/Light", light_cfg)
+            # NOTE: Light is already created by scene config (dome_light)
+            # Do NOT create it again here!
 
         def _pre_physics_step(self, actions: torch.Tensor):
             self.actions = torch.clamp(actions, -1.0, 1.0)
