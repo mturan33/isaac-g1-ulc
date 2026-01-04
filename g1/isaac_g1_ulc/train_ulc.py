@@ -373,14 +373,14 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             super().__init__(cfg, render_mode, **kwargs)
 
             self.target_height = 0.75
-            self.previous_actions = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
+            self.previous_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
             self._prev_joint_vel = None
 
             # Find leg joint indices
             self._setup_joint_indices()
 
             print(f"[ULC_G1_Stage1] Initialized with {self.num_envs} envs")
-            print(f"[ULC_G1_Stage1] Observations: {cfg.num_observations}, Actions: {cfg.num_actions}")
+            print(f"[ULC_G1_Stage1] Observations: {NUM_OBSERVATIONS}, Actions: {NUM_ACTIONS}")
 
         def _setup_joint_indices(self):
             """Find leg joint indices."""
@@ -443,13 +443,13 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             base_ang_vel = robot.data.root_ang_vel_w
 
             # Transform to base frame
-            from isaaclab.utils.math import quat_rotate_inverse
-            base_lin_vel_b = quat_rotate_inverse(base_quat, base_lin_vel)
-            base_ang_vel_b = quat_rotate_inverse(base_quat, base_ang_vel)
+            from isaaclab.utils.math import quat_apply_inverse
+            base_lin_vel_b = quat_apply_inverse(base_quat, base_lin_vel)
+            base_ang_vel_b = quat_apply_inverse(base_quat, base_ang_vel)
 
             # Projected gravity
             gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-            proj_gravity = quat_rotate_inverse(base_quat, gravity)
+            proj_gravity = quat_apply_inverse(base_quat, gravity)
 
             # Joint state (legs only)
             joint_pos = robot.data.joint_pos
@@ -491,9 +491,9 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             r_height = torch.exp(-10.0 * height_error ** 2)
 
             # Orientation reward
-            from isaaclab.utils.math import quat_rotate_inverse
+            from isaaclab.utils.math import quat_apply_inverse
             gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-            proj_gravity = quat_rotate_inverse(base_quat, gravity)
+            proj_gravity = quat_apply_inverse(base_quat, gravity)
             orientation_error = torch.sum(proj_gravity[:, :2] ** 2, dim=-1)
             r_orientation = torch.exp(-5.0 * orientation_error)
 
@@ -545,9 +545,9 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             too_high = height > 1.2
 
             # Orientation check
-            from isaaclab.utils.math import quat_rotate_inverse
+            from isaaclab.utils.math import quat_apply_inverse
             gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-            proj_gravity = quat_rotate_inverse(base_quat, gravity)
+            proj_gravity = quat_apply_inverse(base_quat, gravity)
             too_tilted = (torch.abs(proj_gravity[:, 0]) > 0.7) | (torch.abs(proj_gravity[:, 1]) > 0.7)
 
             terminated = too_low | too_high | too_tilted
@@ -590,7 +590,7 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
     # Create and return environment
     cfg = ULC_G1_Stage1_EnvCfg()
     env = ULC_G1_Stage1_Env(cfg)
-    return env
+    return env, NUM_OBSERVATIONS, NUM_ACTIONS
 
 
 # =============================================================================
@@ -609,12 +609,11 @@ def train():
 
     # Create environment
     print(f"\n[INFO] Creating environment with {args_cli.num_envs} envs...")
-    env = create_ulc_g1_env(args_cli.num_envs, device)
+    env, num_obs, num_actions = create_ulc_g1_env(args_cli.num_envs, device)
 
     num_envs = env.num_envs
-    num_obs = env.observation_space["policy"].shape[0]
-    num_actions = env.action_space.shape[0]
 
+    print(f"[INFO] Num Envs: {num_envs}")
     print(f"[INFO] Observations: {num_obs}, Actions: {num_actions}")
 
     # Hyperparameters
@@ -663,6 +662,10 @@ def train():
     # Reset environment
     obs_dict, _ = env.reset()
     obs = get_obs_tensor(obs_dict)
+
+    # Verify observation shape
+    print(f"[DEBUG] Observation shape: {obs.shape}")
+    assert obs.shape[-1] == num_obs, f"Observation mismatch: {obs.shape[-1]} != {num_obs}"
 
     # Training stats
     episode_rewards = deque(maxlen=100)
