@@ -272,17 +272,13 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
     from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
     from isaaclab.scene import InteractiveSceneCfg
     from isaaclab.sim import SimulationCfg
-    from isaaclab.terrains import TerrainImporterCfg
     from isaaclab.utils import configclass
 
-    # G1 USD - check multiple possible paths
-    G1_USD_PATHS = [
-        "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd",
-        "${ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1.usd",
-    ]
+    # IMPORTANT: Actuator configs are in isaaclab.actuators module in Isaac Lab 2.3+
+    from isaaclab.actuators import ImplicitActuatorCfg
 
-    # Use first available path
-    G1_USD_PATH = G1_USD_PATHS[0]
+    # G1 USD path
+    G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
 
     @configclass
     class ULC_G1_SceneCfg(InteractiveSceneCfg):
@@ -324,7 +320,7 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
                 joint_vel={".*": 0.0},
             ),
             actuators={
-                "all_joints": sim_utils.ImplicitActuatorCfg(
+                "all_joints": ImplicitActuatorCfg(
                     joint_names_expr=[".*"],
                     stiffness=100.0,
                     damping=5.0,
@@ -384,8 +380,17 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
                 if any(x in name.lower() for x in ["hip", "knee", "ankle"]):
                     self.leg_indices.append(i)
 
-            self.leg_indices = torch.tensor(self.leg_indices[:12], device=self.device, dtype=torch.long)
+            # Ensure we have exactly 12 leg joints or pad/trim
+            if len(self.leg_indices) >= 12:
+                self.leg_indices = self.leg_indices[:12]
+            else:
+                # Pad with first available joints if needed
+                while len(self.leg_indices) < 12:
+                    self.leg_indices.append(self.leg_indices[-1] if self.leg_indices else 0)
+
+            self.leg_indices = torch.tensor(self.leg_indices, device=self.device, dtype=torch.long)
             print(f"[ULC_G1_Stage1] Leg joints: {len(self.leg_indices)}")
+            print(f"[ULC_G1_Stage1] Joint names: {joint_names}")
 
         def _setup_scene(self):
             from isaaclab.assets import Articulation
@@ -435,21 +440,21 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             joint_pos = robot.data.joint_pos
             joint_vel = robot.data.joint_vel
 
-            leg_pos = joint_pos[:, self.leg_indices] if len(self.leg_indices) > 0 else joint_pos[:, :12]
-            leg_vel = joint_vel[:, self.leg_indices] if len(self.leg_indices) > 0 else joint_vel[:, :12]
+            leg_pos = joint_pos[:, self.leg_indices]
+            leg_vel = joint_vel[:, self.leg_indices]
 
             # Height command
             height_cmd = torch.ones(self.num_envs, 1, device=self.device) * self.target_height
 
             # Build observation
             obs = torch.cat([
-                base_lin_vel_b,  # 3
-                base_ang_vel_b,  # 3
-                proj_gravity,  # 3
-                leg_pos,  # 12
-                leg_vel,  # 12
-                height_cmd,  # 1
-                self.previous_actions,  # 12
+                base_lin_vel_b,                    # 3
+                base_ang_vel_b,                    # 3
+                proj_gravity,                       # 3
+                leg_pos,                            # 12
+                leg_vel,                            # 12
+                height_cmd,                         # 1
+                self.previous_actions,              # 12
             ], dim=-1)
 
             obs = torch.clamp(obs, -100.0, 100.0)
@@ -499,11 +504,11 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
 
             # Total reward
             reward = (
-                    5.0 * r_height +
-                    3.0 * r_orientation +
-                    4.0 * r_velocity +
-                    r_joint_acc +
-                    r_action_rate
+                5.0 * r_height +
+                3.0 * r_orientation +
+                4.0 * r_velocity +
+                r_joint_acc +
+                r_action_rate
             )
 
             # Log components
