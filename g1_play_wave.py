@@ -2,7 +2,7 @@
 #
 # Kullanım:
 #   cd C:\IsaacLab
-#   .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\play_wave.py --task Isaac-Velocity-Flat-G1-v0 --num_envs 16 --load_run 2025-12-24_13-11-23 --wave_hand right
+#   .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_vlm_rl\g1_play_wave.py --task Isaac-Velocity-Flat-G1-v0 --num_envs 16 --load_run 2025-12-24_13-11-23 --wave_hand right
 
 from __future__ import annotations
 

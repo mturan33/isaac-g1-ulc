@@ -1,19 +1,18 @@
 # Copyright (c) 2025, VLM-RL G1 Project
-# G1 DiffIK Test - V23
-# Modify Locomanipulation config for FIXED BASE
+# G1 DiffIK Test - V25
+# Directly use Isaac-PickPlace-Locomanipulation-G1-Abs-v0
 
 """
-G1 DiffIK Test V23 - Locomanipulation with Fixed Base Override
+G1 DiffIK Test V25 - Direct Locomanipulation Environment
 
-Uses the existing locomanipulation environment but:
-1. Creates it normally
-2. Modifies the robot config before reset
+We KNOW this environment exists from documentation and previous usage.
+Just try it directly without listing.
 """
 
 import argparse
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="G1 DiffIK V23 - Fixed Base via Config Modify")
+parser = argparse.ArgumentParser(description="G1 DiffIK V25 - Locomanipulation Direct")
 parser.add_argument("--num_envs", type=int, default=1)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -24,128 +23,115 @@ simulation_app = app_launcher.app
 import torch
 import gymnasium as gym
 
-# Import Isaac Lab gym registration
+# Import Isaac Lab gym registration - ALL of them
 import isaaclab_tasks  # noqa: F401
 
+# Also try importing the specific module
+try:
+    import isaaclab_tasks.manager_based.manipulation  # noqa: F401
+
+    print("[INFO] Loaded manipulation tasks")
+except ImportError as e:
+    print(f"[WARN] Could not load manipulation tasks: {e}")
+
 print("\n" + "=" * 70)
-print("  G1 DiffIK Test - V23")
-print("  Locomanipulation Environment Test")
+print("  G1 DiffIK Test - V25")
+print("  Direct Locomanipulation Environment")
 print("=" * 70 + "\n")
 
 
 def main():
-    # ============================================================
-    # First, list available G1 environments
-    # ============================================================
+    # The environment we know exists from documentation
+    env_id = "Isaac-PickPlace-Locomanipulation-G1-Abs-v0"
 
+    print(f"[INFO] Attempting to create: {env_id}")
+
+    # First check if it's registered
     all_envs = list(gym.envs.registry.keys())
+
+    # Search for similar names
     g1_envs = [e for e in all_envs if "G1" in e]
+    pick_envs = [e for e in all_envs if "Pick" in e]
+    loco_envs = [e for e in all_envs if "Loco" in e or "loco" in e]
+    manip_envs = [e for e in all_envs if "Manip" in e or "manip" in e]
 
-    print(f"[INFO] Found {len(g1_envs)} G1 environments:")
-    for env_name in sorted(g1_envs):
-        print(f"  - {env_name}")
+    print(f"\n[DEBUG] G1 environments ({len(g1_envs)}):")
+    for e in sorted(g1_envs)[:10]:
+        print(f"  - {e}")
 
-    # Try the locomanipulation environment we used before
-    env_candidates = [
-        "Isaac-PickPlace-Locomanipulation-G1-Abs-v0",
-        "Isaac-Locomanipulation-G1-v0",
-        "Isaac-G1-Flat-v0",
-    ]
+    print(f"\n[DEBUG] Pick environments ({len(pick_envs)}):")
+    for e in sorted(pick_envs)[:10]:
+        print(f"  - {e}")
 
-    env = None
-    env_id = None
+    print(f"\n[DEBUG] Loco environments ({len(loco_envs)}):")
+    for e in sorted(loco_envs)[:10]:
+        print(f"  - {e}")
 
-    for candidate in env_candidates:
-        if candidate in g1_envs:
-            print(f"\n[INFO] Found environment: {candidate}")
-            env_id = candidate
-            break
+    print(f"\n[DEBUG] Manip environments ({len(manip_envs)}):")
+    for e in sorted(manip_envs)[:10]:
+        print(f"  - {e}")
 
-    if env_id is None:
-        # Just pick the first G1 environment
-        if g1_envs:
-            env_id = g1_envs[0]
-            print(f"\n[INFO] Using first G1 environment: {env_id}")
+    # Check if our target is registered
+    if env_id in all_envs:
+        print(f"\n✅ Found {env_id} in registry!")
+    else:
+        print(f"\n❌ {env_id} NOT in registry")
+        print(f"\n[INFO] Searching for similar...")
+
+        # Search for anything with G1 and Pick or Loco
+        similar = [e for e in all_envs if "G1" in e and ("Pick" in e or "Loco" in e or "Manip" in e)]
+        if similar:
+            print(f"[INFO] Similar environments found:")
+            for e in similar:
+                print(f"  - {e}")
+            env_id = similar[0]
+            print(f"\n[INFO] Trying: {env_id}")
         else:
-            print("[ERROR] No G1 environments found!")
+            print("[ERROR] No similar G1 manipulation environments found")
+
+            # Let's also check isaaclab specific registrations
+            print("\n[DEBUG] All environments containing 'Isaac':")
+            isaac_envs = [e for e in all_envs if "Isaac" in e]
+            for e in sorted(isaac_envs)[:30]:
+                print(f"  - {e}")
             return
 
-    print(f"\n[INFO] Creating environment: {env_id}")
-
+    # Try to create the environment
     try:
+        print(f"\n[INFO] Creating environment: {env_id}")
         env = gym.make(env_id, num_envs=1)
-        print(f"[INFO] Environment created successfully!")
+        print(f"[INFO] ✅ Environment created successfully!")
         print(f"[INFO] Action space: {env.action_space}")
         print(f"[INFO] Observation space: {env.observation_space}")
-    except Exception as e:
-        print(f"[ERROR] Failed to create environment: {e}")
-        return
 
-    # Reset environment
-    obs, info = env.reset()
-    print(f"[INFO] Observation shape: {obs['policy'].shape if isinstance(obs, dict) else obs.shape}")
+        # Reset and test
+        obs, info = env.reset()
+        print(f"[INFO] Reset successful")
 
-    # Get robot reference
-    try:
+        # Get robot reference
         scene = env.unwrapped.scene
         robot = scene["robot"]
         init_root_pos = robot.data.root_pos_w.clone()
         print(f"[INFO] Initial root position: {init_root_pos[0].tolist()}")
+
+        # Quick test loop
+        print("\n[INFO] Running quick test (100 steps)...")
+        for step in range(100):
+            action = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+            obs, reward, terminated, truncated, info = env.step(action)
+
+            if step % 25 == 0:
+                current_root = robot.data.root_pos_w
+                drift = torch.norm(current_root[:, :2] - init_root_pos[:, :2], dim=-1).item()
+                print(f"[{step:3d}] Root drift: {drift:.4f}m")
+
+        print("\n✅ Environment works! Ready for DiffIK integration.")
+        env.close()
+
     except Exception as e:
-        print(f"[WARNING] Could not access robot: {e}")
-        init_root_pos = None
-
-    # ============================================================
-    # Run test
-    # ============================================================
-
-    print("\n" + "=" * 60)
-    print("  Running Test - Check Robot Movement")
-    print("=" * 60 + "\n")
-
-    for step in range(200):
-        # Zero action
-        action = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
-
-        # Step environment
-        obs, reward, terminated, truncated, info = env.step(action)
-
-        # Check root drift
-        if init_root_pos is not None:
-            try:
-                current_root_pos = robot.data.root_pos_w
-                root_drift = torch.norm(current_root_pos[:, :2] - init_root_pos[:, :2], dim=-1).item()
-                height = current_root_pos[0, 2].item()
-
-                # Log every 40 steps
-                if step % 40 == 0:
-                    status = "STABLE" if root_drift < 0.5 else "DRIFTING"
-                    print(f"[{step:3d}] Root drift: {root_drift:.4f}m | Height: {height:.3f}m | {status}")
-            except:
-                if step % 40 == 0:
-                    print(f"[{step:3d}] Step completed")
-        else:
-            if step % 40 == 0:
-                print(f"[{step:3d}] Step completed (no robot access)")
-
-    # Final summary
-    print("\n" + "=" * 60)
-    print("  SUMMARY")
-    print("=" * 60)
-
-    if init_root_pos is not None:
-        try:
-            final_root_pos = robot.data.root_pos_w
-            final_drift = torch.norm(final_root_pos[:, :2] - init_root_pos[:, :2], dim=-1).item()
-            print(f"\n  Final root drift: {final_drift:.4f}m")
-            print(f"  Final height: {final_root_pos[0, 2].item():.3f}m")
-        except:
-            print("\n  Could not get final metrics")
-
-    print(f"\n  Environment {env_id} works!")
-    print(f"  Next step: Implement DiffIK control with this environment")
-
-    env.close()
+        print(f"[ERROR] Failed to create environment: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
