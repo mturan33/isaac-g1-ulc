@@ -1,10 +1,10 @@
-# 🤖 G1 VLM-RL Navigation
+# 🤖 G1 VLM-ULC Navigation
 
-Language-conditioned humanoid navigation using Vision-Language Models (VLM) and Reinforcement Learning.
+Language-conditioned humanoid navigation using Vision-Language Models (VLM) and ULC Reinforcement Learning.
 
 ## 📋 Overview
 
-This project implements a hierarchical VLM-RL system for Unitree G1 robot navigation:
+This project implements a hierarchical VLM-ULC system for Unitree G1 robot navigation:
 
 ```
 "Mavi sandalyeye git" (Go to the blue chair)
@@ -159,13 +159,23 @@ This project includes code from:
   Copyright 2025 HangZhou YuShu TECHNOLOGY CO.,LTD. ("Unitree Robotics")
   Licensed under Apache License 2.0
 
+@misc{sun2025ulcunifiedfinegrainedcontroller,
+      title={ULC: A Unified and Fine-Grained Controller for Humanoid Loco-Manipulation}, 
+      author={Wandong Sun and Luying Feng and Baoshi Cao and Yang Liu and Yaochu Jin and Zongwu Xie},
+      year={2025},
+      eprint={2507.06905},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2507.06905}, 
+}
 
 This code builds upon following open-source code-bases. Please visit the URLs to see the respective LICENSES:
 
-1. https://github.com/isaac-sim/IsaacLab
-2. https://github.com/isaac-sim/IsaacSim
-3. https://github.com/zeromq/pyzmq
-4. https://github.com/unitreerobotics/unitree_sdk2_python
-5. https://github.com/unitreerobotics/unitree_sim_isaaclab
+1. https://ulc-humanoid.github.io/
+2. https://github.com/isaac-sim/IsaacLab
+3. https://github.com/isaac-sim/IsaacSim
+4. https://github.com/zeromq/pyzmq
+5. https://github.com/unitreerobotics/unitree_sdk2_python
+6. https://github.com/unitreerobotics/unitree_sim_isaaclab
 
 ------------------
