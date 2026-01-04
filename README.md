@@ -1,10 +1,10 @@
-# 🤖 G1 VLM-RL Navigation
+# 🤖 G1 VLM-ULC Navigation
 
-Language-conditioned humanoid navigation using Vision-Language Models (VLM) and Reinforcement Learning.
+Language-conditioned humanoid navigation using Vision-Language Models (VLM) and ULC Reinforcement Learning.
 
 ## 📋 Overview
 
-This project implements a hierarchical VLM-RL system for Unitree G1 robot navigation:
+This project implements a hierarchical VLM-ULC system for Unitree G1 robot navigation:
 
 ```
 "Mavi sandalyeye git" (Go to the blue chair)
