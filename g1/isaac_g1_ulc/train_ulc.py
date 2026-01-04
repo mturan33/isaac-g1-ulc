@@ -54,6 +54,7 @@ import torch.nn.functional as F
 import numpy as np
 from torch.distributions import Normal
 from torch.utils.tensorboard import SummaryWriter
+import gymnasium as gym
 
 # Enable TF32 for faster training
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -280,6 +281,10 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
     # G1 USD path
     G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
 
+    # Constants for observation/action space
+    NUM_ACTIONS = 12  # Legs only for Stage 1
+    NUM_OBSERVATIONS = 46  # 3+3+3+12+12+1+12
+
     @configclass
     class ULC_G1_SceneCfg(InteractiveSceneCfg):
         """Scene config."""
@@ -334,9 +339,16 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
 
         episode_length_s = 10.0
         decimation = 4
-        num_actions = 12  # Legs only
-        num_observations = 46  # Simplified
+        num_actions = NUM_ACTIONS
+        num_observations = NUM_OBSERVATIONS
         num_states = 0
+
+        # IMPORTANT: Isaac Lab 2.3+ requires observation_space and action_space
+        observation_space = gym.spaces.Dict({
+            "policy": gym.spaces.Box(low=-float("inf"), high=float("inf"), shape=(NUM_OBSERVATIONS,))
+        })
+        action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(NUM_ACTIONS,))
+        state_space = None
 
         sim: SimulationCfg = SimulationCfg(
             dt=1 / 200,
