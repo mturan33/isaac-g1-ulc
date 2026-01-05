@@ -10,33 +10,12 @@ BUILD ON TOP OF STAGE 1:
 - Add curriculum terrain (flat → rough)
 - Add perturbation robustness training
 
-NEW FEATURES:
-1. RayCaster sensor for height scanning (100+ rays)
-2. Curriculum terrain: flat → bumpy → stairs → obstacles
-3. Gait phase observation and reward
-4. Velocity tracking rewards
-5. Random perturbation forces during training
-6. Foot contact pattern rewards
-
-OBSERVATIONS (Stage 2):
-- base_lin_vel_b (3)
-- base_ang_vel_b (3)
-- proj_gravity (3)
-- leg_pos (12)
-- leg_vel (12)
-- height_cmd (1)
-- velocity_cmd (3) - NEW: vx, vy, vyaw commands
-- gait_phase (2) - NEW: sin/cos of gait phase
-- height_scan (100) - NEW: RayCaster heights
-- previous_actions (12)
-Total: 151 observations
-
 Usage:
     # Start fresh locomotion training
-    ./isaaclab.bat -p train_ulc_stage2.py --num_envs 4096 --headless --max_iterations 6000
+    ./isaaclab.bat -p train_ulc_stage_2.py --num_envs 4096 --headless --max_iterations 6000
 
     # Resume from Stage 1 checkpoint (recommended)
-    ./isaaclab.bat -p train_ulc_stage2.py --num_envs 4096 --headless --max_iterations 6000 --stage1_checkpoint logs/ulc/ulc_g1_stage1_xxx/model_best.pt
+    ./isaaclab.bat -p train_ulc_stage_2.py --num_envs 4096 --headless --max_iterations 6000 --stage1_checkpoint logs/ulc/ulc_g1_stage1_xxx/model_best.pt
 """
 
 import torch
@@ -47,56 +26,31 @@ import argparse
 from datetime import datetime
 
 # ===== Configuration =====
-HEIGHT_MIN = 0.55  # Lower for locomotion
+HEIGHT_MIN = 0.55
 HEIGHT_MAX = 0.85
 HEIGHT_DEFAULT = 0.72
 
-# Velocity command ranges
-VX_RANGE = (-1.0, 1.5)  # m/s forward/backward
-VY_RANGE = (-0.5, 0.5)  # m/s lateral
-VYAW_RANGE = (-1.0, 1.0)  # rad/s turning
+VX_RANGE = (-1.0, 1.5)
+VY_RANGE = (-0.5, 0.5)
+VYAW_RANGE = (-1.0, 1.0)
 
-# Gait parameters
-GAIT_FREQUENCY = 2.0  # Hz (steps per second)
+GAIT_FREQUENCY = 2.0
 
-# Reward weights - balanced for locomotion
 REWARD_WEIGHTS = {
-    # Locomotion rewards
-    "velocity_tracking_x": 5.0,  # Track vx command
-    "velocity_tracking_y": 3.0,  # Track vy command
-    "velocity_tracking_yaw": 3.0,  # Track vyaw command
-    "gait_pattern": 4.0,  # Correct foot timing
-    "forward_progress": 2.0,  # Move in commanded direction
-
-    # Stability rewards (from Stage 1)
-    "height_tracking": 3.0,  # Maintain height
-    "orientation": 4.0,  # Stay upright
-    "feet_contact": 2.0,  # Proper ground contact
-
-    # Smoothness penalties
-    "action_smoothness": -0.02,  # Penalize jerky actions
-    "joint_acceleration": -0.002,  # Penalize joint jerk
-    "energy": -0.001,  # Penalize energy usage
-
-    # Safety
-    "alive_bonus": 1.0,  # Bonus for staying alive
-    "stumble_penalty": -2.0,  # Penalty for foot stumble
+    "velocity_tracking_x": 5.0,
+    "velocity_tracking_y": 3.0,
+    "velocity_tracking_yaw": 3.0,
+    "gait_pattern": 4.0,
+    "forward_progress": 2.0,
+    "height_tracking": 3.0,
+    "orientation": 4.0,
+    "feet_contact": 2.0,
+    "action_smoothness": -0.02,
+    "joint_acceleration": -0.002,
+    "energy": -0.001,
+    "alive_bonus": 1.0,
+    "stumble_penalty": -2.0,
 }
-
-# Terrain curriculum levels
-TERRAIN_CURRICULUM = {
-    0: {"type": "flat", "difficulty": 0.0},
-    1: {"type": "random_uniform", "noise_range": (0.01, 0.03)},
-    2: {"type": "random_uniform", "noise_range": (0.03, 0.06)},
-    3: {"type": "pyramid_sloped", "slope_range": (0.0, 0.1)},
-    4: {"type": "pyramid_sloped", "slope_range": (0.1, 0.2)},
-    5: {"type": "discrete_obstacles", "height_range": (0.02, 0.05)},
-    6: {"type": "discrete_obstacles", "height_range": (0.05, 0.10)},
-    7: {"type": "pyramid_stairs", "step_height": (0.02, 0.05)},
-    8: {"type": "pyramid_stairs", "step_height": (0.05, 0.10)},
-    9: {"type": "mixed", "difficulty": 1.0},
-}
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ULC G1 Stage 2 Training - Locomotion")
@@ -108,30 +62,28 @@ def parse_args():
     parser.add_argument("--headless", action="store_true", help="Run headless")
     return parser.parse_args()
 
-
 args_cli = parse_args()
 
-# Isaac Lab imports
+# Isaac Lab imports - MUST BE BEFORE AppLauncher
 from isaaclab.app import AppLauncher
-
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# Now import Isaac Lab modules
 import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.assets import ArticulationCfg, Articulation
-from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.actuators import ImplicitActuatorCfg  # CORRECT IMPORT!
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
-from isaaclab.sensors import RayCasterCfg, RayCaster, patterns
 from isaaclab.terrains import TerrainImporterCfg, TerrainGeneratorCfg
 from isaaclab.terrains.height_field import HfRandomUniformTerrainCfg, HfDiscreteObstaclesTerrainCfg
 from isaaclab.terrains.trimesh import MeshPlaneTerrainCfg
-from isaaclab.sim import ISAACLAB_NUCLEUS_DIR
+from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR  # CORRECT IMPORT!
 from torch.utils.tensorboard import SummaryWriter
 
-# G1 USD path (from cloud)
-G1_USD_PATH = f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1.usd"
+# G1 USD path
+G1_USD_PATH = f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/Unitree/G1/g1_minimal.usd"
 
 print("=" * 80)
 print("ULC G1 TRAINING - STAGE 2: LOCOMOTION WITH ROUGH TERRAIN")
@@ -142,36 +94,27 @@ for name, weight in REWARD_WEIGHTS.items():
 print()
 
 
-# ===== Actor-Critic Network (Extended for Stage 2) =====
+# ===== Actor-Critic Network =====
 class ActorCriticNetwork(nn.Module):
     def __init__(self, num_obs, num_actions, hidden_dims=[512, 256, 128]):
         super().__init__()
 
-        # Actor network
         actor_layers = []
         prev_dim = num_obs
         for dim in hidden_dims:
-            actor_layers.extend([
-                nn.Linear(prev_dim, dim),
-                nn.ELU(),
-            ])
+            actor_layers.extend([nn.Linear(prev_dim, dim), nn.ELU()])
             prev_dim = dim
         actor_layers.append(nn.Linear(prev_dim, num_actions))
         self.actor = nn.Sequential(*actor_layers)
 
-        # Critic network
         critic_layers = []
         prev_dim = num_obs
         for dim in hidden_dims:
-            critic_layers.extend([
-                nn.Linear(prev_dim, dim),
-                nn.ELU(),
-            ])
+            critic_layers.extend([nn.Linear(prev_dim, dim), nn.ELU()])
             prev_dim = dim
         critic_layers.append(nn.Linear(prev_dim, 1))
         self.critic = nn.Sequential(*critic_layers)
 
-        # Learnable log_std
         self.log_std = nn.Parameter(torch.zeros(num_actions))
         self.log_std_min = -3.0
         self.log_std_max = 0.5
@@ -297,48 +240,13 @@ class PPO:
 
 # ===== Stage 2 Environment =====
 def create_ulc_g1_stage2_env(num_envs: int, device: str):
+
     @configclass
     class ULC_G1_Stage2_SceneCfg(InteractiveSceneCfg):
-        """Scene configuration with terrain and RayCaster."""
+        """Scene configuration with terrain."""
 
-        # Curriculum terrain (starts flat, progresses to rough)
-        terrain = TerrainImporterCfg(
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=TerrainGeneratorCfg(
-                seed=42,
-                size=(8.0, 8.0),
-                border_width=20.0,
-                num_rows=10,
-                num_cols=20,
-                horizontal_scale=0.1,
-                vertical_scale=0.005,
-                slope_threshold=0.75,
-                curriculum=True,  # Enable curriculum
-                sub_terrains={
-                    "flat": MeshPlaneTerrainCfg(proportion=0.3),
-                    "random_rough": HfRandomUniformTerrainCfg(
-                        proportion=0.3,
-                        noise_range=(0.01, 0.06),
-                        noise_step=0.01,
-                    ),
-                    "obstacles": HfDiscreteObstaclesTerrainCfg(
-                        proportion=0.4,
-                        obstacle_height_range=(0.02, 0.10),
-                        obstacle_width_range=(0.2, 0.5),
-                        num_obstacles=20,
-                        platform_width=2.0,
-                    ),
-                },
-            ),
-            collision_group=-1,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=0.0,
-            ),
-            debug_vis=False,
-        )
+        # Simple ground plane for now (terrain curriculum can be added later)
+        ground = sim_utils.GroundPlaneCfg()
 
         # G1 Robot
         robot = ArticulationCfg(
@@ -349,6 +257,13 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
                     disable_gravity=False,
                     max_depenetration_velocity=10.0,
                     enable_gyroscopic_forces=True,
+                ),
+                articulation_root_props=sim_utils.ArticulationRootPropertiesCfg(
+                    enabled_self_collisions=False,
+                    solver_position_iteration_count=8,
+                    solver_velocity_iteration_count=4,
+                    sleep_threshold=0.005,
+                    stabilization_threshold=0.001,
                 ),
             ),
             init_state=ArticulationCfg.InitialStateCfg(
@@ -399,33 +314,20 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             },
         )
 
-        # RayCaster for height scanning
-        height_scanner = RayCasterCfg(
-            prim_path="/World/envs/env_.*/Robot/pelvis",
-            offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
-            attach_yaw_only=True,
-            pattern_cfg=patterns.GridPatternCfg(
-                resolution=0.1,
-                size=(1.6, 1.0),  # 1.6m forward, 1.0m lateral
-            ),
-            debug_vis=False,
-            mesh_prim_paths=["/World/ground"],
-        )
-
     @configclass
     class ULC_G1_Stage2_EnvCfg(DirectRLEnvCfg):
         decimation = 4
         episode_length_s = 20.0
 
-        # Extended observations for locomotion
-        # base_vel(3) + ang_vel(3) + gravity(3) + leg_pos(12) + leg_vel(12) +
-        # height_cmd(1) + vel_cmd(3) + gait_phase(2) + height_scan(100) + prev_actions(12) = 151
+        # Observations: base_vel(3) + ang_vel(3) + gravity(3) + leg_pos(12) + leg_vel(12) +
+        # height_cmd(1) + vel_cmd(3) + gait_phase(2) + prev_actions(12) = 51
+        # (RayCaster height_scan removed for simplicity - can add later)
         action_space = 12
-        observation_space = 151
+        observation_space = 51
         state_space = 0
 
         sim = sim_utils.SimulationCfg(
-            dt=1 / 200,
+            dt=1/200,
             render_interval=decimation,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0,
@@ -459,14 +361,12 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
                     self.leg_indices.append(joint_names.index(name))
             self.leg_indices = torch.tensor(self.leg_indices, device=self.device)
 
+            print(f"[ULC_G1_Stage2] Leg joints: {len(self.leg_indices)}")
+
             # Default leg positions
             self.default_leg_positions = torch.tensor([
-                -0.1, -0.1,  # hip pitch
-                0.0, 0.0,  # hip roll
-                0.0, 0.0,  # hip yaw
-                0.25, 0.25,  # knee
-                -0.15, -0.15,  # ankle pitch
-                0.0, 0.0,  # ankle roll
+                -0.1, -0.1, 0.0, 0.0, 0.0, 0.0,
+                0.25, 0.25, -0.15, -0.15, 0.0, 0.0,
             ], device=self.device)
 
             # Symmetry indices
@@ -477,11 +377,8 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             self.target_heights = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
             self.velocity_commands = torch.zeros(self.num_envs, 3, device=self.device)  # vx, vy, vyaw
 
-            # Gait phase (0-1 cycle)
+            # Gait phase
             self.gait_phase = torch.zeros(self.num_envs, device=self.device)
-
-            # Height scan buffer (will be filled by RayCaster)
-            self.height_scan = torch.zeros(self.num_envs, 100, device=self.device)
 
             # Tracking
             self.spawn_positions = torch.zeros(self.num_envs, 3, device=self.device)
@@ -493,29 +390,28 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             self.episode_rewards = torch.zeros(self.num_envs, device=self.device)
             self.episode_lengths = torch.zeros(self.num_envs, device=self.device)
 
-            # Curriculum tracking
-            self.terrain_levels = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-            self.success_rate = torch.zeros(self.num_envs, device=self.device)
-
             # Perturbation settings
-            self.perturbation_prob = 0.1  # 10% chance per step
-            self.perturbation_magnitude = 50.0  # Newtons
+            self.perturbation_prob = 0.1
+            self.perturbation_magnitude = 50.0
 
             # Action scale
             self.action_scale = 0.5
 
             print(f"[ULC_G1_Stage2] Initialized with {self.num_envs} envs")
             print(f"[ULC_G1_Stage2] Observations: {cfg.observation_space}, Actions: {cfg.action_space}")
-            print(f"[ULC_G1_Stage2] Gait frequency: {GAIT_FREQUENCY} Hz")
-            print(f"[ULC_G1_Stage2] Perturbation prob: {self.perturbation_prob}")
 
         @property
         def robot(self):
             return self.scene["robot"]
 
-        @property
-        def height_scanner(self):
-            return self.scene.get("height_scanner", None)
+        def _setup_scene(self):
+            self.cfg.scene.robot.spawn.func(
+                self.cfg.scene.robot.spawn,
+                self.cfg.scene.robot.prim_path.replace(".*", "0"),
+                self.cfg.scene.robot,
+            )
+            self.scene.clone_environments(copy_from_source=False)
+            self.scene.filter_collisions(global_prim_paths=[])
 
         def _pre_physics_step(self, actions):
             self.actions = actions.clone()
@@ -523,7 +419,6 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             robot = self.robot
             targets = robot.data.default_joint_pos.clone()
 
-            # Apply actions relative to default
             leg_targets = self.default_leg_positions.unsqueeze(0) + actions * self.action_scale
             targets[:, self.leg_indices] = leg_targets
 
@@ -534,29 +429,8 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             dt = self.cfg.sim.dt * self.cfg.decimation
             self.gait_phase = (self.gait_phase + GAIT_FREQUENCY * dt) % 1.0
 
-            # Apply random perturbations during training
-            self._apply_perturbations()
-
         def _apply_action(self):
             pass
-
-        def _apply_perturbations(self):
-            """Apply random forces to torso for perturbation robustness."""
-            # Random selection of environments to perturb
-            perturb_mask = torch.rand(self.num_envs, device=self.device) < self.perturbation_prob
-
-            if perturb_mask.any():
-                # Random force direction (XY plane)
-                force_dir = torch.randn(self.num_envs, 3, device=self.device)
-                force_dir[:, 2] = 0  # No vertical force
-                force_dir = force_dir / (torch.norm(force_dir, dim=-1, keepdim=True) + 1e-8)
-
-                # Apply force magnitude
-                forces = force_dir * self.perturbation_magnitude * perturb_mask.unsqueeze(-1).float()
-
-                # Apply to robot base (would need PhysX API for actual implementation)
-                # For now, this is a placeholder - actual implementation depends on Isaac Lab API
-                pass
 
         def _get_observations(self) -> dict:
             robot = self.robot
@@ -581,42 +455,24 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
 
             # Commands
             height_cmd = self.target_heights.unsqueeze(-1)
-            vel_cmd = self.velocity_commands  # [vx, vy, vyaw]
+            vel_cmd = self.velocity_commands
 
             # Gait phase as sin/cos
             gait_sin = torch.sin(2 * np.pi * self.gait_phase).unsqueeze(-1)
             gait_cos = torch.cos(2 * np.pi * self.gait_phase).unsqueeze(-1)
             gait_obs = torch.cat([gait_sin, gait_cos], dim=-1)
 
-            # Height scan from RayCaster (or zeros if not available)
-            if self.height_scanner is not None:
-                try:
-                    self.height_scan = self.height_scanner.data.ray_hits_w[:, :, 2]  # Z heights
-                    # Normalize relative to robot height
-                    robot_height = robot.data.root_pos_w[:, 2:3]
-                    self.height_scan = (self.height_scan - robot_height).clamp(-1.0, 1.0)
-                except:
-                    pass  # Use zeros if scanner not ready
-
-            # Ensure height_scan has correct size (pad or truncate to 100)
-            if self.height_scan.shape[1] != 100:
-                height_scan_padded = torch.zeros(self.num_envs, 100, device=self.device)
-                n = min(self.height_scan.shape[1], 100)
-                height_scan_padded[:, :n] = self.height_scan[:, :n]
-                self.height_scan = height_scan_padded
-
             obs = torch.cat([
-                base_lin_vel_b,  # 3
-                base_ang_vel_b,  # 3
-                proj_gravity,  # 3
-                leg_pos,  # 12
-                leg_vel,  # 12
-                height_cmd,  # 1
-                vel_cmd,  # 3
-                gait_obs,  # 2
-                self.height_scan,  # 100
-                self.previous_actions,  # 12
-            ], dim=-1)  # Total: 151
+                base_lin_vel_b,          # 3
+                base_ang_vel_b,          # 3
+                proj_gravity,            # 3
+                leg_pos,                 # 12
+                leg_vel,                 # 12
+                height_cmd,              # 1
+                vel_cmd,                 # 3
+                gait_obs,                # 2
+                self.previous_actions,   # 12
+            ], dim=-1)  # Total: 51
 
             obs = torch.clamp(obs, -100.0, 100.0)
             obs = torch.nan_to_num(obs, nan=0.0)
@@ -637,13 +493,8 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
 
             from isaaclab.utils.math import quat_apply_inverse
 
-            # Get velocity in body frame
             base_lin_vel_b = quat_apply_inverse(base_quat, base_lin_vel)
             base_ang_vel_b = quat_apply_inverse(base_quat, base_ang_vel)
-
-            # ============================================
-            # LOCOMOTION REWARDS
-            # ============================================
 
             # 1. Velocity tracking X
             vx_error = torch.abs(base_lin_vel_b[:, 0] - self.velocity_commands[:, 0])
@@ -657,28 +508,21 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             vyaw_error = torch.abs(base_ang_vel_b[:, 2] - self.velocity_commands[:, 2])
             r_vyaw = torch.exp(-3.0 * vyaw_error ** 2)
 
-            # 4. Gait pattern reward (alternating foot contacts)
-            # Left foot should be down when phase < 0.5, right foot when phase >= 0.5
-            left_knee = leg_pos[:, 6]  # left_knee_joint
-            right_knee = leg_pos[:, 7]  # right_knee_joint
+            # 4. Gait pattern reward
+            left_knee = leg_pos[:, 6]
+            right_knee = leg_pos[:, 7]
 
-            # Simplified gait: encourage alternating knee extension
             phase_left = (self.gait_phase < 0.5).float()
             phase_right = (self.gait_phase >= 0.5).float()
 
-            # Reward: left extended when phase_left, right extended when phase_right
             gait_error = (phase_left * (left_knee - 0.1) ** 2 +
-                          phase_right * (right_knee - 0.1) ** 2)
+                         phase_right * (right_knee - 0.1) ** 2)
             r_gait = torch.exp(-5.0 * gait_error)
 
-            # 5. Forward progress (in commanded direction)
+            # 5. Forward progress
             cmd_vel_magnitude = torch.norm(self.velocity_commands[:, :2], dim=-1) + 0.01
             actual_vel_magnitude = torch.norm(base_lin_vel_b[:, :2], dim=-1)
             r_progress = torch.clamp(actual_vel_magnitude / cmd_vel_magnitude, 0, 2)
-
-            # ============================================
-            # STABILITY REWARDS (from Stage 1)
-            # ============================================
 
             # 6. Height tracking
             height = base_pos[:, 2]
@@ -691,12 +535,8 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             orientation_error = torch.sum(proj_gravity[:, :2] ** 2, dim=-1)
             r_orientation = torch.exp(-5.0 * orientation_error)
 
-            # 8. Feet contact (placeholder - would need contact sensor)
+            # 8. Feet contact (placeholder)
             r_feet_contact = torch.ones(self.num_envs, device=self.device)
-
-            # ============================================
-            # SMOOTHNESS PENALTIES
-            # ============================================
 
             # 9. Action smoothness
             action_diff = self.actions - self._prev_actions
@@ -711,44 +551,37 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
                 r_joint_acc = torch.zeros(self.num_envs, device=self.device)
             self._prev_joint_vel = joint_vel.clone()
 
-            # 11. Energy (torque * velocity)
+            # 11. Energy
             r_energy = torch.sum(torch.abs(joint_vel[:, self.leg_indices]) *
-                                 torch.abs(self.actions), dim=-1)
-
-            # ============================================
-            # SAFETY
-            # ============================================
+                                torch.abs(self.actions), dim=-1)
 
             # 12. Alive bonus
             r_alive = torch.ones(self.num_envs, device=self.device)
 
-            # 13. Stumble penalty (large foot velocity near ground)
+            # 13. Stumble penalty
             r_stumble = torch.zeros(self.num_envs, device=self.device)
 
-            # ============================================
-            # TOTAL REWARD
-            # ============================================
+            # Total reward
             reward = (
-                    REWARD_WEIGHTS["velocity_tracking_x"] * r_vx +
-                    REWARD_WEIGHTS["velocity_tracking_y"] * r_vy +
-                    REWARD_WEIGHTS["velocity_tracking_yaw"] * r_vyaw +
-                    REWARD_WEIGHTS["gait_pattern"] * r_gait +
-                    REWARD_WEIGHTS["forward_progress"] * r_progress +
-                    REWARD_WEIGHTS["height_tracking"] * r_height +
-                    REWARD_WEIGHTS["orientation"] * r_orientation +
-                    REWARD_WEIGHTS["feet_contact"] * r_feet_contact +
-                    REWARD_WEIGHTS["action_smoothness"] * r_action_smooth +
-                    REWARD_WEIGHTS["joint_acceleration"] * r_joint_acc +
-                    REWARD_WEIGHTS["energy"] * r_energy +
-                    REWARD_WEIGHTS["alive_bonus"] * r_alive +
-                    REWARD_WEIGHTS["stumble_penalty"] * r_stumble
+                REWARD_WEIGHTS["velocity_tracking_x"] * r_vx +
+                REWARD_WEIGHTS["velocity_tracking_y"] * r_vy +
+                REWARD_WEIGHTS["velocity_tracking_yaw"] * r_vyaw +
+                REWARD_WEIGHTS["gait_pattern"] * r_gait +
+                REWARD_WEIGHTS["forward_progress"] * r_progress +
+                REWARD_WEIGHTS["height_tracking"] * r_height +
+                REWARD_WEIGHTS["orientation"] * r_orientation +
+                REWARD_WEIGHTS["feet_contact"] * r_feet_contact +
+                REWARD_WEIGHTS["action_smoothness"] * r_action_smooth +
+                REWARD_WEIGHTS["joint_acceleration"] * r_joint_acc +
+                REWARD_WEIGHTS["energy"] * r_energy +
+                REWARD_WEIGHTS["alive_bonus"] * r_alive +
+                REWARD_WEIGHTS["stumble_penalty"] * r_stumble
             )
 
-            # Track
             self.episode_rewards += reward
             self.episode_lengths += 1
 
-            # Log components
+            # Log
             self.extras["Reward/vx_tracking"] = r_vx.mean()
             self.extras["Reward/vy_tracking"] = r_vy.mean()
             self.extras["Reward/vyaw_tracking"] = r_vyaw.mean()
@@ -789,7 +622,6 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
 
             robot = self.robot
 
-            # Reset position
             pos = torch.tensor([0.0, 0.0, 0.8], device=self.device).expand(len(env_ids), -1).clone()
             pos[:, :2] += torch.randn(len(env_ids), 2, device=self.device) * 0.05
 
@@ -799,29 +631,20 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             robot.write_root_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids)
             robot.write_root_velocity_to_sim(torch.zeros(len(env_ids), 6, device=self.device), env_ids)
 
-            # Reset joints
             default_pos = robot.data.default_joint_pos[env_ids]
             robot.write_joint_state_to_sim(default_pos, torch.zeros_like(default_pos), None, env_ids)
 
-            # Reset tracking
             self.spawn_positions[env_ids] = pos.clone()
 
             # Randomize commands
-            self.target_heights[env_ids] = torch.rand(len(env_ids), device=self.device) * (
-                        HEIGHT_MAX - HEIGHT_MIN) + HEIGHT_MIN
+            self.target_heights[env_ids] = torch.rand(len(env_ids), device=self.device) * (HEIGHT_MAX - HEIGHT_MIN) + HEIGHT_MIN
 
-            # Random velocity commands
-            self.velocity_commands[env_ids, 0] = torch.rand(len(env_ids), device=self.device) * (
-                        VX_RANGE[1] - VX_RANGE[0]) + VX_RANGE[0]
-            self.velocity_commands[env_ids, 1] = torch.rand(len(env_ids), device=self.device) * (
-                        VY_RANGE[1] - VY_RANGE[0]) + VY_RANGE[0]
-            self.velocity_commands[env_ids, 2] = torch.rand(len(env_ids), device=self.device) * (
-                        VYAW_RANGE[1] - VYAW_RANGE[0]) + VYAW_RANGE[0]
+            self.velocity_commands[env_ids, 0] = torch.rand(len(env_ids), device=self.device) * (VX_RANGE[1] - VX_RANGE[0]) + VX_RANGE[0]
+            self.velocity_commands[env_ids, 1] = torch.rand(len(env_ids), device=self.device) * (VY_RANGE[1] - VY_RANGE[0]) + VY_RANGE[0]
+            self.velocity_commands[env_ids, 2] = torch.rand(len(env_ids), device=self.device) * (VYAW_RANGE[1] - VYAW_RANGE[0]) + VYAW_RANGE[0]
 
-            # Reset gait phase
             self.gait_phase[env_ids] = torch.rand(len(env_ids), device=self.device)
 
-            # Reset buffers
             self.previous_actions[env_ids] = 0.0
             self._prev_actions[env_ids] = 0.0
             self.episode_rewards[env_ids] = 0.0
@@ -843,31 +666,27 @@ def train():
 
     print(f"[INFO] Observations: {num_obs}, Actions: {num_actions}")
 
-    # Create network with extended observations
     actor_critic = ActorCriticNetwork(num_obs, num_actions).to(device)
 
-    # Load Stage 1 weights if provided (transfer learning)
+    # Load Stage 1 weights if provided
     if args_cli.stage1_checkpoint:
-        print(f"\n[INFO] Loading Stage 1 checkpoint for transfer learning: {args_cli.stage1_checkpoint}")
+        print(f"\n[INFO] Loading Stage 1 checkpoint: {args_cli.stage1_checkpoint}")
         stage1_ckpt = torch.load(args_cli.stage1_checkpoint, map_location=device, weights_only=False)
 
-        # Stage 1 has smaller observation space - need to handle this
         stage1_state = stage1_ckpt["actor_critic"]
-
-        # Only transfer weights that match in shape
         current_state = actor_critic.state_dict()
+
         transferred = 0
         for key in stage1_state:
             if key in current_state and stage1_state[key].shape == current_state[key].shape:
                 current_state[key] = stage1_state[key]
                 transferred += 1
             else:
-                print(f"  [SKIP] {key}: shape mismatch or not found")
+                print(f"  [SKIP] {key}: shape mismatch")
 
         actor_critic.load_state_dict(current_state)
         print(f"[INFO] Transferred {transferred} parameters from Stage 1")
 
-    # PPO settings
     ppo = PPO(
         actor_critic,
         device,
@@ -878,11 +697,10 @@ def train():
         epochs=5,
         mini_batch_size=4096,
         value_coef=0.5,
-        entropy_coef=0.01,  # Slightly higher for exploration
+        entropy_coef=0.01,
         max_grad_norm=1.0,
     )
 
-    # Logging
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.join("logs", "ulc", f"{args_cli.experiment_name}_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
@@ -890,14 +708,11 @@ def train():
 
     print(f"[INFO] Logging to: {log_dir}")
 
-    # Training settings
     num_steps_per_env = 24
     max_iterations = args_cli.max_iterations
     checkpoint_interval = 500
-
     std_decay_rate = 0.998
 
-    # Resume
     start_iteration = 0
     best_reward = float('-inf')
 
@@ -914,7 +729,6 @@ def train():
     print(f"[INFO] Target: {max_iterations} iterations")
     print("=" * 80)
 
-    # Initialize
     obs_dict, _ = env.reset()
     obs = obs_dict["policy"]
 
@@ -923,7 +737,6 @@ def train():
     for iteration in range(start_iteration, max_iterations):
         iter_start = datetime.now()
 
-        # Collect rollout
         obs_buffer = []
         action_buffer = []
         reward_buffer = []
@@ -951,7 +764,6 @@ def train():
             reward_buffer.append(reward)
             done_buffer.append(done.float())
 
-        # Stack
         obs_batch = torch.stack(obs_buffer)
         action_batch = torch.stack(action_buffer)
         reward_batch = torch.stack(reward_buffer)
@@ -959,30 +771,24 @@ def train():
         value_batch = torch.stack(value_buffer)
         log_prob_batch = torch.stack(log_prob_buffer)
 
-        # Next value
         with torch.no_grad():
             _, next_value = actor_critic(obs)
             next_value = next_value.squeeze(-1)
 
-        # GAE
         advantages, returns = ppo.compute_gae(reward_batch, value_batch, done_batch, next_value)
 
-        # Flatten
         obs_flat = obs_batch.view(-1, num_obs)
         action_flat = action_batch.view(-1, num_actions)
         log_prob_flat = log_prob_batch.view(-1)
         returns_flat = returns.view(-1)
         advantages_flat = advantages.view(-1)
 
-        # Update
         update_info = ppo.update(obs_flat, action_flat, log_prob_flat, returns_flat, advantages_flat)
 
-        # Decay std
         with torch.no_grad():
             actor_critic.log_std.data *= std_decay_rate
             actor_critic.log_std.data.clamp_(actor_critic.log_std_min, actor_critic.log_std_max)
 
-        # Metrics
         mean_reward = reward_batch.mean().item()
         mean_std = actor_critic.get_std().mean().item()
 
@@ -990,7 +796,6 @@ def train():
         total_steps = num_steps_per_env * args_cli.num_envs
         steps_per_sec = total_steps / iter_time
 
-        # Save best
         if mean_reward > best_reward:
             best_reward = mean_reward
             checkpoint_data = {
@@ -1002,7 +807,6 @@ def train():
             torch.save(checkpoint_data, os.path.join(log_dir, "model_best.pt"))
             print(f"[BEST] New best! Reward: {best_reward:.2f}")
 
-        # Logging
         writer.add_scalar("Train/mean_reward", mean_reward, iteration)
         writer.add_scalar("Policy/mean_noise_std", mean_std, iteration)
         writer.add_scalar("Loss/surrogate", update_info["actor_loss"], iteration)
@@ -1013,12 +817,10 @@ def train():
             if isinstance(value, torch.Tensor):
                 writer.add_scalar(key, value.item(), iteration)
 
-        # Print
         if iteration % 10 == 0:
             elapsed = datetime.now() - start_time
             remaining = max_iterations - iteration
-            eta = elapsed / (
-                        iteration - start_iteration + 1) * remaining if iteration > start_iteration else elapsed * remaining
+            eta = elapsed / (iteration - start_iteration + 1) * remaining if iteration > start_iteration else elapsed * remaining
 
             print("#" * 80)
             print(f"  STAGE 2 LOCOMOTION - Iteration {iteration}/{max_iterations}")
@@ -1027,7 +829,6 @@ def train():
             print(f"  Elapsed: {str(elapsed).split('.')[0]} | ETA: {str(eta).split('.')[0]}")
             print("#" * 80)
 
-        # Checkpoint
         if (iteration + 1) % checkpoint_interval == 0:
             checkpoint_data = {
                 "actor_critic": actor_critic.state_dict(),
@@ -1035,12 +836,11 @@ def train():
                 "iteration": iteration,
                 "best_reward": best_reward,
             }
-            torch.save(checkpoint_data, os.path.join(log_dir, f"model_{iteration + 1}.pt"))
-            print(f"[CHECKPOINT] Saved model_{iteration + 1}.pt")
+            torch.save(checkpoint_data, os.path.join(log_dir, f"model_{iteration+1}.pt"))
+            print(f"[CHECKPOINT] Saved model_{iteration+1}.pt")
 
         writer.flush()
 
-    # Final save
     checkpoint_data = {
         "actor_critic": actor_critic.state_dict(),
         "optimizer": ppo.optimizer.state_dict(),

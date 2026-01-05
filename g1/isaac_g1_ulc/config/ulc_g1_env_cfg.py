@@ -21,6 +21,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+from isaaclab.actuators import ImplicitActuatorCfg
 
 # G1 Robot USD path - Isaac Lab'ın default lokasyonu
 G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
@@ -94,7 +95,7 @@ class ULC_G1_SceneCfg(InteractiveSceneCfg):
         ),
         actuators={
             # Leg actuators - High stiffness for standing
-            "legs": sim_utils.ImplicitActuatorCfg(
+            "legs": ImplicitActuatorCfg(
                 joint_names_expr=[
                     ".*_hip_pitch_joint",
                     ".*_hip_roll_joint",
@@ -107,7 +108,7 @@ class ULC_G1_SceneCfg(InteractiveSceneCfg):
                 damping=5.0,
             ),
             # Arm actuators - Medium stiffness
-            "arms": sim_utils.ImplicitActuatorCfg(
+            "arms": ImplicitActuatorCfg(
                 joint_names_expr=[
                     ".*_shoulder_pitch_joint",
                     ".*_shoulder_roll_joint",
@@ -121,7 +122,7 @@ class ULC_G1_SceneCfg(InteractiveSceneCfg):
                 damping=4.0,
             ),
             # Waist actuators
-            "waist": sim_utils.ImplicitActuatorCfg(
+            "waist": ImplicitActuatorCfg(
                 joint_names_expr=["waist_.*_joint"],
                 stiffness=100.0,
                 damping=5.0,
