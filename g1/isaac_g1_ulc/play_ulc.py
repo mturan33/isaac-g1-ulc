@@ -89,7 +89,16 @@ def create_play_env(num_envs: int, device: str):
 
     @configclass
     class PlaySceneCfg(InteractiveSceneCfg):
-        ground = sim_utils.GroundPlaneCfg()
+        terrain = sim_utils.TerrainImporterCfg(
+            prim_path="/World/ground",
+            terrain_type="plane",
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=0.0,
+            ),
+        )
 
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
