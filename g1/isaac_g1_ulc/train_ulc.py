@@ -328,12 +328,18 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
                     "right_ankle_pitch_joint": -0.15,
                     "left_ankle_roll_joint": 0.0,
                     "right_ankle_roll_joint": 0.0,
-                    # Arms relaxed
-                    ".*shoulder.*": 0.0,
-                    ".*elbow.*": 0.0,
+                    # Arms and torso
+                    "left_shoulder_pitch_joint": 0.0,
+                    "right_shoulder_pitch_joint": 0.0,
+                    "left_shoulder_roll_joint": 0.0,
+                    "right_shoulder_roll_joint": 0.0,
+                    "left_shoulder_yaw_joint": 0.0,
+                    "right_shoulder_yaw_joint": 0.0,
+                    "left_elbow_pitch_joint": 0.0,
+                    "right_elbow_pitch_joint": 0.0,
+                    "left_elbow_roll_joint": 0.0,
+                    "right_elbow_roll_joint": 0.0,
                     "torso_joint": 0.0,
-                    # Fingers
-                    ".*_joint": 0.0,
                 },
                 joint_vel={".*": 0.0},
             ),
