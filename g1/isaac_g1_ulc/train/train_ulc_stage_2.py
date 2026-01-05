@@ -75,6 +75,7 @@ from isaaclab.assets import ArticulationCfg, Articulation
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
 from torch.utils.tensorboard import SummaryWriter
 
@@ -241,10 +242,19 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
     class ULC_G1_Stage2_SceneCfg(InteractiveSceneCfg):
         """Scene configuration with terrain."""
 
-        # Simple ground plane
-        ground = sim_utils.GroundPlaneCfg()
+        # Use TerrainImporter instead of GroundPlaneCfg
+        terrain = TerrainImporterCfg(
+            prim_path="/World/ground",
+            terrain_type="plane",
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=0.0,
+            ),
+        )
 
-        # G1 Robot - FIXED: removed articulation_root_props from UsdFileCfg
+        # G1 Robot
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
             spawn=sim_utils.UsdFileCfg(
