@@ -26,7 +26,7 @@ IMPROVEMENTS:
 - Reduced action scale (0.5) for smoother motion
 
 Usage:
-    ./isaaclab.bat -p train_ulc.py --num_envs 4096 --headless --max_iterations 4000
+    ./isaaclab.bat -p train_ulc_stage_1.py --num_envs 4096 --headless --max_iterations 4000
 """
 
 import torch
