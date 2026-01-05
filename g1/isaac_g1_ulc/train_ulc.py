@@ -77,11 +77,12 @@ from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.assets import ArticulationCfg, Articulation
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
+from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from torch.utils.tensorboard import SummaryWriter
 
-G1_USD_PATH = f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/Unitree/G1/g1_minimal.usd"
+G1_USD_PATH = f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1.usd"
 
 print("=" * 80)
 print("ULC G1 TRAINING - STAGE 1: PROPER STANDING (v6)")
@@ -257,8 +258,8 @@ def create_ulc_g1_env(num_envs: int, device: str):
 
     @configclass
     class ULC_G1_Stage1_SceneCfg(InteractiveSceneCfg):
-        # Ground plane - use TerrainImporterCfg for new API
-        terrain = sim_utils.TerrainImporterCfg(
+        # Ground plane
+        terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="plane",
             collision_group=-1,

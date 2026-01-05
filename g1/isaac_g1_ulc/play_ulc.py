@@ -36,10 +36,11 @@ from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
+from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
-G1_USD_PATH = f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/Unitree/G1/g1_minimal.usd"
+G1_USD_PATH = f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1.usd"
 
 print("=" * 60)
 print("ULC G1 PLAY v6 - Testing trained model")
@@ -89,7 +90,7 @@ def create_play_env(num_envs: int, device: str):
 
     @configclass
     class PlaySceneCfg(InteractiveSceneCfg):
-        terrain = sim_utils.TerrainImporterCfg(
+        terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="plane",
             collision_group=-1,
