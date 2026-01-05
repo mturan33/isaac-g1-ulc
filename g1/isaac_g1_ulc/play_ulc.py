@@ -153,9 +153,11 @@ def create_play_env(num_envs: int, device: str):
     class PlayEnvCfg(DirectRLEnvCfg):
         decimation = 4
         episode_length_s = 30.0
-        num_actions = 12
-        num_observations = 46
-        num_states = 0
+
+        # New API: use spaces instead of num_*
+        action_space = 12
+        observation_space = 46
+        state_space = 0
 
         sim = sim_utils.SimulationCfg(
             dt=1/200,

@@ -323,9 +323,11 @@ def create_ulc_g1_env(num_envs: int, device: str):
     class ULC_G1_Stage1_EnvCfg(DirectRLEnvCfg):
         decimation = 4
         episode_length_s = 20.0
-        num_actions = 12
-        num_observations = 46
-        num_states = 0
+
+        # New API: use spaces instead of num_*
+        action_space = 12
+        observation_space = 46
+        state_space = 0
 
         sim = sim_utils.SimulationCfg(
             dt=1/200,
@@ -400,7 +402,7 @@ def create_ulc_g1_env(num_envs: int, device: str):
             print(f"[ULC_G1_Stage1] Initialized with {self.num_envs} envs")
             print(f"[ULC_G1_Stage1] Height range: {HEIGHT_MIN}-{HEIGHT_MAX}m")
             print(f"[ULC_G1_Stage1] Action scale: {self.action_scale}")
-            print(f"[ULC_G1_Stage1] Observations: {cfg.num_observations}, Actions: {cfg.num_actions}")
+            print(f"[ULC_G1_Stage1] Observations: {cfg.observation_space}, Actions: {cfg.action_space}")
 
         @property
         def robot(self):
@@ -676,7 +678,7 @@ def create_ulc_g1_env(num_envs: int, device: str):
     cfg.scene.num_envs = num_envs
     env = ULC_G1_Stage1_Env(cfg)
 
-    return env, cfg.num_observations, cfg.num_actions
+    return env, cfg.observation_space, cfg.action_space
 
 
 # ===== Training Loop =====
