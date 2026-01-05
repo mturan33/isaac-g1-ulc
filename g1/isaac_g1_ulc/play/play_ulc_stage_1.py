@@ -5,7 +5,7 @@ ULC G1 Stage 1: Play/Test Script (v6)
 Test the trained standing policy with visualization.
 
 Usage:
-    ./isaaclab.bat -p play_ulc.py --checkpoint logs/ulc/ulc_g1_stage1_xxx/model_best.pt --num_envs 4
+    ./isaaclab.bat -p play_ulc_stage_1.py --checkpoint logs/ulc/ulc_g1_stage1_xxx/model_best.pt --num_envs 4
 """
 
 import torch
