@@ -76,15 +76,15 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
-from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
 from torch.utils.tensorboard import SummaryWriter
 
-# G1 USD path
-G1_USD_PATH = f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/Unitree/G1/g1_minimal.usd"
+# G1 USD path - Use Nucleus URL for reliability
+G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
 
 print("=" * 80)
 print("ULC G1 TRAINING - STAGE 2: LOCOMOTION WITH ROUGH TERRAIN")
 print("=" * 80)
+print(f"G1 USD: {G1_USD_PATH}")
 print(f"\nReward weights:")
 for name, weight in REWARD_WEIGHTS.items():
     print(f"  {name}: {weight}")
@@ -242,7 +242,7 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
     class ULC_G1_Stage2_SceneCfg(InteractiveSceneCfg):
         """Scene configuration with terrain."""
 
-        # Use TerrainImporter instead of GroundPlaneCfg
+        # Use TerrainImporter for ground plane
         terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="plane",
