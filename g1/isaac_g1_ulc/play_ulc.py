@@ -100,11 +100,6 @@ def create_play_env(num_envs: int, device: str):
                     max_depenetration_velocity=10.0,
                     enable_gyroscopic_forces=True,
                 ),
-                articulation_root_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=False,
-                    solver_position_iteration_count=8,
-                    solver_velocity_iteration_count=4,
-                ),
             ),
             init_state=ArticulationCfg.InitialStateCfg(
                 pos=(0.0, 0.0, 0.8),
