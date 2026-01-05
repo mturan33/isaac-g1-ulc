@@ -1,16 +1,18 @@
 """
-ULC G1 Training Script - Stage 1: Standing
-==========================================
+ULC G1 Training Script - Stage 1: Standing (v5 - FIXED)
+========================================================
 
-Unified Loco-Manipulation Controller için eğitim script'i.
-İlk olarak ayakta durma (standing) öğretiyoruz.
+Fixes in v5:
+- Best model tracking based on mean_reward (not episode_reward)
+- std decay to reduce exploration over time
+- Randomized height commands (0.65-0.85m)
+- Better default joint positions for G1
+- Higher action scale (1.0)
+- Proper episode reward tracking
 
 Usage:
     cd IsaacLab
-    ./isaaclab.bat -p <path>/train_ulc.py --num_envs 4096 --headless
-
-    # Visual mode (debug):
-    ./isaaclab.bat -p <path>/train_ulc.py --num_envs 64
+    ./isaaclab.bat -p <path>/train_ulc_v5.py --num_envs 4096 --headless
 
 Author: Mehmet Turan Yardımcı
 Date: January 2026
@@ -27,14 +29,12 @@ import math
 from datetime import datetime
 from collections import deque
 
-# Isaac Lab imports
 from isaaclab.app import AppLauncher
 
-# Parse arguments BEFORE importing torch (Isaac Lab requirement)
-parser = argparse.ArgumentParser(description="ULC G1 Training - Stage 1 Standing")
+parser = argparse.ArgumentParser(description="ULC G1 Training - Stage 1 Standing v5")
 parser.add_argument("--task", type=str, default="ULC-G1-Standing-v0", help="Task name")
 parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments")
-parser.add_argument("--max_iterations", type=int, default=2000, help="Max training iterations")
+parser.add_argument("--max_iterations", type=int, default=1500, help="Max training iterations")
 parser.add_argument("--seed", type=int, default=42, help="Random seed")
 parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
 parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage1", help="Experiment name")
@@ -43,11 +43,9 @@ parser.add_argument("--save_interval", type=int, default=200, help="Checkpoint s
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
-# Launch application
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-# Now import the rest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -56,7 +54,6 @@ from torch.distributions import Normal
 from torch.utils.tensorboard import SummaryWriter
 import gymnasium as gym
 
-# Enable TF32 for faster training
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
@@ -66,7 +63,6 @@ torch.backends.cudnn.allow_tf32 = True
 # =============================================================================
 
 def format_time(seconds):
-    """Format seconds to HH:MM:SS."""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
@@ -74,7 +70,6 @@ def format_time(seconds):
 
 
 def get_obs_tensor(obs):
-    """Extract observation tensor from dict."""
     if isinstance(obs, dict):
         return obs["policy"]
     return obs
@@ -85,8 +80,6 @@ def get_obs_tensor(obs):
 # =============================================================================
 
 class EmpiricalNormalization(nn.Module):
-    """Welford's online normalization."""
-
     def __init__(self, input_shape: tuple, epsilon: float = 1e-8):
         super().__init__()
         self.register_buffer("running_mean", torch.zeros(input_shape))
@@ -106,8 +99,8 @@ class EmpiricalNormalization(nn.Module):
         self.running_mean = self.running_mean + delta * batch_count / total_count
         m_a = self.running_var * self.count
         m_b = batch_var * batch_count
-        M2 = m_a + m_b + delta.pow(2) * self.count * batch_count / total_count
-        self.running_var = M2 / total_count
+        m2 = m_a + m_b + delta ** 2 * self.count * batch_count / total_count
+        self.running_var = m2 / total_count
         self.count = total_count
 
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
@@ -118,13 +111,13 @@ class EmpiricalNormalization(nn.Module):
 
 
 # =============================================================================
-# ACTOR-CRITIC NETWORK
+# ACTOR-CRITIC WITH STD DECAY
 # =============================================================================
 
 class ActorCriticNetwork(nn.Module):
-    """Actor-Critic with ELU activation."""
+    """Actor-Critic with learnable but bounded std."""
 
-    def __init__(self, num_obs, num_actions, hidden_dims=[512, 256, 128], init_noise_std=1.0):
+    def __init__(self, num_obs: int, num_actions: int, hidden_dims: list = [512, 256, 128]):
         super().__init__()
 
         # Actor
@@ -147,44 +140,49 @@ class ActorCriticNetwork(nn.Module):
         critic_layers.append(nn.Linear(in_dim, 1))
         self.critic = nn.Sequential(*critic_layers)
 
-        # Learnable std
-        self.log_std = nn.Parameter(torch.ones(num_actions) * math.log(init_noise_std))
+        # Learnable log_std - start at 0.0 (std=1.0), will decay
+        self.log_std = nn.Parameter(torch.zeros(num_actions))
+
+        # Std bounds
+        self.log_std_min = -2.0  # std_min = 0.135
+        self.log_std_max = 0.5   # std_max = 1.65
 
         self._init_weights()
 
     def _init_weights(self):
-        for module in self.actor:
-            if isinstance(module, nn.Linear):
-                nn.init.orthogonal_(module.weight, gain=math.sqrt(2))
-                nn.init.zeros_(module.bias)
-        nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0)
 
-        for module in self.critic:
-            if isinstance(module, nn.Linear):
-                nn.init.orthogonal_(module.weight, gain=math.sqrt(2))
-                nn.init.zeros_(module.bias)
-        nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
+    def get_std(self):
+        """Get clamped std."""
+        return torch.clamp(self.log_std, self.log_std_min, self.log_std_max).exp()
 
     def forward(self, obs):
-        action_mean = self.actor(obs)
-        action_std = torch.exp(self.log_std)
-        dist = Normal(action_mean, action_std)
-        actions = dist.sample()
-        log_probs = dist.log_prob(actions).sum(dim=-1)
-        values = self.critic(obs).squeeze(-1)
-        return actions, log_probs, values
+        mean = self.actor(obs)
+        std = self.get_std()
+        value = self.critic(obs)
+        return mean, std, value.squeeze(-1)
+
+    def act(self, obs):
+        mean, std, value = self.forward(obs)
+        dist = Normal(mean, std)
+        action = dist.sample()
+        log_prob = dist.log_prob(action).sum(dim=-1)
+        return action, log_prob, value
 
     def evaluate(self, obs, actions):
-        action_mean = self.actor(obs)
-        action_std = torch.exp(self.log_std)
-        dist = Normal(action_mean, action_std)
-        log_probs = dist.log_prob(actions).sum(dim=-1)
+        mean, std, value = self.forward(obs)
+        dist = Normal(mean, std)
+        log_prob = dist.log_prob(actions).sum(dim=-1)
         entropy = dist.entropy().sum(dim=-1)
-        values = self.critic(obs).squeeze(-1)
-        return log_probs, values, entropy
+        return log_prob, value, entropy
 
     def act_inference(self, obs):
-        return self.actor(obs)
+        """Deterministic action for inference."""
+        mean = self.actor(obs)
+        return mean
 
 
 # =============================================================================
@@ -192,15 +190,12 @@ class ActorCriticNetwork(nn.Module):
 # =============================================================================
 
 class RolloutBuffer:
-    """On-policy rollout storage."""
-
-    def __init__(self, num_envs, num_steps, num_obs, num_actions, device):
-        self.num_envs = num_envs
+    def __init__(self, num_steps, num_envs, num_obs, num_actions, device):
         self.num_steps = num_steps
+        self.num_envs = num_envs
         self.device = device
         self.step = 0
 
-        # Allocate buffers
         self.obs = torch.zeros(num_steps, num_envs, num_obs, device=device)
         self.actions = torch.zeros(num_steps, num_envs, num_actions, device=device)
         self.rewards = torch.zeros(num_steps, num_envs, device=device)
@@ -242,7 +237,6 @@ class RolloutBuffer:
         advantages_flat = self.advantages.view(-1)
         returns_flat = self.returns.view(-1)
 
-        # Normalize advantages
         advantages_flat = (advantages_flat - advantages_flat.mean()) / (advantages_flat.std() + 1e-8)
 
         for start in range(0, len(indices), batch_size):
@@ -274,21 +268,20 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
     from isaaclab.scene import InteractiveSceneCfg
     from isaaclab.sim import SimulationCfg
     from isaaclab.utils import configclass
-
-    # IMPORTANT: Actuator configs are in isaaclab.actuators module in Isaac Lab 2.3+
     from isaaclab.actuators import ImplicitActuatorCfg
 
-    # G1 USD path
     G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
 
-    # Constants for observation/action space
-    NUM_ACTIONS = 12  # Legs only for Stage 1
-    NUM_OBSERVATIONS = 46  # 3+3+3+12+12+1+12
+    NUM_ACTIONS = 12
+    NUM_OBSERVATIONS = 46
+
+    # Target height range for randomization
+    HEIGHT_MIN = 0.65
+    HEIGHT_MAX = 0.85
+    HEIGHT_DEFAULT = 0.75
 
     @configclass
     class ULC_G1_SceneCfg(InteractiveSceneCfg):
-        """Scene config."""
-
         ground = AssetBaseCfg(
             prim_path="/World/defaultGroundPlane",
             spawn=sim_utils.GroundPlaneCfg(),
@@ -321,29 +314,56 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             ),
             init_state=ArticulationCfg.InitialStateCfg(
                 pos=(0.0, 0.0, 0.8),
-                joint_pos={".*": 0.0},
+                joint_pos={
+                    # Default standing pose - slightly bent knees
+                    "left_hip_pitch_joint": -0.1,
+                    "right_hip_pitch_joint": -0.1,
+                    "left_hip_roll_joint": 0.0,
+                    "right_hip_roll_joint": 0.0,
+                    "left_hip_yaw_joint": 0.0,
+                    "right_hip_yaw_joint": 0.0,
+                    "left_knee_joint": 0.25,
+                    "right_knee_joint": 0.25,
+                    "left_ankle_pitch_joint": -0.15,
+                    "right_ankle_pitch_joint": -0.15,
+                    "left_ankle_roll_joint": 0.0,
+                    "right_ankle_roll_joint": 0.0,
+                    # Arms relaxed
+                    ".*shoulder.*": 0.0,
+                    ".*elbow.*": 0.0,
+                    "torso_joint": 0.0,
+                    # Fingers
+                    ".*_joint": 0.0,
+                },
                 joint_vel={".*": 0.0},
             ),
             actuators={
-                "all_joints": ImplicitActuatorCfg(
-                    joint_names_expr=[".*"],
-                    stiffness=100.0,
+                "legs": ImplicitActuatorCfg(
+                    joint_names_expr=[".*hip.*", ".*knee.*", ".*ankle.*"],
+                    stiffness=150.0,  # Increased for better standing
+                    damping=10.0,
+                ),
+                "arms": ImplicitActuatorCfg(
+                    joint_names_expr=[".*shoulder.*", ".*elbow.*", "torso_joint"],
+                    stiffness=50.0,
                     damping=5.0,
+                ),
+                "hands": ImplicitActuatorCfg(
+                    joint_names_expr=[".*five.*", ".*three.*", ".*zero.*", ".*six.*", ".*four.*", ".*one.*", ".*two.*"],
+                    stiffness=10.0,
+                    damping=1.0,
                 ),
             },
         )
 
     @configclass
     class ULC_G1_Stage1_EnvCfg(DirectRLEnvCfg):
-        """Stage 1 config - Standing."""
-
         episode_length_s = 10.0
         decimation = 4
         num_actions = NUM_ACTIONS
         num_observations = NUM_OBSERVATIONS
         num_states = 0
 
-        # IMPORTANT: Isaac Lab 2.3+ requires observation_space and action_space
         observation_space = gym.spaces.Dict({
             "policy": gym.spaces.Box(low=-float("inf"), high=float("inf"), shape=(NUM_OBSERVATIONS,))
         })
@@ -361,72 +381,94 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             ),
         )
 
-        scene: ULC_G1_SceneCfg = ULC_G1_SceneCfg(num_envs=num_envs, env_spacing=2.5)
+        scene: ULC_G1_SceneCfg = ULC_G1_SceneCfg(num_envs=4096, env_spacing=2.5)
 
-    # Custom environment class
     class ULC_G1_Stage1_Env(DirectRLEnv):
-        """Stage 1: Standing environment."""
-
         cfg: ULC_G1_Stage1_EnvCfg
 
         def __init__(self, cfg, render_mode=None, **kwargs):
             super().__init__(cfg, render_mode, **kwargs)
 
-            self.target_height = 0.75
+            # Per-environment target height (randomized on reset)
+            self.target_heights = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
+
+            # Action buffers
             self.previous_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
+            self._prev_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
             self._prev_joint_vel = None
 
-            # Find leg joint indices
+            # Episode tracking
+            self.episode_rewards = torch.zeros(self.num_envs, device=self.device)
+            self.episode_lengths = torch.zeros(self.num_envs, device=self.device)
+
             self._setup_joint_indices()
 
             print(f"[ULC_G1_Stage1] Initialized with {self.num_envs} envs")
+            print(f"[ULC_G1_Stage1] Height range: {HEIGHT_MIN}-{HEIGHT_MAX}m")
             print(f"[ULC_G1_Stage1] Observations: {NUM_OBSERVATIONS}, Actions: {NUM_ACTIONS}")
 
         def _setup_joint_indices(self):
-            """Find leg joint indices."""
+            """Find leg joint indices - proper ordering for G1."""
             robot = self.scene["robot"]
             joint_names = robot.data.joint_names
 
-            self.leg_indices = []
-            for i, name in enumerate(joint_names):
-                if any(x in name.lower() for x in ["hip", "knee", "ankle"]):
-                    self.leg_indices.append(i)
+            # G1 leg joints in proper order
+            leg_joint_patterns = [
+                "left_hip_pitch", "right_hip_pitch",
+                "left_hip_roll", "right_hip_roll",
+                "left_hip_yaw", "right_hip_yaw",
+                "left_knee", "right_knee",
+                "left_ankle_pitch", "right_ankle_pitch",
+                "left_ankle_roll", "right_ankle_roll",
+            ]
 
-            # Ensure we have exactly 12 leg joints or pad/trim
-            if len(self.leg_indices) >= 12:
-                self.leg_indices = self.leg_indices[:12]
-            else:
-                # Pad with first available joints if needed
+            self.leg_indices = []
+            for pattern in leg_joint_patterns:
+                for i, name in enumerate(joint_names):
+                    if pattern in name.lower():
+                        self.leg_indices.append(i)
+                        break
+
+            if len(self.leg_indices) < 12:
+                print(f"[WARNING] Only found {len(self.leg_indices)} leg joints, padding...")
                 while len(self.leg_indices) < 12:
                     self.leg_indices.append(self.leg_indices[-1] if self.leg_indices else 0)
 
-            self.leg_indices = torch.tensor(self.leg_indices, device=self.device, dtype=torch.long)
+            self.leg_indices = torch.tensor(self.leg_indices[:12], device=self.device, dtype=torch.long)
+
+            # Store default leg positions for reference
+            self.default_leg_positions = torch.tensor([
+                -0.1, -0.1,  # hip pitch
+                0.0, 0.0,    # hip roll
+                0.0, 0.0,    # hip yaw
+                0.25, 0.25,  # knee
+                -0.15, -0.15,  # ankle pitch
+                0.0, 0.0,    # ankle roll
+            ], device=self.device)
+
             print(f"[ULC_G1_Stage1] Leg joints: {len(self.leg_indices)}")
-            print(f"[ULC_G1_Stage1] Joint names: {joint_names}")
+            print(f"[ULC_G1_Stage1] Joint names: {[joint_names[i] for i in self.leg_indices.tolist()]}")
 
         def _setup_scene(self):
-            """Setup the scene - robot is spawned via scene config."""
             from isaaclab.assets import Articulation
-
-            # Robot is already spawned by scene config, just get reference
             self.robot = Articulation(self.cfg.scene.robot)
             self.scene.articulations["robot"] = self.robot
-
-            # Clone environments
             self.scene.clone_environments(copy_from_source=False)
-
-            # NOTE: Light is already created by scene config (dome_light)
-            # Do NOT create it again here!
 
         def _pre_physics_step(self, actions: torch.Tensor):
             self.actions = torch.clamp(actions, -1.0, 1.0)
 
-            action_scale = 0.5
+            # Higher action scale for more responsive control
+            action_scale = 1.0
+
+            # Start from default positions and add actions
             targets = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
 
-            # Apply actions to leg joints only
+            # Apply actions relative to default standing pose
+            leg_targets = self.default_leg_positions.unsqueeze(0) + actions * action_scale
+
             num_leg_joints = min(len(self.leg_indices), actions.shape[1])
-            targets[:, self.leg_indices[:num_leg_joints]] = actions[:, :num_leg_joints] * action_scale
+            targets[:, self.leg_indices[:num_leg_joints]] = leg_targets[:, :num_leg_joints]
 
             self.robot.set_joint_position_target(targets)
             self.previous_actions = actions.clone()
@@ -437,39 +479,35 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
         def _get_observations(self) -> dict:
             robot = self.robot
 
-            # Base state
             base_quat = robot.data.root_quat_w
             base_lin_vel = robot.data.root_lin_vel_w
             base_ang_vel = robot.data.root_ang_vel_w
 
-            # Transform to base frame
             from isaaclab.utils.math import quat_apply_inverse
+
             base_lin_vel_b = quat_apply_inverse(base_quat, base_lin_vel)
             base_ang_vel_b = quat_apply_inverse(base_quat, base_ang_vel)
 
-            # Projected gravity
             gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(base_quat, gravity)
 
-            # Joint state (legs only)
             joint_pos = robot.data.joint_pos
             joint_vel = robot.data.joint_vel
 
             leg_pos = joint_pos[:, self.leg_indices]
             leg_vel = joint_vel[:, self.leg_indices]
 
-            # Height command
-            height_cmd = torch.ones(self.num_envs, 1, device=self.device) * self.target_height
+            # Per-environment height command
+            height_cmd = self.target_heights.unsqueeze(-1)
 
-            # Build observation
             obs = torch.cat([
-                base_lin_vel_b,                    # 3
-                base_ang_vel_b,                    # 3
-                proj_gravity,                       # 3
-                leg_pos,                            # 12
-                leg_vel,                            # 12
-                height_cmd,                         # 1
-                self.previous_actions,              # 12
+                base_lin_vel_b,          # 3
+                base_ang_vel_b,          # 3
+                proj_gravity,            # 3
+                leg_pos,                 # 12
+                leg_vel,                 # 12
+                height_cmd,              # 1
+                self.previous_actions,   # 12
             ], dim=-1)
 
             obs = torch.clamp(obs, -100.0, 100.0)
@@ -483,23 +521,28 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             base_pos = robot.data.root_pos_w
             base_quat = robot.data.root_quat_w
             base_lin_vel = robot.data.root_lin_vel_w
+            base_ang_vel = robot.data.root_ang_vel_w
             joint_vel = robot.data.joint_vel
 
-            # Height reward
+            # Height reward (per-env target)
             height = base_pos[:, 2]
-            height_error = torch.abs(height - self.target_height)
+            height_error = torch.abs(height - self.target_heights)
             r_height = torch.exp(-10.0 * height_error ** 2)
 
-            # Orientation reward
+            # Orientation reward (stay upright)
             from isaaclab.utils.math import quat_apply_inverse
             gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(base_quat, gravity)
             orientation_error = torch.sum(proj_gravity[:, :2] ** 2, dim=-1)
             r_orientation = torch.exp(-5.0 * orientation_error)
 
-            # Velocity penalty (should be standing still)
+            # XY velocity penalty (stay still)
             xy_vel = torch.norm(base_lin_vel[:, :2], dim=-1)
-            r_velocity = torch.exp(-2.0 * xy_vel ** 2)
+            r_xy_velocity = torch.exp(-2.0 * xy_vel ** 2)
+
+            # Angular velocity penalty (don't rotate)
+            ang_vel_norm = torch.norm(base_ang_vel, dim=-1)
+            r_ang_velocity = torch.exp(-0.5 * ang_vel_norm ** 2)
 
             # Joint acceleration penalty
             if self._prev_joint_vel is not None:
@@ -510,26 +553,28 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             self._prev_joint_vel = joint_vel.clone()
 
             # Action rate penalty
-            if hasattr(self, '_prev_actions'):
-                action_diff = self.actions - self._prev_actions
-                r_action_rate = -0.01 * torch.sum(action_diff ** 2, dim=-1)
-            else:
-                r_action_rate = torch.zeros(self.num_envs, device=self.device)
+            action_diff = self.actions - self._prev_actions
+            r_action_rate = -0.005 * torch.sum(action_diff ** 2, dim=-1)
             self._prev_actions = self.actions.clone()
 
             # Total reward
             reward = (
                 5.0 * r_height +
                 3.0 * r_orientation +
-                4.0 * r_velocity +
+                3.0 * r_xy_velocity +
+                1.0 * r_ang_velocity +
                 r_joint_acc +
                 r_action_rate
             )
 
+            # Track episode rewards
+            self.episode_rewards += reward
+            self.episode_lengths += 1
+
             # Log components
             self.extras["Episode_Reward/height_tracking"] = r_height
             self.extras["Episode_Reward/orientation"] = r_orientation
-            self.extras["Episode_Reward/velocity"] = r_velocity
+            self.extras["Episode_Reward/xy_velocity"] = r_xy_velocity
 
             return reward
 
@@ -539,12 +584,10 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
             base_pos = robot.data.root_pos_w
             base_quat = robot.data.root_quat_w
 
-            # Height check
             height = base_pos[:, 2]
             too_low = height < 0.3
             too_high = height > 1.2
 
-            # Orientation check
             from isaaclab.utils.math import quat_apply_inverse
             gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(base_quat, gravity)
@@ -552,9 +595,6 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
 
             terminated = too_low | too_high | too_tilted
             time_out = self.episode_length_buf >= self.max_episode_length
-
-            # Termination penalty
-            self.extras["Episode_Termination/fell"] = terminated
 
             return terminated, time_out
 
@@ -566,28 +606,41 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
 
             robot = self.robot
 
-            # Reset position
+            # Reset position with small random variation
             pos = torch.tensor([0.0, 0.0, 0.8], device=self.device).expand(len(env_ids), -1).clone()
             pos = pos + torch.randn_like(pos) * 0.02
             pos[:, 2] = 0.8
 
-            # Reset orientation (identity)
             quat = torch.zeros(len(env_ids), 4, device=self.device)
             quat[:, 3] = 1.0
 
             robot.write_root_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids)
             robot.write_root_velocity_to_sim(torch.zeros(len(env_ids), 6, device=self.device), env_ids)
 
-            # Reset joints
+            # Reset joints to default standing pose
             default_pos = robot.data.default_joint_pos[env_ids]
             robot.write_joint_state_to_sim(default_pos, torch.zeros_like(default_pos), None, env_ids)
 
+            # Randomize target height for each reset environment
+            self.target_heights[env_ids] = torch.rand(len(env_ids), device=self.device) * (HEIGHT_MAX - HEIGHT_MIN) + HEIGHT_MIN
+
             # Reset buffers
             self.previous_actions[env_ids] = 0.0
-            if hasattr(self, '_prev_actions'):
-                self._prev_actions[env_ids] = 0.0
+            self._prev_actions[env_ids] = 0.0
+            self.episode_rewards[env_ids] = 0.0
+            self.episode_lengths[env_ids] = 0.0
 
-    # Create and return environment
+        def get_episode_stats(self, terminated, truncated):
+            """Get episode statistics for completed episodes."""
+            done = terminated | truncated
+            done_indices = done.nonzero(as_tuple=False).squeeze(-1)
+
+            if len(done_indices) > 0:
+                ep_rewards = self.episode_rewards[done_indices].clone()
+                ep_lengths = self.episode_lengths[done_indices].clone()
+                return ep_rewards.cpu().numpy(), ep_lengths.cpu().numpy()
+            return np.array([]), np.array([])
+
     cfg = ULC_G1_Stage1_EnvCfg()
     env = ULC_G1_Stage1_Env(cfg)
     return env, NUM_OBSERVATIONS, NUM_ACTIONS
@@ -598,16 +651,12 @@ def create_ulc_g1_env(num_envs: int, device: str = "cuda"):
 # =============================================================================
 
 def train():
-    """Main training function."""
-
     print("=" * 80)
-    print("ULC G1 TRAINING - STAGE 1: STANDING")
+    print("ULC G1 TRAINING - STAGE 1: STANDING (v5 - FIXED)")
     print("=" * 80)
 
-    # Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Create environment
     print(f"\n[INFO] Creating environment with {args_cli.num_envs} envs...")
     env, num_obs, num_actions = create_ulc_g1_env(args_cli.num_envs, device)
 
@@ -622,32 +671,14 @@ def train():
     num_mini_batches = 4
     clip_param = 0.2
     value_loss_coef = 1.0
-    entropy_coef = 0.01
+    entropy_coef = 0.005  # Reduced entropy for less exploration
     gamma = 0.99
     gae_lambda = 0.95
     learning_rate = 3e-4
     max_grad_norm = 1.0
 
-    # Create networks
-    actor_critic = ActorCriticNetwork(num_obs, num_actions).to(device)
-    optimizer = torch.optim.Adam(actor_critic.parameters(), lr=learning_rate, eps=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args_cli.max_iterations, eta_min=1e-5)
-
-    # Observation normalizer
-    obs_normalizer = EmpiricalNormalization((num_obs,)).to(device)
-
-    # Rollout buffer
-    buffer = RolloutBuffer(num_envs, num_steps_per_rollout, num_obs, num_actions, device)
-
-    # Load checkpoint if provided
-    start_iteration = 0
-    if args_cli.checkpoint:
-        print(f"[INFO] Loading checkpoint: {args_cli.checkpoint}")
-        checkpoint = torch.load(args_cli.checkpoint, map_location=device)
-        actor_critic.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        obs_normalizer.load_state_dict(checkpoint["obs_normalizer"])
-        start_iteration = checkpoint.get("iteration", 0)
+    # std decay parameters
+    std_decay_rate = 0.999  # Decay per iteration
 
     # Logging
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -656,6 +687,36 @@ def train():
     writer = SummaryWriter(log_dir)
 
     print(f"[INFO] Logging to: {log_dir}")
+
+    # Networks
+    actor_critic = ActorCriticNetwork(num_obs, num_actions).to(device)
+    obs_normalizer = EmpiricalNormalization((num_obs,)).to(device)
+
+    optimizer = torch.optim.Adam(actor_critic.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1.0, end_factor=0.1, total_iters=args_cli.max_iterations
+    )
+
+    # Buffer
+    buffer = RolloutBuffer(num_steps_per_rollout, num_envs, num_obs, num_actions, device)
+
+    # Training state
+    best_reward = float("-inf")
+    total_timesteps = 0
+    episode_rewards_history = deque(maxlen=100)
+    episode_lengths_history = deque(maxlen=100)
+
+    # Resume from checkpoint
+    start_iteration = 0
+    if args_cli.checkpoint:
+        print(f"[INFO] Loading checkpoint: {args_cli.checkpoint}")
+        checkpoint = torch.load(args_cli.checkpoint, map_location=device)
+        actor_critic.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        obs_normalizer.load_state_dict(checkpoint["obs_normalizer"])
+        start_iteration = checkpoint.get("iteration", 0)
+        best_reward = checkpoint.get("best_reward", float("-inf"))
+
     print(f"[INFO] Starting training from iteration {start_iteration}")
     print("=" * 80)
 
@@ -663,52 +724,38 @@ def train():
     obs_dict, _ = env.reset()
     obs = get_obs_tensor(obs_dict)
 
-    # Verify observation shape
-    print(f"[DEBUG] Observation shape: {obs.shape}")
-    assert obs.shape[-1] == num_obs, f"Observation mismatch: {obs.shape[-1]} != {num_obs}"
-
-    # Training stats
-    episode_rewards = deque(maxlen=100)
-    episode_lengths = deque(maxlen=100)
-    best_reward = float('-inf')
     training_start = time.time()
-    total_timesteps = 0
-
-    # =========================================================================
-    # TRAINING LOOP
-    # =========================================================================
 
     for iteration in range(start_iteration, args_cli.max_iterations):
         iter_start = time.time()
 
-        # Collect rollouts
+        # Apply std decay
+        with torch.no_grad():
+            actor_critic.log_std.data *= std_decay_rate
+            actor_critic.log_std.data.clamp_(actor_critic.log_std_min, actor_critic.log_std_max)
+
         buffer.reset()
         rollout_rewards = []
 
+        # Collect rollout
         with torch.no_grad():
             for step in range(num_steps_per_rollout):
-                # Normalize observations
                 obs_norm = obs_normalizer.normalize(obs)
+                actions, log_probs, values = actor_critic.act(obs_norm)
 
-                # Get actions
-                actions, log_probs, values = actor_critic(obs_norm)
-
-                # Step environment
                 next_obs_dict, rewards, terminated, truncated, infos = env.step(actions)
                 next_obs = get_obs_tensor(next_obs_dict)
                 dones = terminated | truncated
 
-                # Store transition
                 buffer.add(obs, actions, rewards, dones.float(), values, log_probs)
-
-                # Update normalizer
                 obs_normalizer.update(obs)
 
-                # Track episodes
-                if "episode" in infos:
-                    for ep_info in infos["episode"]:
-                        episode_rewards.append(ep_info["r"])
-                        episode_lengths.append(ep_info["l"])
+                # Track episode completions
+                ep_rewards, ep_lengths = env.get_episode_stats(terminated, truncated)
+                for r in ep_rewards:
+                    episode_rewards_history.append(r)
+                for l in ep_lengths:
+                    episode_lengths_history.append(l)
 
                 rollout_rewards.append(rewards.mean().item())
                 total_timesteps += num_envs
@@ -733,16 +780,13 @@ def train():
                 obs_norm = obs_normalizer.normalize(batch["obs"])
                 new_log_probs, values, entropy = actor_critic.evaluate(obs_norm, batch["actions"])
 
-                # Actor loss
                 ratio = torch.exp(new_log_probs - batch["old_log_probs"])
                 surr1 = ratio * batch["advantages"]
                 surr2 = torch.clamp(ratio, 1 - clip_param, 1 + clip_param) * batch["advantages"]
                 actor_loss = -torch.min(surr1, surr2).mean()
 
-                # Critic loss
                 critic_loss = 0.5 * F.mse_loss(values, batch["returns"])
 
-                # Total loss
                 loss = actor_loss + value_loss_coef * critic_loss - entropy_coef * entropy.mean()
 
                 optimizer.zero_grad()
@@ -760,10 +804,10 @@ def train():
         # Logging
         iter_time = time.time() - iter_start
         mean_reward = np.mean(rollout_rewards)
-        mean_ep_reward = np.mean(episode_rewards) if episode_rewards else 0
-        mean_ep_length = np.mean(episode_lengths) if episode_lengths else 0
+        mean_ep_reward = np.mean(episode_rewards_history) if episode_rewards_history else 0
+        mean_ep_length = np.mean(episode_lengths_history) if episode_lengths_history else 0
         steps_per_sec = (num_steps_per_rollout * num_envs) / iter_time
-        mean_std = actor_critic.log_std.exp().mean().item()
+        mean_std = actor_critic.get_std().mean().item()
 
         writer.add_scalar("Loss/surrogate", total_actor_loss / num_updates, iteration)
         writer.add_scalar("Loss/value_function", total_critic_loss / num_updates, iteration)
@@ -772,6 +816,7 @@ def train():
         writer.add_scalar("Train/mean_episode_reward", mean_ep_reward, iteration)
         writer.add_scalar("Policy/mean_noise_std", mean_std, iteration)
         writer.add_scalar("Perf/total_fps", steps_per_sec, iteration)
+        writer.flush()  # Force write to disk
 
         # Console output
         if iteration % 10 == 0:
@@ -794,17 +839,22 @@ def train():
             print("#" * 80)
             print()
 
-        # Save checkpoints
+        # Save checkpoints - use MEAN_REWARD for best model (not episode reward)
         checkpoint_data = {
             "model_state_dict": actor_critic.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "obs_normalizer": obs_normalizer.state_dict(),
             "iteration": iteration,
+            "best_reward": best_reward,
+            "mean_reward": mean_reward,
         }
 
-        if mean_ep_reward > best_reward:
-            best_reward = mean_ep_reward
+        # Best model based on mean_reward (not episode_reward which may be 0)
+        if mean_reward > best_reward:
+            best_reward = mean_reward
+            checkpoint_data["best_reward"] = best_reward
             torch.save(checkpoint_data, os.path.join(log_dir, "model_best.pt"))
+            print(f"[BEST] New best model saved! Reward: {best_reward:.2f}")
 
         if iteration % args_cli.save_interval == 0 and iteration > 0:
             torch.save(checkpoint_data, os.path.join(log_dir, f"model_{iteration}.pt"))

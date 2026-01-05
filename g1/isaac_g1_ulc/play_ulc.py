@@ -1,10 +1,10 @@
 """
-ULC G1 Play Script - Test trained model
-=======================================
+ULC G1 Play Script v5 - Test trained model
+==========================================
 
 Usage:
     cd IsaacLab
-    ./isaaclab.bat -p <path>/play_ulc.py --checkpoint <path>/model_best.pt --num_envs 4
+    ./isaaclab.bat -p <path>/play_ulc_v5.py --checkpoint <path>/model_best.pt --num_envs 4
 """
 
 from __future__ import annotations
@@ -13,10 +13,11 @@ import argparse
 import torch
 import torch.nn as nn
 import math
+import numpy as np
 
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="Play ULC G1")
+parser = argparse.ArgumentParser(description="Play ULC G1 v5")
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint")
 parser.add_argument("--num_envs", type=int, default=4, help="Number of environments")
 parser.add_argument("--num_steps", type=int, default=1000, help="Number of steps to run")
@@ -36,15 +37,16 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab.actuators import ImplicitActuatorCfg
 
-# Constants
 NUM_ACTIONS = 12
 NUM_OBSERVATIONS = 46
 G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
 
+HEIGHT_MIN = 0.65
+HEIGHT_MAX = 0.85
+HEIGHT_DEFAULT = 0.75
+
 
 class ActorCriticNetwork(nn.Module):
-    """Same architecture as training."""
-
     def __init__(self, num_obs, num_actions, hidden_dims=[512, 256, 128]):
         super().__init__()
 
@@ -66,7 +68,9 @@ class ActorCriticNetwork(nn.Module):
         critic_layers.append(nn.Linear(in_dim, 1))
         self.critic = nn.Sequential(*critic_layers)
 
-        self.log_std = nn.Parameter(torch.ones(num_actions))
+        self.log_std = nn.Parameter(torch.zeros(num_actions))
+        self.log_std_min = -2.0
+        self.log_std_max = 0.5
 
     def act_inference(self, obs):
         return self.actor(obs)
@@ -121,14 +125,41 @@ class ULC_G1_SceneCfg(InteractiveSceneCfg):
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.8),
-            joint_pos={".*": 0.0},
+            joint_pos={
+                "left_hip_pitch_joint": -0.1,
+                "right_hip_pitch_joint": -0.1,
+                "left_hip_roll_joint": 0.0,
+                "right_hip_roll_joint": 0.0,
+                "left_hip_yaw_joint": 0.0,
+                "right_hip_yaw_joint": 0.0,
+                "left_knee_joint": 0.25,
+                "right_knee_joint": 0.25,
+                "left_ankle_pitch_joint": -0.15,
+                "right_ankle_pitch_joint": -0.15,
+                "left_ankle_roll_joint": 0.0,
+                "right_ankle_roll_joint": 0.0,
+                ".*shoulder.*": 0.0,
+                ".*elbow.*": 0.0,
+                "torso_joint": 0.0,
+                ".*_joint": 0.0,
+            },
             joint_vel={".*": 0.0},
         ),
         actuators={
-            "all_joints": ImplicitActuatorCfg(
-                joint_names_expr=[".*"],
-                stiffness=100.0,
+            "legs": ImplicitActuatorCfg(
+                joint_names_expr=[".*hip.*", ".*knee.*", ".*ankle.*"],
+                stiffness=150.0,
+                damping=10.0,
+            ),
+            "arms": ImplicitActuatorCfg(
+                joint_names_expr=[".*shoulder.*", ".*elbow.*", "torso_joint"],
+                stiffness=50.0,
                 damping=5.0,
+            ),
+            "hands": ImplicitActuatorCfg(
+                joint_names_expr=[".*five.*", ".*three.*", ".*zero.*", ".*six.*", ".*four.*", ".*one.*", ".*two.*"],
+                stiffness=10.0,
+                damping=1.0,
             ),
         },
     )
@@ -167,26 +198,49 @@ class ULC_G1_PlayEnv(DirectRLEnv):
 
     def __init__(self, cfg, render_mode=None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-        self.target_height = 0.75
+
+        # Per-environment target height
+        self.target_heights = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
         self.previous_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
+
         self._setup_joint_indices()
 
     def _setup_joint_indices(self):
         robot = self.scene["robot"]
         joint_names = robot.data.joint_names
 
-        self.leg_indices = []
-        for i, name in enumerate(joint_names):
-            if any(x in name.lower() for x in ["hip", "knee", "ankle"]):
-                self.leg_indices.append(i)
+        leg_joint_patterns = [
+            "left_hip_pitch", "right_hip_pitch",
+            "left_hip_roll", "right_hip_roll",
+            "left_hip_yaw", "right_hip_yaw",
+            "left_knee", "right_knee",
+            "left_ankle_pitch", "right_ankle_pitch",
+            "left_ankle_roll", "right_ankle_roll",
+        ]
 
-        if len(self.leg_indices) >= 12:
-            self.leg_indices = self.leg_indices[:12]
-        else:
+        self.leg_indices = []
+        for pattern in leg_joint_patterns:
+            for i, name in enumerate(joint_names):
+                if pattern in name.lower():
+                    self.leg_indices.append(i)
+                    break
+
+        if len(self.leg_indices) < 12:
             while len(self.leg_indices) < 12:
                 self.leg_indices.append(self.leg_indices[-1] if self.leg_indices else 0)
 
-        self.leg_indices = torch.tensor(self.leg_indices, device=self.device, dtype=torch.long)
+        self.leg_indices = torch.tensor(self.leg_indices[:12], device=self.device, dtype=torch.long)
+
+        self.default_leg_positions = torch.tensor([
+            -0.1, -0.1,  # hip pitch
+            0.0, 0.0,    # hip roll
+            0.0, 0.0,    # hip yaw
+            0.25, 0.25,  # knee
+            -0.15, -0.15,  # ankle pitch
+            0.0, 0.0,    # ankle roll
+        ], device=self.device)
+
+        print(f"[ULC_G1_Play] Leg joints: {len(self.leg_indices)}")
 
     def _setup_scene(self):
         from isaaclab.assets import Articulation
@@ -196,10 +250,15 @@ class ULC_G1_PlayEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions):
         self.actions = torch.clamp(actions, -1.0, 1.0)
-        action_scale = 0.5
+
+        action_scale = 1.0
         targets = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
+
+        leg_targets = self.default_leg_positions.unsqueeze(0) + actions * action_scale
+
         num_leg_joints = min(len(self.leg_indices), actions.shape[1])
-        targets[:, self.leg_indices[:num_leg_joints]] = actions[:, :num_leg_joints] * action_scale
+        targets[:, self.leg_indices[:num_leg_joints]] = leg_targets[:, :num_leg_joints]
+
         self.robot.set_joint_position_target(targets)
         self.previous_actions = actions.clone()
 
@@ -224,7 +283,7 @@ class ULC_G1_PlayEnv(DirectRLEnv):
         leg_pos = joint_pos[:, self.leg_indices]
         leg_vel = joint_vel[:, self.leg_indices]
 
-        height_cmd = torch.ones(self.num_envs, 1, device=self.device) * self.target_height
+        height_cmd = self.target_heights.unsqueeze(-1)
 
         obs = torch.cat([
             base_lin_vel_b, base_ang_vel_b, proj_gravity,
@@ -266,6 +325,9 @@ class ULC_G1_PlayEnv(DirectRLEnv):
 
         default_pos = robot.data.default_joint_pos[env_ids]
         robot.write_joint_state_to_sim(default_pos, torch.zeros_like(default_pos), None, env_ids)
+
+        # Randomize target heights
+        self.target_heights[env_ids] = torch.rand(len(env_ids), device=self.device) * (HEIGHT_MAX - HEIGHT_MIN) + HEIGHT_MIN
         self.previous_actions[env_ids] = 0.0
 
 
@@ -273,15 +335,13 @@ def play():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print("=" * 60)
-    print("ULC G1 PLAY - Testing trained model")
+    print("ULC G1 PLAY v5 - Testing trained model")
     print("=" * 60)
 
-    # Create environment
     cfg = ULC_G1_PlayEnvCfg()
     cfg.scene.num_envs = args_cli.num_envs
     env = ULC_G1_PlayEnv(cfg)
 
-    # Load model
     print(f"\n[INFO] Loading checkpoint: {args_cli.checkpoint}")
     checkpoint = torch.load(args_cli.checkpoint, map_location=device)
 
@@ -292,15 +352,17 @@ def play():
     obs_normalizer = EmpiricalNormalization((NUM_OBSERVATIONS,)).to(device)
     obs_normalizer.load_state_dict(checkpoint["obs_normalizer"])
 
-    print(f"[INFO] Model loaded from iteration {checkpoint.get('iteration', 'unknown')}")
+    iteration = checkpoint.get("iteration", "unknown")
+    best_reward = checkpoint.get("best_reward", checkpoint.get("mean_reward", "unknown"))
+
+    print(f"[INFO] Model loaded from iteration {iteration}")
+    print(f"[INFO] Best/Mean reward: {best_reward}")
     print(f"[INFO] Running {args_cli.num_steps} steps...")
     print("=" * 60)
 
-    # Run
     obs_dict, _ = env.reset()
     obs = obs_dict["policy"]
 
-    total_reward = 0
     episode_count = 0
 
     for step in range(args_cli.num_steps):
@@ -311,12 +373,11 @@ def play():
         next_obs_dict, rewards, terminated, truncated, _ = env.step(actions)
         obs = next_obs_dict["policy"]
 
-        # Print status every 100 steps
         if step % 100 == 0:
             height = env.robot.data.root_pos_w[:, 2].mean().item()
-            print(f"Step {step:4d} | Height: {height:.3f}m | Terminated: {terminated.sum().item()}")
+            target = env.target_heights.mean().item()
+            print(f"Step {step:4d} | Height: {height:.3f}m | Target: {target:.3f}m | Terminated: {terminated.sum().item()}")
 
-        # Count resets
         if terminated.any() or truncated.any():
             episode_count += (terminated | truncated).sum().item()
 
