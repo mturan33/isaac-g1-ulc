@@ -220,11 +220,6 @@ def create_play_env(num_envs: int, device: str):
             return self.scene["robot"]
 
         def _setup_scene(self):
-            self.cfg.scene.robot.spawn.func(
-                self.cfg.scene.robot.spawn,
-                self.cfg.scene.robot.prim_path.replace(".*", "0"),
-                self.cfg.scene.robot,
-            )
             self.scene.clone_environments(copy_from_source=False)
             self.scene.filter_collisions(global_prim_paths=[])
 
