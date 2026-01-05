@@ -78,7 +78,7 @@ from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
 from torch.utils.tensorboard import SummaryWriter
 
-# G1 USD path - Use Nucleus URL for reliability
+# G1 USD path - Use Nucleus URL
 G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
 
 print("=" * 80)
@@ -367,10 +367,6 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
                 0.25, 0.25, -0.15, -0.15, 0.0, 0.0,
             ], device=self.device)
 
-            # Symmetry indices
-            self.left_leg_idx = torch.tensor([0, 2, 4, 6, 8, 10], device=self.device)
-            self.right_leg_idx = torch.tensor([1, 3, 5, 7, 9, 11], device=self.device)
-
             # Commands
             self.target_heights = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
             self.velocity_commands = torch.zeros(self.num_envs, 3, device=self.device)  # vx, vy, vyaw
@@ -388,10 +384,6 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
             self.episode_rewards = torch.zeros(self.num_envs, device=self.device)
             self.episode_lengths = torch.zeros(self.num_envs, device=self.device)
 
-            # Perturbation settings
-            self.perturbation_prob = 0.1
-            self.perturbation_magnitude = 50.0
-
             # Action scale
             self.action_scale = 0.5
 
@@ -401,15 +393,6 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
         @property
         def robot(self):
             return self.scene["robot"]
-
-        def _setup_scene(self):
-            self.cfg.scene.robot.spawn.func(
-                self.cfg.scene.robot.spawn,
-                self.cfg.scene.robot.prim_path.replace(".*", "0"),
-                self.cfg.scene.robot,
-            )
-            self.scene.clone_environments(copy_from_source=False)
-            self.scene.filter_collisions(global_prim_paths=[])
 
         def _pre_physics_step(self, actions):
             self.actions = actions.clone()
