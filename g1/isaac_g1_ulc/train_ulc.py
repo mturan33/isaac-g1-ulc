@@ -257,7 +257,17 @@ def create_ulc_g1_env(num_envs: int, device: str):
 
     @configclass
     class ULC_G1_Stage1_SceneCfg(InteractiveSceneCfg):
-        ground = sim_utils.GroundPlaneCfg()
+        # Ground plane - use TerrainImporterCfg for new API
+        terrain = sim_utils.TerrainImporterCfg(
+            prim_path="/World/ground",
+            terrain_type="plane",
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=0.0,
+            ),
+        )
 
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
