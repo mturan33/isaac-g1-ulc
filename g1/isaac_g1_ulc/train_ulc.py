@@ -686,9 +686,9 @@ def train():
     # std decay parameters
     std_decay_rate = 0.999  # Decay per iteration
 
-    # Logging
+    # Logging - save under logs/ulc/
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join("logs", f"{args_cli.experiment_name}_{timestamp}")
+    log_dir = os.path.join("logs", "ulc", f"{args_cli.experiment_name}_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
 
@@ -716,7 +716,7 @@ def train():
     start_iteration = 0
     if args_cli.checkpoint:
         print(f"[INFO] Loading checkpoint: {args_cli.checkpoint}")
-        checkpoint = torch.load(args_cli.checkpoint, map_location=device)
+        checkpoint = torch.load(args_cli.checkpoint, map_location=device, weights_only=False)
         actor_critic.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         obs_normalizer.load_state_dict(checkpoint["obs_normalizer"])

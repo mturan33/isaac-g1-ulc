@@ -350,7 +350,7 @@ def play():
     env = ULC_G1_PlayEnv(cfg)
 
     print(f"\n[INFO] Loading checkpoint: {args_cli.checkpoint}")
-    checkpoint = torch.load(args_cli.checkpoint, map_location=device)
+    checkpoint = torch.load(args_cli.checkpoint, map_location=device, weights_only=False)
 
     actor_critic = ActorCriticNetwork(NUM_OBSERVATIONS, NUM_ACTIONS).to(device)
     actor_critic.load_state_dict(checkpoint["model_state_dict"])
