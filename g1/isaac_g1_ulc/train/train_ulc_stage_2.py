@@ -6,7 +6,6 @@ BUILD ON TOP OF STAGE 1:
 - Load pretrained Stage 1 standing policy
 - Add velocity commands (vx, vy, vyaw)
 - Add gait generation (trotting pattern)
-- Add RayCaster for terrain perception
 - Add curriculum terrain (flat → rough)
 - Add perturbation robustness training
 
@@ -73,13 +72,10 @@ simulation_app = app_launcher.app
 import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.assets import ArticulationCfg, Articulation
-from isaaclab.actuators import ImplicitActuatorCfg  # CORRECT IMPORT!
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
-from isaaclab.terrains import TerrainImporterCfg, TerrainGeneratorCfg
-from isaaclab.terrains.height_field import HfRandomUniformTerrainCfg, HfDiscreteObstaclesTerrainCfg
-from isaaclab.terrains.trimesh import MeshPlaneTerrainCfg
-from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR  # CORRECT IMPORT!
+from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
 from torch.utils.tensorboard import SummaryWriter
 
 # G1 USD path
@@ -245,10 +241,10 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
     class ULC_G1_Stage2_SceneCfg(InteractiveSceneCfg):
         """Scene configuration with terrain."""
 
-        # Simple ground plane for now (terrain curriculum can be added later)
+        # Simple ground plane
         ground = sim_utils.GroundPlaneCfg()
 
-        # G1 Robot
+        # G1 Robot - FIXED: removed articulation_root_props from UsdFileCfg
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
             spawn=sim_utils.UsdFileCfg(
@@ -257,13 +253,6 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
                     disable_gravity=False,
                     max_depenetration_velocity=10.0,
                     enable_gyroscopic_forces=True,
-                ),
-                articulation_root_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=False,
-                    solver_position_iteration_count=8,
-                    solver_velocity_iteration_count=4,
-                    sleep_threshold=0.005,
-                    stabilization_threshold=0.001,
                 ),
             ),
             init_state=ArticulationCfg.InitialStateCfg(
@@ -321,7 +310,6 @@ def create_ulc_g1_stage2_env(num_envs: int, device: str):
 
         # Observations: base_vel(3) + ang_vel(3) + gravity(3) + leg_pos(12) + leg_vel(12) +
         # height_cmd(1) + vel_cmd(3) + gait_phase(2) + prev_actions(12) = 51
-        # (RayCaster height_scan removed for simplicity - can add later)
         action_space = 12
         observation_space = 51
         state_space = 0
@@ -677,15 +665,17 @@ def train():
         current_state = actor_critic.state_dict()
 
         transferred = 0
+        skipped = 0
         for key in stage1_state:
             if key in current_state and stage1_state[key].shape == current_state[key].shape:
                 current_state[key] = stage1_state[key]
                 transferred += 1
             else:
+                skipped += 1
                 print(f"  [SKIP] {key}: shape mismatch")
 
         actor_critic.load_state_dict(current_state)
-        print(f"[INFO] Transferred {transferred} parameters from Stage 1")
+        print(f"[INFO] Transferred {transferred} parameters, skipped {skipped} (shape mismatch expected due to obs size change)")
 
     ppo = PPO(
         actor_critic,
