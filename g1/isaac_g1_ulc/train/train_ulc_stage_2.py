@@ -1,16 +1,5 @@
 """
 ULC G1 Stage 2 v2: Improved Locomotion with Adaptive Curriculum
-===============================================================
-
-IMPROVEMENTS:
-1. Value function clipping for stability
-2. Proper gait reward with foot alternation
-3. Symmetry reward for natural walking
-4. Adaptive curriculum (advances when reward threshold reached)
-5. Linear std annealing instead of decay
-6. LayerNorm in networks for stability
-7. AdamW optimizer with weight decay
-8. Reward clipping to prevent explosion
 """
 
 import torch
@@ -179,10 +168,31 @@ def create_env(num_envs, device):
             spawn=sim_utils.UsdFileCfg(usd_path=G1_USD,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False, max_depenetration_velocity=10.0)),
             init_state=ArticulationCfg.InitialStateCfg(pos=(0,0,0.8),
-                joint_pos={"left_hip_pitch_joint":-0.2,"right_hip_pitch_joint":-0.2,
-                    "left_knee_joint":0.4,"right_knee_joint":0.4,
-                    "left_ankle_pitch_joint":-0.2,"right_ankle_pitch_joint":-0.2,
-                    ".*": 0.0}),
+                joint_pos={
+                    "left_hip_pitch_joint": -0.2,
+                    "right_hip_pitch_joint": -0.2,
+                    "left_hip_roll_joint": 0.0,
+                    "right_hip_roll_joint": 0.0,
+                    "left_hip_yaw_joint": 0.0,
+                    "right_hip_yaw_joint": 0.0,
+                    "left_knee_joint": 0.4,
+                    "right_knee_joint": 0.4,
+                    "left_ankle_pitch_joint": -0.2,
+                    "right_ankle_pitch_joint": -0.2,
+                    "left_ankle_roll_joint": 0.0,
+                    "right_ankle_roll_joint": 0.0,
+                    "left_shoulder_pitch_joint": 0.0,
+                    "right_shoulder_pitch_joint": 0.0,
+                    "left_shoulder_roll_joint": 0.0,
+                    "right_shoulder_roll_joint": 0.0,
+                    "left_shoulder_yaw_joint": 0.0,
+                    "right_shoulder_yaw_joint": 0.0,
+                    "left_elbow_pitch_joint": 0.0,
+                    "right_elbow_pitch_joint": 0.0,
+                    "left_elbow_roll_joint": 0.0,
+                    "right_elbow_roll_joint": 0.0,
+                    "torso_joint": 0.0,
+                }),
             actuators={
                 "legs": ImplicitActuatorCfg(joint_names_expr=[".*hip.*",".*knee.*",".*ankle.*"], stiffness=150, damping=15),
                 "arms": ImplicitActuatorCfg(joint_names_expr=[".*shoulder.*",".*elbow.*"], stiffness=50, damping=5),
@@ -425,9 +435,9 @@ def train():
 
         info = ppo.update(obs_b.view(-1,nobs), act_b.view(-1,nact), lp_b.view(-1), ret.view(-1), adv.view(-1), val_b.view(-1))
 
-        # Std anneal
+        # Std anneal (LINEAR - key improvement!)
         prog = it / args_cli.max_iterations
-        std = 0.8 + (0.2 - 0.8) * prog
+        std = 0.8 + (0.2 - 0.8) * prog  # 0.8 -> 0.2 linearly
         net.log_std.data.fill_(np.log(std))
 
         mean_rew = rew_b.mean().item()
