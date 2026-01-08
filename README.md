@@ -1,4 +1,4 @@
-# 🤖 G1 VLM-ULC-VLM Navigation
+# 🤖 G1 VLM-ULC-VLM Long Horizon Problem Solver System
 
 Language-conditioned humanoid navigation using Vision-Language Models (VLM) and ULC Reinforcement Learning.
 
