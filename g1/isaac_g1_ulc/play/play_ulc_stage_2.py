@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ULC G1 Stage 2 v2 Play Script
-Matches training architecture: obs=51, hidden=[512,256,128], ELU activation
+Matches training: obs=51, hidden=[512,256,128], Linear+LayerNorm+ELU
 """
 
 import torch
@@ -27,7 +27,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, Articulation
+from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -39,38 +39,42 @@ print("ULC G1 STAGE 2 v2 - PLAY")
 print("=" * 60)
 
 HEIGHT_DEFAULT = 0.72
-GAIT_FREQUENCY = 2.0
-G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
+GAIT_FREQUENCY = 1.5
+G1_USD = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
 
 
-class ActorCriticNetwork(nn.Module):
-    """Matches training architecture exactly: [512, 256, 128] with ELU"""
+class ActorCritic(nn.Module):
+    """Exact match with training: Linear + LayerNorm + ELU"""
 
-    def __init__(self, num_obs, num_actions, hidden_dims=[512, 256, 128]):
+    def __init__(self, num_obs, num_act, hidden=[512, 256, 128]):
         super().__init__()
 
-        # Actor with ELU (not LayerNorm!)
-        actor_layers = []
-        prev_dim = num_obs
-        for dim in hidden_dims:
-            actor_layers.extend([nn.Linear(prev_dim, dim), nn.ELU()])
-            prev_dim = dim
-        actor_layers.append(nn.Linear(prev_dim, num_actions))
-        self.actor = nn.Sequential(*actor_layers)
+        # Actor: Linear -> LayerNorm -> ELU pattern
+        layers = []
+        prev = num_obs
+        for h in hidden:
+            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
+            prev = h
+        layers.append(nn.Linear(prev, num_act))
+        self.actor = nn.Sequential(*layers)
 
-        # Critic with ELU
-        critic_layers = []
-        prev_dim = num_obs
-        for dim in hidden_dims:
-            critic_layers.extend([nn.Linear(prev_dim, dim), nn.ELU()])
-            prev_dim = dim
-        critic_layers.append(nn.Linear(prev_dim, 1))
-        self.critic = nn.Sequential(*critic_layers)
+        # Critic: same pattern
+        layers = []
+        prev = num_obs
+        for h in hidden:
+            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
+            prev = h
+        layers.append(nn.Linear(prev, 1))
+        self.critic = nn.Sequential(*layers)
 
-        self.log_std = nn.Parameter(torch.zeros(num_actions))
+        self.log_std = nn.Parameter(torch.zeros(num_act))
 
-    def act(self, obs):
-        return self.actor(obs)
+    def act(self, x, det=True):
+        mean = self.actor(x)
+        if det:
+            return mean
+        std = self.log_std.clamp(-2, 1).exp()
+        return torch.distributions.Normal(mean, std).sample()
 
 
 @configclass
@@ -87,7 +91,7 @@ class PlaySceneCfg(InteractiveSceneCfg):
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=G1_USD_PATH,
+            usd_path=G1_USD,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False, max_depenetration_velocity=10.0,
             ),
@@ -95,11 +99,11 @@ class PlaySceneCfg(InteractiveSceneCfg):
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.8),
             joint_pos={
-                "left_hip_pitch_joint": -0.1, "right_hip_pitch_joint": -0.1,
+                "left_hip_pitch_joint": -0.2, "right_hip_pitch_joint": -0.2,
                 "left_hip_roll_joint": 0.0, "right_hip_roll_joint": 0.0,
                 "left_hip_yaw_joint": 0.0, "right_hip_yaw_joint": 0.0,
-                "left_knee_joint": 0.25, "right_knee_joint": 0.25,
-                "left_ankle_pitch_joint": -0.15, "right_ankle_pitch_joint": -0.15,
+                "left_knee_joint": 0.4, "right_knee_joint": 0.4,
+                "left_ankle_pitch_joint": -0.2, "right_ankle_pitch_joint": -0.2,
                 "left_ankle_roll_joint": 0.0, "right_ankle_roll_joint": 0.0,
                 "left_shoulder_pitch_joint": 0.0, "right_shoulder_pitch_joint": 0.0,
                 "left_shoulder_roll_joint": 0.0, "right_shoulder_roll_joint": 0.0,
@@ -113,7 +117,7 @@ class PlaySceneCfg(InteractiveSceneCfg):
         actuators={
             "legs": ImplicitActuatorCfg(
                 joint_names_expr=[".*hip.*", ".*knee.*", ".*ankle.*"],
-                stiffness=150.0, damping=10.0,
+                stiffness=150.0, damping=15.0,
             ),
             "arms": ImplicitActuatorCfg(
                 joint_names_expr=[".*shoulder.*", ".*elbow.*"],
@@ -132,7 +136,7 @@ class PlayEnvCfg(DirectRLEnvCfg):
     decimation = 4
     episode_length_s = 30.0
     action_space = 12
-    observation_space = 51  # Matches training!
+    observation_space = 51
     state_space = 0
     sim = sim_utils.SimulationCfg(dt=1 / 200, render_interval=4)
     scene = PlaySceneCfg(num_envs=4, env_spacing=2.5)
@@ -144,8 +148,8 @@ class PlayEnv(DirectRLEnv):
     def __init__(self, cfg, render_mode=None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        joint_names = self.robot.joint_names
-        leg_joint_names = [
+        jn = self.robot.joint_names
+        leg_names = [
             "left_hip_pitch_joint", "right_hip_pitch_joint",
             "left_hip_roll_joint", "right_hip_roll_joint",
             "left_hip_yaw_joint", "right_hip_yaw_joint",
@@ -154,98 +158,78 @@ class PlayEnv(DirectRLEnv):
             "left_ankle_roll_joint", "right_ankle_roll_joint",
         ]
 
-        self.leg_indices = [joint_names.index(n) for n in leg_joint_names if n in joint_names]
-        self.leg_indices = torch.tensor(self.leg_indices, device=self.device)
+        self.leg_idx = torch.tensor([jn.index(n) for n in leg_names if n in jn], device=self.device)
+        self.default_leg = torch.tensor([-0.2, -0.2, 0, 0, 0, 0, 0.4, 0.4, -0.2, -0.2, 0, 0], device=self.device)
 
-        self.default_leg_positions = torch.tensor([
-            -0.1, -0.1, 0.0, 0.0, 0.0, 0.0,
-            0.25, 0.25, -0.15, -0.15, 0.0, 0.0,
-        ], device=self.device)
+        self.heights = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
+        self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        self.vel_cmd[:, 0] = args_cli.vx
 
-        self.target_heights = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
-        self.velocity_commands = torch.zeros(self.num_envs, 3, device=self.device)
-        self.velocity_commands[:, 0] = args_cli.vx
+        self.phase = torch.zeros(self.num_envs, device=self.device)
+        self.prev_act = torch.zeros(self.num_envs, 12, device=self.device)
 
-        self.gait_phase = torch.zeros(self.num_envs, device=self.device)
-        self.previous_actions = torch.zeros(self.num_envs, 12, device=self.device)
-        self.action_scale = 0.5
-
-        print(f"[Env] Leg indices: {self.leg_indices.tolist()}")
-        print(f"[Env] Velocity command: vx={args_cli.vx:.2f} m/s")
+        print(f"[Env] Leg indices: {self.leg_idx.tolist()}")
+        print(f"[Env] Velocity: vx={args_cli.vx:.2f} m/s")
 
     @property
     def robot(self):
         return self.scene["robot"]
 
-    def _pre_physics_step(self, actions):
-        self.actions = actions.clone()
-        targets = self.robot.data.default_joint_pos.clone()
-        targets[:, self.leg_indices] = self.default_leg_positions.unsqueeze(0) + actions * self.action_scale
-        self.robot.set_joint_position_target(targets)
-        self.previous_actions = actions.clone()
-        self.gait_phase = (self.gait_phase + GAIT_FREQUENCY * self.cfg.sim.dt * self.cfg.decimation) % 1.0
+    def _pre_physics_step(self, act):
+        self.actions = act.clone()
+        tgt = self.robot.data.default_joint_pos.clone()
+        tgt[:, self.leg_idx] = self.default_leg + act * 0.4
+        self.robot.set_joint_position_target(tgt)
+        self.prev_act = act.clone()
+        self.phase = (self.phase + GAIT_FREQUENCY * 0.02) % 1.0
 
     def _apply_action(self):
         pass
 
     def _get_observations(self) -> dict:
-        from isaaclab.utils.math import quat_apply_inverse
+        from isaaclab.utils.math import quat_apply_inverse as qai
 
-        robot = self.robot
-        base_quat = robot.data.root_quat_w
-        base_lin_vel_b = quat_apply_inverse(base_quat, robot.data.root_lin_vel_w)
-        base_ang_vel_b = quat_apply_inverse(base_quat, robot.data.root_ang_vel_w)
+        r = self.robot
+        q = r.data.root_quat_w
+        lv = qai(q, r.data.root_lin_vel_w)
+        av = qai(q, r.data.root_ang_vel_w)
+        g = qai(q, torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1))
 
-        gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        proj_gravity = quat_apply_inverse(base_quat, gravity)
+        jp = r.data.joint_pos[:, self.leg_idx]
+        jv = r.data.joint_vel[:, self.leg_idx]
 
-        leg_pos = robot.data.joint_pos[:, self.leg_indices]
-        leg_vel = robot.data.joint_vel[:, self.leg_indices]
+        gait = torch.stack([
+            torch.sin(2 * np.pi * self.phase),
+            torch.cos(2 * np.pi * self.phase)
+        ], -1)
 
-        gait_obs = torch.stack([
-            torch.sin(2 * np.pi * self.gait_phase),
-            torch.cos(2 * np.pi * self.gait_phase)
-        ], dim=-1)
+        # obs=51: lv(3) + av(3) + g(3) + jp(12) + jv(12) + h(1) + cmd(3) + gait(2) + prev(12)
+        obs = torch.cat([lv, av, g, jp, jv, self.heights[:, None], self.vel_cmd, gait, self.prev_act], -1)
 
-        # obs = 51: lin_vel(3) + ang_vel(3) + gravity(3) + leg_pos(12) + leg_vel(12) +
-        #           height_cmd(1) + vel_cmd(3) + gait(2) + prev_actions(12)
-        obs = torch.cat([
-            base_lin_vel_b,  # 3
-            base_ang_vel_b,  # 3
-            proj_gravity,  # 3
-            leg_pos,  # 12
-            leg_vel,  # 12
-            self.target_heights.unsqueeze(-1),  # 1
-            self.velocity_commands,  # 3
-            gait_obs,  # 2
-            self.previous_actions,  # 12
-        ], dim=-1)  # Total: 51
-
-        return {"policy": torch.clamp(torch.nan_to_num(obs, nan=0.0), -100.0, 100.0)}
+        return {"policy": obs.clamp(-10, 10).nan_to_num()}
 
     def _get_rewards(self) -> torch.Tensor:
         return torch.zeros(self.num_envs, device=self.device)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        from isaaclab.utils.math import quat_apply_inverse
-        height = self.robot.data.root_pos_w[:, 2]
-        gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        proj_gravity = quat_apply_inverse(self.robot.data.root_quat_w, gravity)
-        terminated = (height < 0.3) | (height > 1.2) | (proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7)
-        return terminated, self.episode_length_buf >= self.max_episode_length
+        from isaaclab.utils.math import quat_apply_inverse as qai
+        h = self.robot.data.root_pos_w[:, 2]
+        g = qai(self.robot.data.root_quat_w, torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1))
+        term = (h < 0.35) | (h > 1.1) | (g[:, :2].abs().max(-1)[0] > 0.6)
+        return term, self.episode_length_buf >= self.max_episode_length
 
-    def _reset_idx(self, env_ids):
-        super()._reset_idx(env_ids)
-        if len(env_ids) == 0:
+    def _reset_idx(self, ids):
+        super()._reset_idx(ids)
+        if len(ids) == 0:
             return
-        pos = torch.tensor([[0.0, 0.0, 0.8]], device=self.device).expand(len(env_ids), -1).clone()
-        quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(len(env_ids), -1)
-        self.robot.write_root_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids)
-        self.robot.write_root_velocity_to_sim(torch.zeros(len(env_ids), 6, device=self.device), env_ids)
-        default_pos = self.robot.data.default_joint_pos[env_ids]
-        self.robot.write_joint_state_to_sim(default_pos, torch.zeros_like(default_pos), None, env_ids)
-        self.gait_phase[env_ids] = 0.0
-        self.previous_actions[env_ids] = 0.0
+        pos = torch.tensor([[0, 0, 0.8]], device=self.device).expand(len(ids), -1).clone()
+        quat = torch.tensor([[0, 0, 0, 1.]], device=self.device).expand(len(ids), -1)
+        self.robot.write_root_pose_to_sim(torch.cat([pos, quat], -1), ids)
+        self.robot.write_root_velocity_to_sim(torch.zeros(len(ids), 6, device=self.device), ids)
+        dp = self.robot.data.default_joint_pos[ids]
+        self.robot.write_joint_state_to_sim(dp, torch.zeros_like(dp), None, ids)
+        self.phase[ids] = torch.rand(len(ids), device=self.device)
+        self.prev_act[ids] = 0
 
 
 def main():
@@ -258,22 +242,24 @@ def main():
         print(f"[INFO] Best reward: {checkpoint['best_reward']:.2f}")
     if "iteration" in checkpoint:
         print(f"[INFO] Iteration: {checkpoint['iteration']}")
+    if "curriculum_level" in checkpoint:
+        print(f"[INFO] Curriculum level: {checkpoint['curriculum_level']}")
 
     cfg = PlayEnvCfg()
     cfg.scene.num_envs = args_cli.num_envs
     env = PlayEnv(cfg)
 
     num_obs = 51
-    num_actions = 12
-    print(f"[INFO] Obs: {num_obs}, Actions: {num_actions}")
+    num_act = 12
+    print(f"[INFO] Obs: {num_obs}, Actions: {num_act}")
 
-    actor_critic = ActorCriticNetwork(num_obs, num_actions).to(device)
-    actor_critic.load_state_dict(checkpoint["actor_critic"])
-    actor_critic.eval()
-    print("[INFO] Model loaded!")
+    net = ActorCritic(num_obs, num_act).to(device)
+    net.load_state_dict(checkpoint["actor_critic"])
+    net.eval()
+    print("[INFO] Model loaded successfully!")
 
-    obs_dict, _ = env.reset()
-    obs = obs_dict["policy"]
+    obs, _ = env.reset()
+    obs = obs["policy"]
 
     print(f"\n[Play] vx={args_cli.vx:.2f} m/s | Ctrl+C to stop")
     print("-" * 60)
@@ -282,10 +268,10 @@ def main():
     try:
         while simulation_app.is_running():
             with torch.no_grad():
-                actions = actor_critic.act(obs)
+                actions = net.act(obs, det=True)
 
-            obs_dict, _, _, _, _ = env.step(actions)
-            obs = obs_dict["policy"]
+            obs_d, _, _, _, _ = env.step(actions)
+            obs = obs_d["policy"]
             step += 1
 
             if step % 100 == 0:
