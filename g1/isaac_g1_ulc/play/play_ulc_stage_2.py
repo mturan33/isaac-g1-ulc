@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ULC G1 Stage 2 v2 Play Script - Standalone Version
-Self-contained with all definitions, no external env imports needed
+ULC G1 Stage 2 v2 Play Script - Standalone Version (Fixed Config)
+Self-contained with all definitions, proper Isaac Lab 2.3+ config
 """
 
 import argparse
@@ -36,8 +36,11 @@ from gymnasium import spaces
 import numpy as np
 
 print("=" * 60)
-print("ULC G1 STAGE 2 v2 - PLAY (Standalone)")
+print("ULC G1 STAGE 2 v2 - PLAY (Standalone Fixed)")
 print("=" * 60)
+
+# Store vx for later use
+TARGET_VX = args.vx
 
 
 ##############################################################################
@@ -187,6 +190,10 @@ class G1PlayEnvCfg(DirectRLEnvCfg):
     num_actions = 12
     num_observations = 45  # Same as training
 
+    # Required by Isaac Lab 2.3+
+    observation_space = 45
+    action_space = 12
+
     sim: SimulationCfg = SimulationCfg(
         dt=0.005,
         render_interval=4,
@@ -212,12 +219,8 @@ class G1PlayEnv(DirectRLEnv):
         # Get joint indices for legs
         self._leg_joint_ids, _ = self._robot.find_joints(G1_LEG_JOINT_NAMES)
 
-        # Action and observation spaces
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(self.cfg.num_actions,))
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.cfg.num_observations,))
-
         # Velocity command
-        self.target_vx = args.vx
+        self.target_vx = TARGET_VX
 
         # Phase for gait
         self._phase = torch.zeros(self.num_envs, device=self.device)
@@ -357,9 +360,9 @@ def main():
 
     env = G1PlayEnv(cfg=env_cfg)
 
-    # Get dimensions
-    obs_dim = env.observation_space.shape[0]
-    act_dim = env.action_space.shape[0]
+    # Get dimensions from config
+    obs_dim = env_cfg.num_observations
+    act_dim = env_cfg.num_actions
     print(f"[INFO] Obs dim: {obs_dim}, Act dim: {act_dim}")
 
     # Create network
@@ -374,7 +377,7 @@ def main():
     obs_dict, _ = env.reset()
     obs = obs_dict["policy"]
 
-    print(f"\n[Play] Running with vx={args.vx:.2f} m/s")
+    print(f"\n[Play] Running with vx={TARGET_VX:.2f} m/s")
     print("[Play] Press Ctrl+C to stop")
     print("-" * 60)
 
