@@ -42,7 +42,35 @@ from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_apply_inverse, quat_to_euler_xyz
+from isaaclab.utils.math import quat_apply_inverse
+
+
+def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
+    """
+    Convert quaternion to euler angles (roll, pitch, yaw).
+
+    Args:
+        quat: Quaternion tensor [N, 4] in (x, y, z, w) format
+
+    Returns:
+        euler: Euler angles [N, 3] in (roll, pitch, yaw) format
+    """
+    x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = torch.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    sinp = torch.clamp(sinp, -1.0, 1.0)
+    pitch = torch.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = torch.atan2(siny_cosp, cosy_cosp)
+
+    return torch.stack([roll, pitch, yaw], dim=-1)
+
 
 print("=" * 60)
 print("ULC G1 STAGE 3 - PLAY (Torso Control)")

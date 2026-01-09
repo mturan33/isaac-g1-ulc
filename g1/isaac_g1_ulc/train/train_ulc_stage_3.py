@@ -75,7 +75,7 @@ REWARD_WEIGHTS = {
     "base_orientation": 2.0,  # renamed to avoid confusion
 
     # NEW: Torso tracking
-    "torso_pitch": 4.0,  # En önemli - eğilme için
+    "torso_pitch": 4.0,   # En önemli - eğilme için
     "torso_roll": 2.5,
     "torso_yaw": 2.0,
 
@@ -87,7 +87,6 @@ REWARD_WEIGHTS = {
     "torque": -0.0005,
     "alive": 0.5,
 }
-
 
 # ============================================================================
 # ARGUMENT PARSER
@@ -105,7 +104,6 @@ def parse_args():
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
-
 args_cli = parse_args()
 
 # ============================================================================
@@ -113,7 +111,6 @@ args_cli = parse_args()
 # ============================================================================
 
 from isaaclab.app import AppLauncher
-
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -124,7 +121,38 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.utils.math import quat_apply_inverse, quat_to_euler_xyz
+from isaaclab.utils.math import quat_apply_inverse
+
+
+def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
+    """
+    Convert quaternion to euler angles (roll, pitch, yaw).
+
+    Args:
+        quat: Quaternion tensor [N, 4] in (x, y, z, w) format
+
+    Returns:
+        euler: Euler angles [N, 3] in (roll, pitch, yaw) format
+    """
+    # Extract components (Isaac Lab uses x, y, z, w format)
+    x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+
+    # Roll (x-axis rotation)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = torch.atan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y-axis rotation)
+    sinp = 2.0 * (w * y - z * x)
+    sinp = torch.clamp(sinp, -1.0, 1.0)  # Clamp for numerical stability
+    pitch = torch.asin(sinp)
+
+    # Yaw (z-axis rotation)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = torch.atan2(siny_cosp, cosy_cosp)
+
+    return torch.stack([roll, pitch, yaw], dim=-1)
 from torch.utils.tensorboard import SummaryWriter
 
 G1_USD = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
@@ -137,7 +165,6 @@ print("\nCurriculum Levels:")
 for i, lv in enumerate(TORSO_CURRICULUM):
     print(f"  Level {i}: pitch={lv['pitch']}, roll={lv['roll']}, threshold={lv['threshold']}")
 print("=" * 80)
-
 
 # ============================================================================
 # NEURAL NETWORK
@@ -368,7 +395,7 @@ def create_env(num_envs, device):
         action_space = 12  # Only legs (same as Stage 2)
         observation_space = 57  # Stage 2 (51) + torso commands (6)
         state_space = 0
-        sim = sim_utils.SimulationCfg(dt=1 / 200, render_interval=4)
+        sim = sim_utils.SimulationCfg(dt=1/200, render_interval=4)
         scene = SceneCfg(num_envs=num_envs, env_spacing=2.5)
 
     class Stage3Env(DirectRLEnv):
@@ -480,12 +507,12 @@ def create_env(num_envs, device):
                 if threshold is not None and avg_reward > threshold:
                     if self.curr_level < len(TORSO_CURRICULUM) - 1:
                         self.curr_level += 1
-                        print(f"\n{'=' * 60}")
+                        print(f"\n{'='*60}")
                         print(f"LEVEL UP! Now at Level {self.curr_level}")
                         lv = TORSO_CURRICULUM[self.curr_level]
                         print(f"  Velocity: vx={lv['vx']}")
                         print(f"  Torso: pitch={lv['pitch']}, roll={lv['roll']}")
-                        print(f"{'=' * 60}\n")
+                        print(f"{'='*60}\n")
                         self.curr_history = []
 
         def _sample_commands(self, env_ids):
@@ -496,16 +523,12 @@ def create_env(num_envs, device):
             # Velocity commands
             self.vel_cmd[env_ids, 0] = torch.rand(n, device=self.device) * (lv["vx"][1] - lv["vx"][0]) + lv["vx"][0]
             self.vel_cmd[env_ids, 1] = torch.rand(n, device=self.device) * (lv["vy"][1] - lv["vy"][0]) + lv["vy"][0]
-            self.vel_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["vyaw"][1] - lv["vyaw"][0]) + lv["vyaw"][
-                0]
+            self.vel_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["vyaw"][1] - lv["vyaw"][0]) + lv["vyaw"][0]
 
             # Torso commands (roll, pitch, yaw)
-            self.torso_cmd[env_ids, 0] = torch.rand(n, device=self.device) * (lv["roll"][1] - lv["roll"][0]) + \
-                                         lv["roll"][0]
-            self.torso_cmd[env_ids, 1] = torch.rand(n, device=self.device) * (lv["pitch"][1] - lv["pitch"][0]) + \
-                                         lv["pitch"][0]
-            self.torso_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["yaw"][1] - lv["yaw"][0]) + lv["yaw"][
-                0]
+            self.torso_cmd[env_ids, 0] = torch.rand(n, device=self.device) * (lv["roll"][1] - lv["roll"][0]) + lv["roll"][0]
+            self.torso_cmd[env_ids, 1] = torch.rand(n, device=self.device) * (lv["pitch"][1] - lv["pitch"][0]) + lv["pitch"][0]
+            self.torso_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["yaw"][1] - lv["yaw"][0]) + lv["yaw"][0]
 
         def _pre_physics_step(self, actions):
             """Apply actions to robot"""
@@ -559,19 +582,19 @@ def create_env(num_envs, device):
             # Build observation
             obs = torch.cat([
                 # Stage 2 observations (51 dims)
-                lin_vel_b,  # 3
-                ang_vel_b,  # 3
-                proj_gravity,  # 3
-                joint_pos,  # 12
-                joint_vel,  # 12
+                lin_vel_b,                    # 3
+                ang_vel_b,                    # 3
+                proj_gravity,                 # 3
+                joint_pos,                    # 12
+                joint_vel,                    # 12
                 self.height_cmd.unsqueeze(-1),  # 1
-                self.vel_cmd,  # 3 (vx, vy, vyaw)
-                gait_phase,  # 2
-                self.prev_actions,  # 12
+                self.vel_cmd,                 # 3 (vx, vy, vyaw)
+                gait_phase,                   # 2
+                self.prev_actions,            # 12
 
                 # NEW: Torso commands and feedback (6 dims)
-                self.torso_cmd,  # 3 (target roll, pitch, yaw)
-                torso_euler,  # 3 (current roll, pitch, yaw)
+                self.torso_cmd,               # 3 (target roll, pitch, yaw)
+                torso_euler,                  # 3 (current roll, pitch, yaw)
             ], dim=-1)
 
             return {"policy": obs.clamp(-10, 10).nan_to_num()}
@@ -608,8 +631,8 @@ def create_env(num_envs, device):
             knee_target_swing = 0.6
             knee_target_stance = 0.3
             knee_err = (
-                    (left_knee - (left_swing * knee_target_swing + (1 - left_swing) * knee_target_stance)) ** 2 +
-                    (right_knee - (right_swing * knee_target_swing + (1 - right_swing) * knee_target_stance)) ** 2
+                (left_knee - (left_swing * knee_target_swing + (1 - left_swing) * knee_target_stance)) ** 2 +
+                (right_knee - (right_swing * knee_target_swing + (1 - right_swing) * knee_target_stance)) ** 2
             )
             r_gait = torch.exp(-3.0 * knee_err)
 
@@ -658,20 +681,20 @@ def create_env(num_envs, device):
 
             # ==================== TOTAL REWARD ====================
             reward = (
-                    REWARD_WEIGHTS["vx"] * r_vx +
-                    REWARD_WEIGHTS["vy"] * r_vy +
-                    REWARD_WEIGHTS["vyaw"] * r_vyaw +
-                    REWARD_WEIGHTS["gait"] * r_gait +
-                    REWARD_WEIGHTS["symmetry"] * r_symmetry +
-                    REWARD_WEIGHTS["height"] * r_height +
-                    REWARD_WEIGHTS["base_orientation"] * r_base_orientation +
-                    REWARD_WEIGHTS["torso_pitch"] * r_torso_pitch +
-                    REWARD_WEIGHTS["torso_roll"] * r_torso_roll +
-                    REWARD_WEIGHTS["torso_yaw"] * r_torso_yaw +
-                    REWARD_WEIGHTS["com_stability"] * r_com_stability +
-                    REWARD_WEIGHTS["smooth"] * p_smooth +
-                    REWARD_WEIGHTS["torque"] * p_torque +
-                    REWARD_WEIGHTS["alive"]
+                REWARD_WEIGHTS["vx"] * r_vx +
+                REWARD_WEIGHTS["vy"] * r_vy +
+                REWARD_WEIGHTS["vyaw"] * r_vyaw +
+                REWARD_WEIGHTS["gait"] * r_gait +
+                REWARD_WEIGHTS["symmetry"] * r_symmetry +
+                REWARD_WEIGHTS["height"] * r_height +
+                REWARD_WEIGHTS["base_orientation"] * r_base_orientation +
+                REWARD_WEIGHTS["torso_pitch"] * r_torso_pitch +
+                REWARD_WEIGHTS["torso_roll"] * r_torso_roll +
+                REWARD_WEIGHTS["torso_yaw"] * r_torso_yaw +
+                REWARD_WEIGHTS["com_stability"] * r_com_stability +
+                REWARD_WEIGHTS["smooth"] * p_smooth +
+                REWARD_WEIGHTS["torque"] * p_torque +
+                REWARD_WEIGHTS["alive"]
             )
 
             # Store extras for logging
