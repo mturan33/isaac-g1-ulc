@@ -63,15 +63,16 @@ GAIT_FREQUENCY = 1.5
 
 # G1 Arm joint limits (approximate, in radians)
 ARM_JOINT_LIMITS = {
-    "shoulder_pitch": (-2.0, 2.0),  # Forward/backward
-    "shoulder_roll": (-1.5, 1.5),  # In/out
-    "shoulder_yaw": (-1.5, 1.5),  # Rotation
-    "elbow_pitch": (-2.0, 0.0),  # Bend (negative = bent)
-    "elbow_roll": (-1.5, 1.5),  # Forearm rotation
+    "shoulder_pitch": (-2.0, 2.0),   # Forward/backward
+    "shoulder_roll": (-1.5, 1.5),    # In/out
+    "shoulder_yaw": (-1.5, 1.5),     # Rotation
+    "elbow_pitch": (-2.0, 0.0),      # Bend (negative = bent)
+    "elbow_roll": (-1.5, 1.5),       # Forearm rotation
 }
 
 # Default arm pose (neutral hanging position)
-DEFAULT_ARM_POSE = [0.0, 0.0, 0.0, -0.3, 0.0]  # per arm
+# Note: elbow_pitch limits are [-0.227, 3.421], so use -0.2 instead of -0.3
+DEFAULT_ARM_POSE = [0.0, 0.0, 0.0, -0.2, 0.0]  # per arm
 
 # Residual action scales (how much the policy can deviate from command)
 RESIDUAL_SCALES = [0.5, 0.3, 0.3, 0.4, 0.3]  # per joint type
@@ -110,7 +111,6 @@ REWARD_WEIGHTS = {
     "alive": 0.5,
 }
 
-
 # ============================================================================
 # ARGUMENT PARSER
 # ============================================================================
@@ -127,7 +127,6 @@ def parse_args():
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
-
 args_cli = parse_args()
 
 # ============================================================================
@@ -135,7 +134,6 @@ args_cli = parse_args()
 # ============================================================================
 
 from isaaclab.app import AppLauncher
-
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -179,7 +177,6 @@ print(f"\nObservation space: 77 (Stage 3: 57 + arms: 20)")
 print(f"Action space: 22 (12 legs + 10 arms)")
 print(f"\nResidual scales: {RESIDUAL_SCALES}")
 print("=" * 80)
-
 
 # ============================================================================
 # NEURAL NETWORK
@@ -370,8 +367,8 @@ def create_env(num_envs, device):
                     "right_shoulder_roll_joint": 0.0,
                     "left_shoulder_yaw_joint": 0.0,
                     "right_shoulder_yaw_joint": 0.0,
-                    "left_elbow_pitch_joint": -0.3,
-                    "right_elbow_pitch_joint": -0.3,
+                    "left_elbow_pitch_joint": -0.2,
+                    "right_elbow_pitch_joint": -0.2,
                     "left_elbow_roll_joint": 0.0,
                     "right_elbow_roll_joint": 0.0,
                     "torso_joint": 0.0,
@@ -403,7 +400,7 @@ def create_env(num_envs, device):
         action_space = 22  # 12 legs + 10 arms
         observation_space = 77  # Stage 3 (57) + arm states (20)
         state_space = 0
-        sim = sim_utils.SimulationCfg(dt=1 / 200, render_interval=4)
+        sim = sim_utils.SimulationCfg(dt=1/200, render_interval=4)
         scene = SceneCfg(num_envs=num_envs, env_spacing=2.5)
 
     class Stage4Env(DirectRLEnv):
@@ -565,12 +562,12 @@ def create_env(num_envs, device):
                 if threshold is not None and avg_reward > threshold:
                     if self.curr_level < len(ARM_CURRICULUM) - 1:
                         self.curr_level += 1
-                        print(f"\n{'=' * 60}")
+                        print(f"\n{'='*60}")
                         print(f"LEVEL UP! Now at Level {self.curr_level}")
                         lv = ARM_CURRICULUM[self.curr_level]
                         print(f"  Velocity: vx={lv['vx']}")
                         print(f"  Arm range: {lv['arm_range']}")
-                        print(f"{'=' * 60}\n")
+                        print(f"{'='*60}\n")
                         self.curr_history = []
 
         def _sample_commands(self, env_ids):
@@ -580,16 +577,12 @@ def create_env(num_envs, device):
             # Velocity commands
             self.vel_cmd[env_ids, 0] = torch.rand(n, device=self.device) * (lv["vx"][1] - lv["vx"][0]) + lv["vx"][0]
             self.vel_cmd[env_ids, 1] = torch.rand(n, device=self.device) * (lv["vy"][1] - lv["vy"][0]) + lv["vy"][0]
-            self.vel_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["vyaw"][1] - lv["vyaw"][0]) + lv["vyaw"][
-                0]
+            self.vel_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["vyaw"][1] - lv["vyaw"][0]) + lv["vyaw"][0]
 
             # Torso commands
-            self.torso_cmd[env_ids, 0] = torch.rand(n, device=self.device) * (lv["roll"][1] - lv["roll"][0]) + \
-                                         lv["roll"][0]
-            self.torso_cmd[env_ids, 1] = torch.rand(n, device=self.device) * (lv["pitch"][1] - lv["pitch"][0]) + \
-                                         lv["pitch"][0]
-            self.torso_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["yaw"][1] - lv["yaw"][0]) + lv["yaw"][
-                0]
+            self.torso_cmd[env_ids, 0] = torch.rand(n, device=self.device) * (lv["roll"][1] - lv["roll"][0]) + lv["roll"][0]
+            self.torso_cmd[env_ids, 1] = torch.rand(n, device=self.device) * (lv["pitch"][1] - lv["pitch"][0]) + lv["pitch"][0]
+            self.torso_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (lv["yaw"][1] - lv["yaw"][0]) + lv["yaw"][0]
 
             # Arm commands (around default pose)
             arm_range = lv["arm_range"]
@@ -597,11 +590,9 @@ def create_env(num_envs, device):
 
             for i in range(5):
                 # Left arm
-                self.left_arm_cmd[env_ids, i] = default_arm[i] + (
-                            torch.rand(n, device=self.device) * 2 - 1) * arm_range * RESIDUAL_SCALES[i]
+                self.left_arm_cmd[env_ids, i] = default_arm[i] + (torch.rand(n, device=self.device) * 2 - 1) * arm_range * RESIDUAL_SCALES[i]
                 # Right arm
-                self.right_arm_cmd[env_ids, i] = default_arm[i] + (
-                            torch.rand(n, device=self.device) * 2 - 1) * arm_range * RESIDUAL_SCALES[i]
+                self.right_arm_cmd[env_ids, i] = default_arm[i] + (torch.rand(n, device=self.device) * 2 - 1) * arm_range * RESIDUAL_SCALES[i]
 
         def _pre_physics_step(self, actions):
             self.actions = actions.clone()
@@ -670,23 +661,23 @@ def create_env(num_envs, device):
             # Build observation
             obs = torch.cat([
                 # Stage 3 observations (57 dims)
-                lin_vel_b,  # 3
-                ang_vel_b,  # 3
-                proj_gravity,  # 3
-                leg_pos,  # 12
-                leg_vel,  # 12
+                lin_vel_b,                      # 3
+                ang_vel_b,                      # 3
+                proj_gravity,                   # 3
+                leg_pos,                        # 12
+                leg_vel,                        # 12
                 self.height_cmd.unsqueeze(-1),  # 1
-                self.vel_cmd,  # 3
-                gait_phase,  # 2
-                self.prev_actions[:, :12],  # 12 (leg actions)
-                self.torso_cmd,  # 3
-                torso_euler,  # 3
+                self.vel_cmd,                   # 3
+                gait_phase,                     # 2
+                self.prev_actions[:, :12],      # 12 (leg actions)
+                self.torso_cmd,                 # 3
+                torso_euler,                    # 3
 
                 # NEW: Arm states (20 dims)
-                left_arm_pos,  # 5
-                right_arm_pos,  # 5
-                self.left_arm_cmd,  # 5
-                self.right_arm_cmd,  # 5
+                left_arm_pos,                   # 5
+                right_arm_pos,                  # 5
+                self.left_arm_cmd,              # 5
+                self.right_arm_cmd,             # 5
             ], dim=-1)
 
             return {"policy": obs.clamp(-10, 10).nan_to_num()}
@@ -724,8 +715,8 @@ def create_env(num_envs, device):
             knee_target_swing = 0.6
             knee_target_stance = 0.3
             knee_err = (
-                    (left_knee - (left_swing * knee_target_swing + (1 - left_swing) * knee_target_stance)) ** 2 +
-                    (right_knee - (right_swing * knee_target_swing + (1 - right_swing) * knee_target_stance)) ** 2
+                (left_knee - (left_swing * knee_target_swing + (1 - left_swing) * knee_target_stance)) ** 2 +
+                (right_knee - (right_swing * knee_target_swing + (1 - right_swing) * knee_target_stance)) ** 2
             )
             r_gait = torch.exp(-3.0 * knee_err)
 
@@ -782,23 +773,23 @@ def create_env(num_envs, device):
 
             # ==================== TOTAL REWARD ====================
             reward = (
-                    REWARD_WEIGHTS["vx"] * r_vx +
-                    REWARD_WEIGHTS["vy"] * r_vy +
-                    REWARD_WEIGHTS["vyaw"] * r_vyaw +
-                    REWARD_WEIGHTS["gait"] * r_gait +
-                    REWARD_WEIGHTS["symmetry"] * r_symmetry +
-                    REWARD_WEIGHTS["height"] * r_height +
-                    REWARD_WEIGHTS["base_orientation"] * r_base_orientation +
-                    REWARD_WEIGHTS["torso_pitch"] * r_torso_pitch +
-                    REWARD_WEIGHTS["torso_roll"] * r_torso_roll +
-                    REWARD_WEIGHTS["torso_yaw"] * r_torso_yaw +
-                    REWARD_WEIGHTS["left_arm"] * r_left_arm +
-                    REWARD_WEIGHTS["right_arm"] * r_right_arm +
-                    REWARD_WEIGHTS["com_stability"] * r_com_stability +
-                    REWARD_WEIGHTS["smooth_legs"] * p_smooth_legs +
-                    REWARD_WEIGHTS["smooth_arms"] * p_smooth_arms +
-                    REWARD_WEIGHTS["torque"] * p_torque +
-                    REWARD_WEIGHTS["alive"]
+                REWARD_WEIGHTS["vx"] * r_vx +
+                REWARD_WEIGHTS["vy"] * r_vy +
+                REWARD_WEIGHTS["vyaw"] * r_vyaw +
+                REWARD_WEIGHTS["gait"] * r_gait +
+                REWARD_WEIGHTS["symmetry"] * r_symmetry +
+                REWARD_WEIGHTS["height"] * r_height +
+                REWARD_WEIGHTS["base_orientation"] * r_base_orientation +
+                REWARD_WEIGHTS["torso_pitch"] * r_torso_pitch +
+                REWARD_WEIGHTS["torso_roll"] * r_torso_roll +
+                REWARD_WEIGHTS["torso_yaw"] * r_torso_yaw +
+                REWARD_WEIGHTS["left_arm"] * r_left_arm +
+                REWARD_WEIGHTS["right_arm"] * r_right_arm +
+                REWARD_WEIGHTS["com_stability"] * r_com_stability +
+                REWARD_WEIGHTS["smooth_legs"] * p_smooth_legs +
+                REWARD_WEIGHTS["smooth_arms"] * p_smooth_arms +
+                REWARD_WEIGHTS["torque"] * p_torque +
+                REWARD_WEIGHTS["alive"]
             )
 
             # Store extras for logging
@@ -982,8 +973,8 @@ def train():
     best_reward = float('-inf')
 
     # Set initial exploration (higher for arms)
-    net.log_std.data[:12].fill_(np.log(0.5))  # Legs
-    net.log_std.data[12:].fill_(np.log(0.6))  # Arms - more exploration
+    net.log_std.data[:12].fill_(np.log(0.5))   # Legs
+    net.log_std.data[12:].fill_(np.log(0.6))   # Arms - more exploration
 
     # Initial reset
     obs, _ = env.reset()
