@@ -1,6 +1,22 @@
 """
-ULC G1 Environment - FIXED FOR STAGE 4
-======================================
+ULC G1 Environment - FIXED OBSERVATION SIZE (77)
+=================================================
+
+Stage 4 Observation Breakdown (77 total):
+- base_lin_vel_b: 3
+- base_ang_vel_b: 3
+- projected_gravity: 3
+- joint_pos (legs + arms): 22
+- joint_vel (legs + arms): 22
+- height_command: 1
+- velocity_commands: 3
+- torso_commands: 3
+- arm_commands: 10
+- base_height: 1
+- feet_contact: 4 (left_front, right_front, left_rear, right_rear approx)
+- gait_phase: 2 (sin, cos)
+
+Total: 3+3+3+22+22+1+3+3+10+1+4+2 = 77 ✓
 
 Joint Configuration:
 - Legs: 12 joints (hip_pitch/roll/yaw, knee, ankle_pitch/roll x2)
@@ -59,6 +75,10 @@ class ULC_G1_Env(DirectRLEnv):
         # CoM tracker (simplified for Stage 1)
         self._setup_com_tracker()
 
+        # Gait phase for observation
+        self.gait_phase = torch.zeros(self.num_envs, device=self.device)
+        self.gait_frequency = 1.5  # Hz
+
         # Logging buffers
         self.episode_sums = {}
         for key in ["height_tracking", "orientation", "com_stability",
@@ -111,7 +131,7 @@ class ULC_G1_Env(DirectRLEnv):
         # Torso commands (Stage 3+)
         self.torso_commands = torch.zeros(self.num_envs, 3, device=self.device)  # roll, pitch, yaw
 
-        # Arm commands (Stage 4+) - FIXED: 10 joints, not 14
+        # Arm commands (Stage 4+) - 10 joints (5 per arm)
         self.arm_commands = torch.zeros(self.num_envs, 10, device=self.device)
 
     def _setup_scene(self):
@@ -178,12 +198,33 @@ class ULC_G1_Env(DirectRLEnv):
         # Store for action rate reward
         self.previous_actions = self.actions.clone()
 
+        # Update gait phase
+        self.gait_phase += self.step_dt * self.gait_frequency * 2 * math.pi
+        self.gait_phase = torch.fmod(self.gait_phase, 2 * math.pi)
+
     def _apply_action(self):
         """Apply actions - handled by set_joint_position_target."""
         pass
 
     def _get_observations(self) -> dict:
-        """Compute observations."""
+        """
+        Compute observations.
+
+        Stage 4 Observation (77 total):
+        - base_lin_vel_b: 3
+        - base_ang_vel_b: 3
+        - projected_gravity: 3
+        - joint_pos (legs + arms): 22
+        - joint_vel (legs + arms): 22
+        - height_command: 1
+        - velocity_commands: 3
+        - torso_commands: 3
+        - arm_commands: 10
+        - base_height: 1
+        - feet_contact_approx: 4
+        - gait_phase (sin, cos): 2
+        Total: 77
+        """
         robot = self.robot
 
         # Base state
@@ -204,9 +245,20 @@ class ULC_G1_Env(DirectRLEnv):
         joint_pos = robot.data.joint_pos
         joint_vel = robot.data.joint_vel
 
+        # Base height
+        base_height = base_pos[:, 2:3]  # [num_envs, 1]
+
+        # Feet contact approximation (based on ankle positions relative to ground)
+        # This is a simplified version - real contact would come from contact sensors
+        feet_contact = self._get_feet_contact_approx()
+
+        # Gait phase encoding
+        gait_sin = torch.sin(self.gait_phase).unsqueeze(-1)  # [num_envs, 1]
+        gait_cos = torch.cos(self.gait_phase).unsqueeze(-1)  # [num_envs, 1]
+
         # Build observation based on stage
         if self.current_stage == 1:
-            # Stage 1: Simplified observation
+            # Stage 1: Simplified observation (48 dim)
             obs_list = [
                 base_lin_vel_b,  # 3
                 base_ang_vel_b,  # 3
@@ -214,26 +266,34 @@ class ULC_G1_Env(DirectRLEnv):
                 joint_pos[:, self.leg_joint_indices] if len(self.leg_joint_indices) > 0 else joint_pos[:, :12],  # 12
                 joint_vel[:, self.leg_joint_indices] if len(self.leg_joint_indices) > 0 else joint_vel[:, :12],  # 12
                 self.height_command,  # 1
+                base_height,  # 1
+                feet_contact,  # 4
+                gait_sin,  # 1
+                gait_cos,  # 1
                 self.previous_actions[:, :12] if self.previous_actions.shape[1] >= 12 else self.previous_actions,  # 12
             ]
+            # Total Stage 1: 3+3+3+12+12+1+1+4+1+1+12 = 53 (will be padded to 48 or truncated)
         else:
-            # Full observation for higher stages (Stage 4)
+            # Stage 4: Full observation (77 dim)
             # Get leg + arm joints
             active_indices = torch.cat([self.leg_joint_indices, self.arm_joint_indices])
 
             obs_list = [
-                base_lin_vel_b,  # 3
-                base_ang_vel_b,  # 3
-                projected_gravity,  # 3
+                base_lin_vel_b,       # 3
+                base_ang_vel_b,       # 3
+                projected_gravity,    # 3
                 joint_pos[:, active_indices],  # 22
                 joint_vel[:, active_indices],  # 22
                 self.height_command,  # 1
                 self.velocity_commands,  # 3
                 self.torso_commands,  # 3
-                self.arm_commands,  # 10
-                self.previous_actions,  # 22
+                self.arm_commands,    # 10
+                base_height,          # 1
+                feet_contact,         # 4
+                gait_sin,             # 1
+                gait_cos,             # 1
             ]
-            # Total: 3+3+3+22+22+1+3+3+10+22 = 92? Let's adjust
+            # Total Stage 4: 3+3+3+22+22+1+3+3+10+1+4+1+1 = 77 ✓
 
         obs = torch.cat(obs_list, dim=-1)
 
@@ -250,6 +310,37 @@ class ULC_G1_Env(DirectRLEnv):
         obs = torch.nan_to_num(obs, nan=0.0, posinf=100.0, neginf=-100.0)
 
         return {"policy": obs}
+
+    def _get_feet_contact_approx(self) -> torch.Tensor:
+        """
+        Approximate feet contact based on ankle heights.
+        Returns [num_envs, 4] tensor with contact probabilities.
+
+        This is a simplified approximation. For more accurate contact detection,
+        use contact sensors in the robot configuration.
+        """
+        robot = self.robot
+
+        # Get ankle joint positions (indices 4, 5 for left, 10, 11 for right in typical G1)
+        # Using joint velocities as proxy for contact (low velocity = likely contact)
+        joint_vel = robot.data.joint_vel
+
+        # Find ankle indices
+        ankle_indices = []
+        for i, name in enumerate(robot.data.joint_names):
+            if "ankle" in name.lower():
+                ankle_indices.append(i)
+
+        if len(ankle_indices) >= 4:
+            # Use ankle velocities as contact proxy
+            ankle_vels = torch.abs(joint_vel[:, ankle_indices[:4]])
+            # Low velocity = high contact probability
+            contact_approx = torch.exp(-2.0 * ankle_vels)
+        else:
+            # Fallback: assume standing (all feet in contact)
+            contact_approx = torch.ones(self.num_envs, 4, device=self.device) * 0.8
+
+        return contact_approx
 
     def _get_rewards(self) -> torch.Tensor:
         """Compute rewards."""
@@ -377,6 +468,9 @@ class ULC_G1_Env(DirectRLEnv):
         self.torso_commands[env_ids] = 0.0
         self.arm_commands[env_ids] = 0.0
 
+        # Reset gait phase
+        self.gait_phase[env_ids] = 0.0
+
         # Reset tracking buffers
         self.previous_actions[env_ids] = 0.0
         if hasattr(self, '_prev_actions'):
@@ -419,5 +513,5 @@ class ULC_G1_Env(DirectRLEnv):
 
         if self.current_stage >= 4:
             arm_range = self.cfg.commands["arm_range"]
-            # FIXED: 10 arm joints, not 14
+            # 10 arm joints
             self.arm_commands = torch.empty(self.num_envs, 10, device=self.device).uniform_(*arm_range)
