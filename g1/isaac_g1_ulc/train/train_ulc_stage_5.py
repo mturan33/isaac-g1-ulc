@@ -338,7 +338,7 @@ class PPOTrainer:
         """Collect experience."""
         obs_list, act_list, rew_list, done_list, val_list, logp_list = [], [], [], [], [], []
 
-        obs_dict = self.env.reset()
+        obs_dict, _ = self.env.reset()
         obs = obs_dict["policy"]
 
         for _ in range(self.num_steps):
@@ -510,24 +510,36 @@ def main():
         print("[INFO] Loading Stage 4 weights...")
 
         # Check what keys are in the checkpoint
-        if "model_state_dict" in stage4_ckpt:
+        if "actor_critic" in stage4_ckpt:
+            state_dict = stage4_ckpt["actor_critic"]
+            print("[INFO] Found actor_critic key")
+        elif "model_state_dict" in stage4_ckpt:
             state_dict = stage4_ckpt["model_state_dict"]
         elif "model" in stage4_ckpt:
             state_dict = stage4_ckpt["model"]
-        elif "actor" in stage4_ckpt:
-            # RSL-RL format - need to reconstruct
-            print("[INFO] RSL-RL checkpoint format detected")
-            state_dict = None  # Will handle separately
         else:
             # Maybe the checkpoint IS the state dict
             state_dict = stage4_ckpt
 
         if state_dict is not None:
             try:
+                # Check dimensions
+                first_key = list(state_dict.keys())[0]
+                print(f"[INFO] State dict first key: {first_key}")
+                print(f"[INFO] State dict keys: {list(state_dict.keys())[:5]}...")
+
                 policy.load_state_dict(state_dict)
                 print("[INFO] Weights loaded successfully ✓")
+            except RuntimeError as e:
+                if "size mismatch" in str(e):
+                    print(f"[WARNING] Dimension mismatch - Stage 4 was trained with different obs/action dims")
+                    print(f"[WARNING] Current: obs={obs_dim}, act={action_dim}")
+                    print("[INFO] Starting with random initialization")
+                else:
+                    print(f"[WARNING] Could not load weights: {e}")
+                    print("[INFO] Starting with random initialization")
             except Exception as e:
-                print(f"[WARNING] Could not load weights directly: {e}")
+                print(f"[WARNING] Could not load weights: {e}")
                 print("[INFO] Starting with random initialization")
         else:
             print("[INFO] Could not extract weights, starting fresh")
