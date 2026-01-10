@@ -484,6 +484,13 @@ def main():
     # IMPORTANT: Update termination for squat
     env_cfg.termination["base_height_min"] = 0.25
 
+    # Add required fields for newer Isaac Lab
+    import gymnasium as gym
+    obs_dim = env_cfg.num_observations
+    act_dim = env_cfg.num_actions
+    env_cfg.observation_space = gym.spaces.Box(low=-float('inf'), high=float('inf'), shape=(obs_dim,))
+    env_cfg.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(act_dim,))
+
     env = ULC_G1_Env(cfg=env_cfg)
     env.current_stage = 4  # Set to Stage 4 mode
 
