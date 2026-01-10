@@ -38,7 +38,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim import SimulationContext
-from isaaclab.utils.math import quat_rotate_inverse, yaw_quat, quat_from_euler_xyz
+from isaaclab.utils.math import quat_apply_inverse, yaw_quat, quat_from_euler_xyz
 
 if TYPE_CHECKING:
     from .config.ulc_g1_env_cfg import ULC_G1_EnvCfg
@@ -234,12 +234,12 @@ class ULC_G1_Env(DirectRLEnv):
         base_ang_vel = robot.data.root_ang_vel_w
 
         # Transform velocities to base frame
-        base_lin_vel_b = quat_rotate_inverse(base_quat, base_lin_vel)
-        base_ang_vel_b = quat_rotate_inverse(base_quat, base_ang_vel)
+        base_lin_vel_b = quat_apply_inverse(base_quat, base_lin_vel)
+        base_ang_vel_b = quat_apply_inverse(base_quat, base_ang_vel)
 
         # Projected gravity (in base frame)
         gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        projected_gravity = quat_rotate_inverse(base_quat, gravity_vec)
+        projected_gravity = quat_apply_inverse(base_quat, gravity_vec)
 
         # Joint state
         joint_pos = robot.data.joint_pos
@@ -370,7 +370,7 @@ class ULC_G1_Env(DirectRLEnv):
         # ORIENTATION REWARD (stay upright)
         # =====================================================================
         gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        projected_gravity = quat_rotate_inverse(base_quat, gravity_vec)
+        projected_gravity = quat_apply_inverse(base_quat, gravity_vec)
         orientation_error = torch.sum(projected_gravity[:, :2] ** 2, dim=-1)
         rewards["orientation"] = torch.exp(-5.0 * orientation_error)
 
@@ -419,7 +419,7 @@ class ULC_G1_Env(DirectRLEnv):
 
         # Orientation termination
         gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        projected_gravity = quat_rotate_inverse(base_quat, gravity_vec)
+        projected_gravity = quat_apply_inverse(base_quat, gravity_vec)
 
         tilt_x = torch.abs(projected_gravity[:, 0]) > self.cfg.termination["max_roll"]
         tilt_y = torch.abs(projected_gravity[:, 1]) > self.cfg.termination["max_pitch"]
