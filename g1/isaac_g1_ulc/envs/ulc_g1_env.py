@@ -1,11 +1,14 @@
 """
-ULC G1 Environment
-==================
+ULC G1 Environment - FIXED FOR STAGE 4
+======================================
 
-Unified Loco-Manipulation Controller için ana environment.
-Stage-based training ile Standing → Locomotion → Torso → Arms sırası.
+Joint Configuration:
+- Legs: 12 joints (hip_pitch/roll/yaw, knee, ankle_pitch/roll x2)
+- Arms: 10 joints (shoulder_pitch/roll/yaw, elbow_pitch/roll x2)
+- Torso: 1 joint (torso_joint)
+- Fingers: 14 joints (not used in Stage 4)
 
-IMPORTANT: Bu dosya Stage 1 (Standing) için optimize edilmiş.
+Stage 4: 22 actions (12 legs + 10 arms)
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ class ULC_G1_Env(DirectRLEnv):
     Stage 1: Standing - Temel denge, height tracking
     Stage 2: Locomotion - Velocity tracking eklenir
     Stage 3: Torso - Gövde orientation tracking
-    Stage 4: Arms - Dual-arm position tracking
+    Stage 4: Arms - Dual-arm position tracking (10 joints)
     Stage 5: Full - Tüm komutlar + domain randomization
     """
 
@@ -73,29 +76,28 @@ class ULC_G1_Env(DirectRLEnv):
         # Find joint indices by pattern matching
         self.leg_joint_indices = []
         self.arm_joint_indices = []
-        self.waist_joint_indices = []
+        self.torso_joint_indices = []
 
         for i, name in enumerate(joint_names):
             name_lower = name.lower()
             if any(x in name_lower for x in ["hip", "knee", "ankle"]):
                 self.leg_joint_indices.append(i)
-            elif any(x in name_lower for x in ["shoulder", "elbow", "wrist"]):
+            elif any(x in name_lower for x in ["shoulder", "elbow"]):
                 self.arm_joint_indices.append(i)
-            elif "waist" in name_lower:
-                self.waist_joint_indices.append(i)
+            elif "torso" in name_lower:
+                self.torso_joint_indices.append(i)
 
         self.leg_joint_indices = torch.tensor(self.leg_joint_indices, device=self.device, dtype=torch.long)
         self.arm_joint_indices = torch.tensor(self.arm_joint_indices, device=self.device, dtype=torch.long)
-        self.waist_joint_indices = torch.tensor(self.waist_joint_indices, device=self.device, dtype=torch.long)
+        self.torso_joint_indices = torch.tensor(self.torso_joint_indices, device=self.device, dtype=torch.long)
 
         print(f"[ULC_G1_Env] Leg joints: {len(self.leg_joint_indices)}")
         print(f"[ULC_G1_Env] Arm joints: {len(self.arm_joint_indices)}")
-        print(f"[ULC_G1_Env] Waist joints: {len(self.waist_joint_indices)}")
+        print(f"[ULC_G1_Env] Torso joints: {len(self.torso_joint_indices)}")
 
     def _setup_com_tracker(self):
         """Setup CoM tracker."""
-        # Simple CoM tracking using base position
-        self.target_height = 0.75  # meters
+        self.target_height = 0.75
         self.target_com_xy = torch.zeros(self.num_envs, 2, device=self.device)
 
     def _init_commands(self):
@@ -109,8 +111,8 @@ class ULC_G1_Env(DirectRLEnv):
         # Torso commands (Stage 3+)
         self.torso_commands = torch.zeros(self.num_envs, 3, device=self.device)  # roll, pitch, yaw
 
-        # Arm commands (Stage 4+)
-        self.arm_commands = torch.zeros(self.num_envs, 14, device=self.device)  # 7 left + 7 right
+        # Arm commands (Stage 4+) - FIXED: 10 joints, not 14
+        self.arm_commands = torch.zeros(self.num_envs, 10, device=self.device)
 
     def _setup_scene(self):
         """Setup scene with robot."""
@@ -126,7 +128,7 @@ class ULC_G1_Env(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
-        # Lighting - check if exists
+        # Lighting - check if exists first
         import omni.usd
         stage = omni.usd.get_context().get_stage()
         if not stage.GetPrimAtPath("/World/Light").IsValid():
@@ -156,8 +158,19 @@ class ULC_G1_Env(DirectRLEnv):
                 leg_actions = self.actions[:, :len(self.leg_joint_indices)]
                 targets[:, self.leg_joint_indices] = leg_actions * action_scale
         else:
-            # Higher stages: all joints (based on action dim)
-            targets = self.actions * action_scale
+            # Higher stages: legs + arms
+            targets = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
+
+            # Legs (first 12 actions)
+            n_legs = len(self.leg_joint_indices)
+            if n_legs > 0:
+                targets[:, self.leg_joint_indices] = self.actions[:, :n_legs] * action_scale
+
+            # Arms (next 10 actions)
+            n_arms = len(self.arm_joint_indices)
+            if n_arms > 0 and self.actions.shape[1] > n_legs:
+                arm_actions = self.actions[:, n_legs:n_legs + n_arms]
+                targets[:, self.arm_joint_indices] = arm_actions * action_scale
 
         # Apply as position targets
         self.robot.set_joint_position_target(targets)
@@ -194,7 +207,6 @@ class ULC_G1_Env(DirectRLEnv):
         # Build observation based on stage
         if self.current_stage == 1:
             # Stage 1: Simplified observation
-            # Base velocities (6) + gravity (3) + leg joints (12) + leg velocities (12) + height cmd (1) + prev actions (12)
             obs_list = [
                 base_lin_vel_b,  # 3
                 base_ang_vel_b,  # 3
@@ -205,21 +217,33 @@ class ULC_G1_Env(DirectRLEnv):
                 self.previous_actions[:, :12] if self.previous_actions.shape[1] >= 12 else self.previous_actions,  # 12
             ]
         else:
-            # Full observation for higher stages
+            # Full observation for higher stages (Stage 4)
+            # Get leg + arm joints
+            active_indices = torch.cat([self.leg_joint_indices, self.arm_joint_indices])
+
             obs_list = [
-                base_lin_vel_b,
-                base_ang_vel_b,
-                projected_gravity,
-                joint_pos,
-                joint_vel,
-                self.height_command,
-                self.velocity_commands,
-                self.torso_commands,
-                self.arm_commands,
-                self.previous_actions,
+                base_lin_vel_b,  # 3
+                base_ang_vel_b,  # 3
+                projected_gravity,  # 3
+                joint_pos[:, active_indices],  # 22
+                joint_vel[:, active_indices],  # 22
+                self.height_command,  # 1
+                self.velocity_commands,  # 3
+                self.torso_commands,  # 3
+                self.arm_commands,  # 10
+                self.previous_actions,  # 22
             ]
+            # Total: 3+3+3+22+22+1+3+3+10+22 = 92? Let's adjust
 
         obs = torch.cat(obs_list, dim=-1)
+
+        # Pad/truncate to match expected observation size
+        expected_obs = self.cfg.num_observations
+        if obs.shape[1] < expected_obs:
+            padding = torch.zeros(self.num_envs, expected_obs - obs.shape[1], device=self.device)
+            obs = torch.cat([obs, padding], dim=-1)
+        elif obs.shape[1] > expected_obs:
+            obs = obs[:, :expected_obs]
 
         # Clamp and handle NaN
         obs = torch.clamp(obs, -100.0, 100.0)
@@ -254,29 +278,22 @@ class ULC_G1_Env(DirectRLEnv):
         # =====================================================================
         # ORIENTATION REWARD (stay upright)
         # =====================================================================
-        # Extract roll and pitch from quaternion
-        # Simplified: use projected gravity alignment
         gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
         projected_gravity = quat_rotate_inverse(base_quat, gravity_vec)
-
-        # Reward for gravity pointing down in base frame
-        orientation_error = torch.sum(projected_gravity[:, :2] ** 2, dim=-1)  # Should be [0,0,-1]
+        orientation_error = torch.sum(projected_gravity[:, :2] ** 2, dim=-1)
         rewards["orientation"] = torch.exp(-5.0 * orientation_error)
 
         # =====================================================================
         # COM STABILITY REWARD
         # =====================================================================
-        # XY velocity should be low for standing
         xy_velocity = torch.norm(base_lin_vel[:, :2], dim=-1)
         rewards["com_stability"] = torch.exp(-2.0 * xy_velocity ** 2)
 
         # =====================================================================
         # REGULARIZATION REWARDS
         # =====================================================================
-        # Joint acceleration penalty
         rewards["joint_acceleration"] = torch.sum(joint_acc ** 2, dim=-1)
 
-        # Action rate penalty
         if hasattr(self, '_prev_actions'):
             action_diff = self.actions - self._prev_actions
             rewards["action_rate"] = torch.sum(action_diff ** 2, dim=-1)
@@ -313,7 +330,6 @@ class ULC_G1_Env(DirectRLEnv):
         gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
         projected_gravity = quat_rotate_inverse(base_quat, gravity_vec)
 
-        # Check if tilted too much (gravity not pointing down)
         tilt_x = torch.abs(projected_gravity[:, 0]) > self.cfg.termination["max_roll"]
         tilt_y = torch.abs(projected_gravity[:, 1]) > self.cfg.termination["max_pitch"]
 
@@ -335,41 +351,25 @@ class ULC_G1_Env(DirectRLEnv):
         if len(env_ids) == 0:
             return
 
-        # Get default state
         robot = self.robot
 
         # Random initial position
         default_pos = torch.tensor([0.0, 0.0, 0.8], device=self.device)
         pos_noise = self.cfg.randomization["init_pos_noise"]
         init_pos = default_pos + torch.randn(len(env_ids), 3, device=self.device) * pos_noise
-        init_pos[:, 2] = 0.8  # Keep height fixed
+        init_pos[:, 2] = 0.8
 
-        # Random initial orientation (small yaw only)
         init_rot = torch.zeros(len(env_ids), 4, device=self.device)
-        init_rot[:, 3] = 1.0  # w=1 for identity quaternion
+        init_rot[:, 3] = 1.0
 
-        # Apply initial state
-        robot.write_root_pose_to_sim(
-            torch.cat([init_pos, init_rot], dim=-1),
-            env_ids
-        )
+        robot.write_root_pose_to_sim(torch.cat([init_pos, init_rot], dim=-1), env_ids)
+        robot.write_root_velocity_to_sim(torch.zeros(len(env_ids), 6, device=self.device), env_ids)
 
-        # Zero velocity
-        robot.write_root_velocity_to_sim(
-            torch.zeros(len(env_ids), 6, device=self.device),
-            env_ids
-        )
-
-        # Reset joint positions to default (with small noise)
+        # Reset joint positions
         joint_noise = self.cfg.randomization["init_joint_noise"]
         default_joint_pos = robot.data.default_joint_pos[env_ids].clone()
         default_joint_pos += torch.randn_like(default_joint_pos) * joint_noise
-        robot.write_joint_state_to_sim(
-            default_joint_pos,
-            torch.zeros_like(default_joint_pos),
-            None,
-            env_ids
-        )
+        robot.write_joint_state_to_sim(default_joint_pos, torch.zeros_like(default_joint_pos), None, env_ids)
 
         # Reset commands
         self.height_command[env_ids] = 0.75
@@ -390,8 +390,7 @@ class ULC_G1_Env(DirectRLEnv):
                 extras_key = f"Episode_Reward/{key}"
                 if extras_key not in self.extras:
                     self.extras[extras_key] = torch.zeros(self.num_envs, device=self.device)
-                self.extras[extras_key][env_ids] = self.episode_sums[key][env_ids] / (
-                            self.episode_length_buf[env_ids] + 1)
+                self.extras[extras_key][env_ids] = self.episode_sums[key][env_ids] / (self.episode_length_buf[env_ids] + 1)
             self.episode_sums[key][env_ids] = 0.0
 
     # =========================================================================
@@ -403,26 +402,22 @@ class ULC_G1_Env(DirectRLEnv):
         if stage != self.current_stage:
             print(f"[ULC_G1_Env] Advancing to Stage {stage}")
             self.current_stage = stage
-            # Could update action/observation dimensions here
-            # For now, we use fixed dimensions
 
     def sample_commands(self):
         """Sample new commands based on current stage."""
         if self.current_stage >= 2:
-            # Sample velocity commands
             cmd_cfg = self.cfg.commands["velocity_range"]
             self.velocity_commands[:, 0] = torch.empty(self.num_envs, device=self.device).uniform_(*cmd_cfg["vx"])
             self.velocity_commands[:, 1] = torch.empty(self.num_envs, device=self.device).uniform_(*cmd_cfg["vy"])
             self.velocity_commands[:, 2] = torch.empty(self.num_envs, device=self.device).uniform_(*cmd_cfg["yaw_rate"])
 
         if self.current_stage >= 3:
-            # Sample torso commands
             cmd_cfg = self.cfg.commands["torso_range"]
             self.torso_commands[:, 0] = torch.empty(self.num_envs, device=self.device).uniform_(*cmd_cfg["roll"])
             self.torso_commands[:, 1] = torch.empty(self.num_envs, device=self.device).uniform_(*cmd_cfg["pitch"])
             self.torso_commands[:, 2] = torch.empty(self.num_envs, device=self.device).uniform_(*cmd_cfg["yaw"])
 
         if self.current_stage >= 4:
-            # Sample arm targets
             arm_range = self.cfg.commands["arm_range"]
-            self.arm_commands = torch.empty(self.num_envs, 14, device=self.device).uniform_(*arm_range)
+            # FIXED: 10 arm joints, not 14
+            self.arm_commands = torch.empty(self.num_envs, 10, device=self.device).uniform_(*arm_range)

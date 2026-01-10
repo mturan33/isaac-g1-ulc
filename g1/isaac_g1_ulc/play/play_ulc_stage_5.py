@@ -128,11 +128,11 @@ def set_commands(env, height=0.75, vx=0.5, left_arm=(0, 0), right_arm=(0, 0), to
     env.torso_commands[:, 1] = torso[1]
     env.torso_commands[:, 2] = torso[2]
 
-    # Arms
+    # Arms - 10 joints (5 per arm)
     env.arm_commands[:, 0] = left_arm[0]  # L shoulder_pitch
-    env.arm_commands[:, 3] = left_arm[1]  # L elbow
-    env.arm_commands[:, 7] = right_arm[0]  # R shoulder_pitch
-    env.arm_commands[:, 10] = right_arm[1]  # R elbow
+    env.arm_commands[:, 3] = left_arm[1]  # L elbow_pitch
+    env.arm_commands[:, 5] = right_arm[0]  # R shoulder_pitch
+    env.arm_commands[:, 8] = right_arm[1]  # R elbow_pitch
 
 
 def random_commands(env, arm_range=2.6):
@@ -149,10 +149,11 @@ def random_commands(env, arm_range=2.6):
     env.torso_commands[:, 1] = torch.empty(n, device=d).uniform_(-0.5, 0.5)
     env.torso_commands[:, 2] = torch.empty(n, device=d).uniform_(-0.5, 0.5)
 
+    # Arms - 10 joints
     env.arm_commands[:, 0] = torch.empty(n, device=d).uniform_(-arm_range, arm_range)
     env.arm_commands[:, 3] = torch.empty(n, device=d).uniform_(-arm_range * 0.6, arm_range * 0.6)
-    env.arm_commands[:, 7] = torch.empty(n, device=d).uniform_(-arm_range, arm_range)
-    env.arm_commands[:, 10] = torch.empty(n, device=d).uniform_(-arm_range * 0.6, arm_range * 0.6)
+    env.arm_commands[:, 5] = torch.empty(n, device=d).uniform_(-arm_range, arm_range)
+    env.arm_commands[:, 8] = torch.empty(n, device=d).uniform_(-arm_range * 0.6, arm_range * 0.6)
 
 
 def main():

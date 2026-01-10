@@ -181,17 +181,20 @@ class CurriculumManager:
         self.env.torso_commands[:, 1] = torch.empty(n, device=d).uniform_(-tr, tr)  # pitch
         self.env.torso_commands[:, 2] = torch.empty(n, device=d).uniform_(-0.5, 0.5)  # yaw
 
-        # Arm commands - genişletilmiş range
-        # Shoulder joints (full range)
+        # Arm commands - 10 joints total (5 per arm)
+        # Left arm: shoulder_pitch(0), shoulder_roll(1), shoulder_yaw(2), elbow_pitch(3), elbow_roll(4)
+        # Right arm: shoulder_pitch(5), shoulder_roll(6), shoulder_yaw(7), elbow_pitch(8), elbow_roll(9)
         self.env.arm_commands[:, 0] = torch.empty(n, device=d).uniform_(-ar, ar)  # L shoulder_pitch
         self.env.arm_commands[:, 1] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # L shoulder_roll
         self.env.arm_commands[:, 2] = torch.empty(n, device=d).uniform_(-ar, ar)  # L shoulder_yaw
-        self.env.arm_commands[:, 3] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # L elbow
+        self.env.arm_commands[:, 3] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # L elbow_pitch
+        self.env.arm_commands[:, 4] = torch.empty(n, device=d).uniform_(-ar * 0.4, ar * 0.4)  # L elbow_roll
 
-        self.env.arm_commands[:, 7] = torch.empty(n, device=d).uniform_(-ar, ar)  # R shoulder_pitch
-        self.env.arm_commands[:, 8] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # R shoulder_roll
-        self.env.arm_commands[:, 9] = torch.empty(n, device=d).uniform_(-ar, ar)  # R shoulder_yaw
-        self.env.arm_commands[:, 10] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # R elbow
+        self.env.arm_commands[:, 5] = torch.empty(n, device=d).uniform_(-ar, ar)  # R shoulder_pitch
+        self.env.arm_commands[:, 6] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # R shoulder_roll
+        self.env.arm_commands[:, 7] = torch.empty(n, device=d).uniform_(-ar, ar)  # R shoulder_yaw
+        self.env.arm_commands[:, 8] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # R elbow_pitch
+        self.env.arm_commands[:, 9] = torch.empty(n, device=d).uniform_(-ar * 0.4, ar * 0.4)  # R elbow_roll
 
     def resample(self, ids):
         """Reset olan env'ler için yeni komutlar."""
@@ -213,14 +216,17 @@ class CurriculumManager:
         self.env.torso_commands[ids, 1] = torch.empty(n, device=d).uniform_(-tr, tr)
         self.env.torso_commands[ids, 2] = torch.empty(n, device=d).uniform_(-0.5, 0.5)
 
+        # Arm commands - 10 joints
         self.env.arm_commands[ids, 0] = torch.empty(n, device=d).uniform_(-ar, ar)
         self.env.arm_commands[ids, 1] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)
         self.env.arm_commands[ids, 2] = torch.empty(n, device=d).uniform_(-ar, ar)
         self.env.arm_commands[ids, 3] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)
+        self.env.arm_commands[ids, 4] = torch.empty(n, device=d).uniform_(-ar * 0.4, ar * 0.4)
+        self.env.arm_commands[ids, 5] = torch.empty(n, device=d).uniform_(-ar, ar)
+        self.env.arm_commands[ids, 6] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)
         self.env.arm_commands[ids, 7] = torch.empty(n, device=d).uniform_(-ar, ar)
         self.env.arm_commands[ids, 8] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)
-        self.env.arm_commands[ids, 9] = torch.empty(n, device=d).uniform_(-ar, ar)
-        self.env.arm_commands[ids, 10] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)
+        self.env.arm_commands[ids, 9] = torch.empty(n, device=d).uniform_(-ar * 0.4, ar * 0.4)
 
     def update(self, reward):
         """Curriculum level güncelle."""
