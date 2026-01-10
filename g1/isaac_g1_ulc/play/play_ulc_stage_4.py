@@ -9,7 +9,6 @@ import torch.nn as nn
 import numpy as np
 import argparse
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description="ULC G1 Stage 4 Play")
     parser.add_argument("--checkpoint", type=str, required=True)
@@ -19,20 +18,18 @@ def parse_args():
     parser.add_argument("--roll", type=float, default=0.0)
     # Arm commands (per arm: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow_pitch, elbow_roll)
     parser.add_argument("--left_shoulder_pitch", type=float, default=0.0)
-    parser.add_argument("--left_elbow", type=float, default=-0.3)
+    parser.add_argument("--left_elbow", type=float, default=-0.2)
     parser.add_argument("--right_shoulder_pitch", type=float, default=0.0)
-    parser.add_argument("--right_elbow", type=float, default=-0.3)
+    parser.add_argument("--right_elbow", type=float, default=-0.2)
     # Preset arm poses
     parser.add_argument("--arms_up", action="store_true", help="Both arms raised")
     parser.add_argument("--arms_front", action="store_true", help="Arms extended forward")
     parser.add_argument("--wave", action="store_true", help="Right arm wave position")
     return parser.parse_args()
 
-
 args_cli = parse_args()
 
 from isaaclab.app import AppLauncher
-
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -45,30 +42,28 @@ from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils.math import quat_apply_inverse
 
-
 def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
     x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
-    roll = torch.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-    sinp = torch.clamp(2 * (w * y - z * x), -1, 1)
+    roll = torch.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
+    sinp = torch.clamp(2*(w*y - z*x), -1, 1)
     pitch = torch.asin(sinp)
-    yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    yaw = torch.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
     return torch.stack([roll, pitch, yaw], dim=-1)
-
 
 # Preset arm poses
 if args_cli.arms_up:
-    args_cli.left_shoulder_pitch = 1.5  # Arms up
+    args_cli.left_shoulder_pitch = 1.5   # Arms up
     args_cli.right_shoulder_pitch = 1.5
     args_cli.left_elbow = 0.0
     args_cli.right_elbow = 0.0
 elif args_cli.arms_front:
-    args_cli.left_shoulder_pitch = 1.0  # Arms forward
+    args_cli.left_shoulder_pitch = 1.0   # Arms forward
     args_cli.right_shoulder_pitch = 1.0
     args_cli.left_elbow = -0.2
     args_cli.right_elbow = -0.2
 elif args_cli.wave:
     args_cli.right_shoulder_pitch = 1.2  # Wave pose
-    args_cli.right_elbow = -0.8
+    args_cli.right_elbow = 0.8
 
 print("=" * 60)
 print("ULC G1 STAGE 4 - PLAY (Arm Control)")
@@ -78,7 +73,6 @@ print(f"Left arm: shoulder_pitch={args_cli.left_shoulder_pitch}, elbow={args_cli
 print(f"Right arm: shoulder_pitch={args_cli.right_shoulder_pitch}, elbow={args_cli.right_elbow}")
 
 G1_USD = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
-
 
 class ActorCritic(nn.Module):
     def __init__(self, num_obs=77, num_act=22, hidden=[512, 256, 128]):
@@ -103,7 +97,6 @@ class ActorCritic(nn.Module):
     def act(self, x, deterministic=True):
         return self.actor(x) if deterministic else self.actor(x) + torch.randn_like(self.actor(x)) * self.log_std.exp()
 
-
 # Load checkpoint
 print(f"\n[INFO] Loading: {args_cli.checkpoint}")
 checkpoint = torch.load(args_cli.checkpoint, map_location="cuda:0", weights_only=False)
@@ -113,9 +106,8 @@ print(f"[INFO] Curriculum level: {checkpoint.get('curriculum_level', 'N/A')}")
 
 HEIGHT_DEFAULT = 0.72
 GAIT_FREQUENCY = 1.5
-DEFAULT_ARM_POSE = [0.0, 0.0, 0.0, -0.3, 0.0]
+DEFAULT_ARM_POSE = [0.0, 0.0, 0.0, -0.2, 0.0]
 RESIDUAL_SCALES = [0.5, 0.3, 0.3, 0.4, 0.3]
-
 
 def create_play_env(num_envs, device):
     @configclass
@@ -148,7 +140,7 @@ def create_play_env(num_envs, device):
                     "left_shoulder_pitch_joint": 0.0, "right_shoulder_pitch_joint": 0.0,
                     "left_shoulder_roll_joint": 0.0, "right_shoulder_roll_joint": 0.0,
                     "left_shoulder_yaw_joint": 0.0, "right_shoulder_yaw_joint": 0.0,
-                    "left_elbow_pitch_joint": -0.3, "right_elbow_pitch_joint": -0.3,
+                    "left_elbow_pitch_joint": -0.2, "right_elbow_pitch_joint": -0.2,
                     "left_elbow_roll_joint": 0.0, "right_elbow_roll_joint": 0.0,
                     "torso_joint": 0.0,
                 },
@@ -176,7 +168,7 @@ def create_play_env(num_envs, device):
         action_space = 22
         observation_space = 77
         state_space = 0
-        sim = sim_utils.SimulationCfg(dt=1 / 200, render_interval=4)
+        sim = sim_utils.SimulationCfg(dt=1/200, render_interval=4)
         scene = SceneCfg(num_envs=num_envs, env_spacing=2.5)
 
     class PlayEnv(DirectRLEnv):
@@ -194,18 +186,13 @@ def create_play_env(num_envs, device):
                 "left_ankle_pitch_joint", "right_ankle_pitch_joint",
                 "left_ankle_roll_joint", "right_ankle_roll_joint",
             ]
-            self.leg_idx = torch.tensor([joint_names.index(n) for n in leg_names if n in joint_names],
-                                        device=self.device)
+            self.leg_idx = torch.tensor([joint_names.index(n) for n in leg_names if n in joint_names], device=self.device)
 
-            left_arm_names = ["left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
-                              "left_elbow_pitch_joint", "left_elbow_roll_joint"]
-            right_arm_names = ["right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
-                               "right_elbow_pitch_joint", "right_elbow_roll_joint"]
+            left_arm_names = ["left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_pitch_joint", "left_elbow_roll_joint"]
+            right_arm_names = ["right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_pitch_joint", "right_elbow_roll_joint"]
 
-            self.left_arm_idx = torch.tensor([joint_names.index(n) for n in left_arm_names if n in joint_names],
-                                             device=self.device)
-            self.right_arm_idx = torch.tensor([joint_names.index(n) for n in right_arm_names if n in joint_names],
-                                              device=self.device)
+            self.left_arm_idx = torch.tensor([joint_names.index(n) for n in left_arm_names if n in joint_names], device=self.device)
+            self.right_arm_idx = torch.tensor([joint_names.index(n) for n in right_arm_names if n in joint_names], device=self.device)
             self.arm_idx = torch.cat([self.left_arm_idx, self.right_arm_idx])
 
             self.default_leg = torch.tensor([-0.2, -0.2, 0, 0, 0, 0, 0.4, 0.4, -0.2, -0.2, 0, 0], device=self.device)
@@ -273,7 +260,7 @@ def create_play_env(num_envs, device):
             left_arm_pos = robot.data.joint_pos[:, self.left_arm_idx]
             right_arm_pos = robot.data.joint_pos[:, self.right_arm_idx]
 
-            gait_phase = torch.stack([torch.sin(2 * np.pi * self.phase), torch.cos(2 * np.pi * self.phase)], dim=-1)
+            gait_phase = torch.stack([torch.sin(2*np.pi*self.phase), torch.cos(2*np.pi*self.phase)], dim=-1)
             torso_euler = quat_to_euler_xyz(quat)
 
             obs = torch.cat([
@@ -313,7 +300,6 @@ def create_play_env(num_envs, device):
     cfg = EnvCfg()
     cfg.scene.num_envs = num_envs
     return PlayEnv(cfg)
-
 
 # Create environment
 env = create_play_env(args_cli.num_envs, "cuda:0")
