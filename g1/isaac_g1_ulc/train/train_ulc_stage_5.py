@@ -20,8 +20,8 @@ from datetime import datetime
 # ============================================================
 
 parser = argparse.ArgumentParser(description="ULC G1 Stage 5 - Full Workspace Training")
-parser.add_argument("--stage4_checkpoint", type=str, required=True,
-                    help="Path to Stage 4 checkpoint")
+parser.add_argument("--stage4_checkpoint", type=str, default=None,
+                    help="Path to Stage 4 checkpoint (optional, starts from scratch if not provided)")
 parser.add_argument("--num_envs", type=int, default=4096,
                     help="Number of parallel environments")
 parser.add_argument("--max_iterations", type=int, default=6000,
@@ -465,15 +465,19 @@ def main():
     print("  knee: 2.0 rad (115°) - Squat!")
     print()
 
-    # Load Stage 4 checkpoint
-    print("[INFO] Loading Stage 4 checkpoint...")
-    if not os.path.exists(args.stage4_checkpoint):
-        print(f"[ERROR] Not found: {args.stage4_checkpoint}")
-        simulation_app.close()
-        return
-
-    stage4_ckpt = torch.load(args.stage4_checkpoint, map_location="cuda:0", weights_only=True)
-    print("[INFO] Stage 4 checkpoint loaded ✓")
+    # Load Stage 4 checkpoint if provided
+    stage4_ckpt = None
+    if args.stage4_checkpoint:
+        print("[INFO] Loading Stage 4 checkpoint...")
+        if not os.path.exists(args.stage4_checkpoint):
+            print(f"[WARNING] Checkpoint not found: {args.stage4_checkpoint}")
+            print("[INFO] Starting with random initialization")
+        else:
+            stage4_ckpt = torch.load(args.stage4_checkpoint, map_location="cuda:0", weights_only=True)
+            print("[INFO] Stage 4 checkpoint loaded ✓")
+            print(f"[INFO] Checkpoint keys: {list(stage4_ckpt.keys())}")
+    else:
+        print("[INFO] No checkpoint provided, starting from scratch")
 
     # Create environment
     print(f"[INFO] Creating environment with {args.num_envs} envs...")
@@ -501,10 +505,34 @@ def main():
     # Create policy
     policy = ActorCritic(obs_dim, action_dim).to("cuda:0")
 
-    # Load Stage 4 weights
-    print("[INFO] Loading Stage 4 weights...")
-    policy.load_state_dict(stage4_ckpt["model_state_dict"])
-    print("[INFO] Weights loaded ✓")
+    # Load Stage 4 weights if checkpoint was provided
+    if stage4_ckpt is not None:
+        print("[INFO] Loading Stage 4 weights...")
+
+        # Check what keys are in the checkpoint
+        if "model_state_dict" in stage4_ckpt:
+            state_dict = stage4_ckpt["model_state_dict"]
+        elif "model" in stage4_ckpt:
+            state_dict = stage4_ckpt["model"]
+        elif "actor" in stage4_ckpt:
+            # RSL-RL format - need to reconstruct
+            print("[INFO] RSL-RL checkpoint format detected")
+            state_dict = None  # Will handle separately
+        else:
+            # Maybe the checkpoint IS the state dict
+            state_dict = stage4_ckpt
+
+        if state_dict is not None:
+            try:
+                policy.load_state_dict(state_dict)
+                print("[INFO] Weights loaded successfully ✓")
+            except Exception as e:
+                print(f"[WARNING] Could not load weights directly: {e}")
+                print("[INFO] Starting with random initialization")
+        else:
+            print("[INFO] Could not extract weights, starting fresh")
+    else:
+        print("[INFO] Starting with random initialization")
 
     # Create curriculum manager
     curriculum = Stage5CurriculumManager(env, STAGE5_CURRICULUM)
