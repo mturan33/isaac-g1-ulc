@@ -1,181 +1,160 @@
-# 🤖 G1 VLM-ULC-VLM Long Horizon Problem Solver System
+# 🤖 G1 Hierarchical VLM-ULC System
 
-Language-conditioned humanoid navigation using Vision-Language Models (VLM) and ULC Reinforcement Learning.
+**Unified Loco-manipulation Control for Unitree G1 Humanoid Robot with Vision-Language Model Integration**
+
+> ⚠️ **RESEARCH IN PROGRESS — PAPER IN PREPARATION**  
+> This repository contains original research work. If you use any part of this codebase, architecture, or methodology, **citation is required**. Unauthorized reproduction or publication of this work is prohibited. Contact the author for collaboration inquiries.
+
+---
 
 ## 📋 Overview
 
-This project implements a hierarchical VLM-ULC system for Unitree G1 robot navigation:
+A hierarchical control system combining Vision-Language Models (VLM) with Unified Loco-manipulation Control (ULC) for long-horizon task solving on the Unitree G1 humanoid robot.
 
 ```
-"Mavi sandalyeye git" (Go to the blue chair)
-         │
-    ┌────▼────┐
-    │   VLM   │ ← RGB Image (640×480)
-    │ Phi-3-V │ → Target: {x, y, confidence}
-    └────┬────┘
-         │ Every ~1 second
-    ┌────▼────────┐
-    │ Nav Control │ → cmd_vel: [vx, vy, vyaw]
-    └────┬────────┘
-         │ Every 20ms
-    ┌────▼────────┐
-    │ Student RL  │ ← Depth (64×64) + Proprio (48)
-    │   Policy    │ → Joint Actions (12 DoF)
-    └────┬────────┘
-         │
-      [GO2 🐕]
+┌─────────────────────────────────────────────────────────────┐
+│                    HIERARCHICAL ARCHITECTURE                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────┐     "Go to the blue chair"                │
+│  │     VLM     │ ← RGB Image + Language Command            │
+│  │ Florence-2  │ → Target: {x, y, object_class}            │
+│  └──────┬──────┘                                           │
+│         │ ~1 Hz (Semantic Understanding)                   │
+│  ┌──────▼──────┐                                           │
+│  │  Semantic   │ → Object positions, scene graph           │
+│  │  World Map  │ → Geometric tracking (100x faster)        │
+│  └──────┬──────┘                                           │
+│         │                                                  │
+│  ┌──────▼──────┐                                           │
+│  │    ULC      │ ← cmd_vel + arm_commands + torso_cmd      │
+│  │   Policy    │ → Joint Actions (22 DoF)                  │
+│  │    (PPO)    │   [12 legs + 10 arms]                     │
+│  └──────┬──────┘                                           │
+│         │ 50 Hz (Motor Control)                            │
+│      [G1 🤖]                                               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## 🛠️ Requirements
+## 🎯 Key Contributions
 
-- Python 3.10+
-- PyTorch 2.0+
-- Transformers 4.40+
-- NVIDIA GPU with 12GB+ VRAM
-- Isaac Lab (for simulation)
+1. **Sequential Curriculum Learning:** 5-stage training from standing to full loco-manipulation
+2. **Residual Action Modeling:** Stable arm control via small corrections around default poses
+3. **Semantic World Model:** VLM for initial understanding + geometric tracking for real-time updates (~100x speedup)
+4. **Unified Policy:** Single PPO policy for whole-body control (locomotion + torso + arms)
 
-## 📦 Installation
+---
 
-```powershell
-# Install dependencies
-pip install transformers accelerate pillow
+## 📊 Training Progress
 
-# Clone/copy files to Isaac Lab
-# C:\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\direct\g1_vlm_rl\
+| Stage | Task | Obs Dim | Act Dim | Status |
+|-------|------|---------|---------|--------|
+| 1 | Standing (Height Control) | 45 | 12 | ✅ Complete |
+| 2 | Locomotion (Velocity Tracking) | 51 | 12 | ✅ Complete |
+| 3 | Torso Control (Pitch/Roll/Yaw) | 57 | 12 | ✅ Complete |
+| 4 | Arm Tracking (Residual Actions) | 77 | 22 | ✅ Complete |
+| 5 | Full Integration + Workspace | 77 | 22 | 🔄 In Progress |
+| 6 | VLM Integration | TBD | 22 | 📋 Planned |
+
+---
+
+## 🛠️ Tech Stack
+
+- **Simulation:** NVIDIA Isaac Lab 2.3.1, Isaac Sim 5.1.0
+- **RL Framework:** RSL-RL, PyTorch, PPO
+- **VLM:** Florence-2 / Molmo2
+- **Robot:** Unitree G1 (29 DoF configuration)
+- **Hardware:** RTX 5070 Ti (12GB VRAM), 4096 parallel environments
+
+---
+
+## 🏗️ Architecture Details
+
+### ULC Policy
+- **Input:** Proprioception (joint pos/vel) + Commands (velocity, torso, arm targets) + Gait phase
+- **Output:** Joint position targets for legs (12) + Residual corrections for arms (10)
+- **Training:** ~17,000 steps/second with domain randomization
+
+### Residual Action Modeling
+```python
+# Arms use residual actions around commanded positions
+arm_targets = arm_commands + scale * tanh(policy_output)
+# Legs use direct position control
+leg_targets = default_pose + scale * policy_output
 ```
+
+### Sequential Curriculum
+Each stage builds on the previous checkpoint, progressively adding control complexity while maintaining stability.
+
+---
+
+## 📁 Project Structure
+
+```
+isaac-g1-ulc-vlm/
+├── config/
+│   └── ulc_g1_env_cfg.py      # Environment configuration
+├── envs/
+│   └── ulc_g1_env.py          # ULC environment implementation
+├── train/
+│   ├── train_ulc_stage_*.py   # Stage-specific training scripts
+│   └── play_ulc_stage_*.py    # Evaluation scripts
+├── vlm/
+│   ├── vlm_wrapper.py         # Florence-2/Molmo2 interface
+│   └── semantic_map.py        # World model with geometric tracking
+└── README.md
+```
+
+---
 
 ## 🚀 Quick Start
 
-### 1. Test Scene Generator
 ```powershell
-python scene_generator.py
+# Stage 4 Training (from Stage 3 checkpoint)
+cd C:\IsaacLab
+./isaaclab.bat -p source/isaaclab_tasks/.../train/train_ulc_stage_4.py \
+    --stage3_checkpoint logs/ulc/stage3_best.pt \
+    --num_envs 4096 --headless
+
+# Evaluation
+./isaaclab.bat -p .../play/play_ulc_stage_4.py \
+    --checkpoint logs/ulc/stage4_best.pt \
+    --num_envs 4
 ```
 
-### 2. Test VLM (requires ~8GB VRAM)
-```powershell
-python vlm_wrapper.py test_scene.png "mavi sandalyeye git"
-```
-
-### 3. Full Demo
-```powershell
-python run_vlm_nav.py --test-vlm --image test_scene.png
-python run_vlm_nav.py --test-scene
-```
-
-## 📁 File Structure
-
-```
-go2_vlm_rl/
-├── vlm_wrapper.py          # Phi-3-Vision wrapper (Windows compatible)
-├── scene_generator.py      # Random colored objects spawner
-├── run_vlm_nav.py         # Full pipeline demo
-├── test_scene.png         # Test image
-└── README.md              # This file
-```
-
-## 🎨 Supported Objects & Colors
-
-**Objects:** chair, table, cabinet, sofa, box, ball, cylinder, cone
-
-**Colors:** blue, red, green, yellow, orange, purple, white, pink, brown, cyan
-
-**Languages:** Turkish and English commands supported!
-
-| Turkish | English |
-|---------|---------|
-| mavi sandalyeye git | go to the blue chair |
-| kırmızı masayı bul | find the red table |
-| yeşil kutuya git | navigate to green box |
-
-## ⚙️ Configuration
-
-### VLM Settings
-- Model: `microsoft/Phi-3-vision-128k-instruct`
-- VRAM: ~8-10GB
-- Inference: ~100-200ms per call
-- Attention: SDPA (Windows compatible, no Flash Attention needed)
-
-### Navigation Controller
-- Max linear velocity: 1.0 m/s
-- Max angular velocity: 1.0 rad/s
-- Goal threshold: 0.15m
-
-## 🔧 Troubleshooting
-
-### Flash Attention Error
-The code uses `_attn_implementation="eager"` which works on Windows without Flash Attention.
-
-### VRAM Issues
-If running out of memory:
-1. Images are automatically resized to 768px max
-2. Use `low_memory=True` in VLMWrapper
-3. Close other GPU applications
-
-### Model Download
-First run downloads ~8GB model. This is cached in `~/.cache/huggingface/`.
-
-## 📊 Architecture
-
-### High-Level (VLM)
-- **Input:** RGB image + text command
-- **Output:** Target coordinates (x, y) + confidence
-- **Frequency:** Every 20-30 simulation steps (~1 second)
-
-### Low-Level (RL Policy)
-- **Input:** Depth image (64×64) + proprioception (48) + cmd_vel (3)
-- **Output:** Joint positions (12 DoF)
-- **Frequency:** Every simulation step (50Hz)
-
-## 🔮 Roadmap
-
-- [x] VLM wrapper (Phi-3-Vision)
-- [x] Scene generator with colored objects
-- [x] Navigation controller
-- [ ] Isaac Lab environment integration
-- [ ] Full pipeline testing
-- [ ] Real robot deployment
+---
 
 ## 📚 References
 
-- [Berkeley Quadruped LLM](https://arxiv.org/abs/2404.05291) - ICRA 2024
-- [Phi-3-Vision](https://huggingface.co/microsoft/Phi-3-vision-128k-instruct)
-- [Isaac Lab](https://isaac-sim.github.io/IsaacLab/)
+This work builds upon:
 
-## 📝 License
+- [ULC: Unified Fine-Grained Controller for Humanoid Loco-Manipulation](https://arxiv.org/abs/2507.06905) - Sun et al.
+- [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) - NVIDIA
+- [Unitree G1 Simulation](https://github.com/unitreerobotics/unitree_sim_isaaclab) - Unitree Robotics
 
-MIT License
+---
+
+## ⚖️ License & Citation
+
+**This is unpublished research work.** The code is provided for reference only.
+
+If you use this work, please cite:
+```bibtex
+@misc{yardimci2026g1ulcvlm,
+  author = {Yardımcı, Mehmet Turan},
+  title = {Hierarchical VLM-ULC for G1 Humanoid Loco-Manipulation},
+  year = {2026},
+  note = {Paper in preparation}
+}
+```
+
+For collaboration or usage inquiries: mehmetturanyardimci@hotmail.com
+
+---
 
 ## 👤 Author
 
-Mehmet Turan Yardımcı
-- GitHub: [@mturan33](https://github.com/mturan33)
+**Mehmet Turan Yardımcı**  
+- GitHub: [@mturan33](https://github.com/mturan33)  
 - LinkedIn: [/in/mehmetturanyardimci](https://linkedin.com/in/mehmetturanyardimci)
-
-# Kendi projenin LICENSE veya README'sine ekle:
-
-## Acknowledgements & Third-Party Code
-This project includes code from:
-- unitree_sim_isaaclab (https://github.com/unitreerobotics/unitree_sim_isaaclab)
-  Copyright 2025 HangZhou YuShu TECHNOLOGY CO.,LTD. ("Unitree Robotics")
-  Licensed under Apache License 2.0
-
-@misc{sun2025ulcunifiedfinegrainedcontroller,
-      title={ULC: A Unified and Fine-Grained Controller for Humanoid Loco-Manipulation}, 
-      author={Wandong Sun and Luying Feng and Baoshi Cao and Yang Liu and Yaochu Jin and Zongwu Xie},
-      year={2025},
-      eprint={2507.06905},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2507.06905}, 
-}
-
-This code builds upon following open-source code-bases. Please visit the URLs to see the respective LICENSES:
-
-1. https://ulc-humanoid.github.io/
-2. https://github.com/isaac-sim/IsaacLab
-3. https://github.com/isaac-sim/IsaacSim
-4. https://github.com/zeromq/pyzmq
-5. https://github.com/unitreerobotics/unitree_sdk2_python
-6. https://github.com/unitreerobotics/unitree_sim_isaaclab
-
-------------------
