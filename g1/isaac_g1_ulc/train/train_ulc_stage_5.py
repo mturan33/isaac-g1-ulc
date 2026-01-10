@@ -3,31 +3,24 @@
 ULC G1 Stage 5 Training - FULL MECHANICAL WORKSPACE
 ====================================================
 
-Stage 4 checkpoint'inden başlayıp %100 mekanik limite genişletir.
+Stage 4 checkpoint'inden devam eder.
+Orijinal config'i DEĞİŞTİRMEZ - sadece command range'leri override eder.
 
 KULLANIM:
 ./isaaclab.bat -p train_ulc_stage_5.py ^
     --stage4_checkpoint logs/ulc/ulc_g1_stage4_.../model_best.pt ^
-    --num_envs 4096 --headless
+    --num_envs 4096 --headless --max_iterations 8000
 """
 
 import argparse
 import os
 from datetime import datetime
 
-# ============================================================
-# ARGUMENT PARSING (Isaac Lab uyumlu)
-# ============================================================
+parser = argparse.ArgumentParser(description="ULC G1 Stage 5")
+parser.add_argument("--stage4_checkpoint", type=str, required=True)
+parser.add_argument("--num_envs", type=int, default=4096)
+parser.add_argument("--max_iterations", type=int, default=8000)
 
-parser = argparse.ArgumentParser(description="ULC G1 Stage 5 - Full Workspace Training")
-parser.add_argument("--stage4_checkpoint", type=str, default=None,
-                    help="Path to Stage 4 checkpoint (optional, starts from scratch if not provided)")
-parser.add_argument("--num_envs", type=int, default=4096,
-                    help="Number of parallel environments")
-parser.add_argument("--max_iterations", type=int, default=6000,
-                    help="Maximum training iterations")
-
-# Isaac Lab launcher - headless dahil tüm argümanları ekler
 from isaaclab.app import AppLauncher
 
 AppLauncher.add_app_launcher_args(parser)
@@ -35,132 +28,90 @@ args = parser.parse_args()
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
-# ============================================================
-# IMPORTS (simulation app başladıktan sonra)
-# ============================================================
-
 import torch
 import torch.nn as nn
 from collections import deque
+import gymnasium as gym
 
-# Isaac Lab imports
-import isaaclab_tasks  # noqa: F401
+import isaaclab_tasks
 from isaaclab_tasks.direct.isaac_g1_ulc.g1.isaac_g1_ulc.envs.ulc_g1_env import ULC_G1_Env
 from isaaclab_tasks.direct.isaac_g1_ulc.g1.isaac_g1_ulc.config.ulc_g1_env_cfg import ULC_G1_Stage4_EnvCfg
 
 # ============================================================
-# G1 FULL MECHANICAL LIMITS (Unitree Official)
+# STAGE 5 CURRICULUM - Kademeli Genişletme
 # ============================================================
 
-G1_FULL_LIMITS = {
-    "shoulder_pitch": 2.6,  # ±149°
-    "shoulder_roll": 1.6,  # ±92°
-    "shoulder_yaw": 2.6,  # ±149°
-    "elbow": 1.6,  # ±92°
-    "hip_pitch": 1.57,  # ±90° - Squat!
-    "knee": 2.0,  # 115° - Squat!
-    "waist_pitch": 0.52,  # ±30° - Eğilme!
-}
-
-# ============================================================
-# STAGE 5 CURRICULUM
-# ============================================================
-
-STAGE5_CURRICULUM = {
+CURRICULUM = {
     0: {
         "name": "Stage4 Baseline",
-        "vx_range": (-0.3, 0.8),
+        "arm_range": 0.8,
         "height_range": (0.60, 0.80),
-        "shoulder_pitch_range": 0.8,
-        "elbow_range": 0.8,
-        "torso_pitch_range": 0.3,
         "threshold": 26.0,
-        "min_iterations": 300,
+        "min_iters": 300,
     },
     1: {
-        "name": "Extended Arms (60%)",
-        "vx_range": (-0.3, 0.8),
+        "name": "Arms 60%",
+        "arm_range": 1.5,
         "height_range": (0.55, 0.80),
-        "shoulder_pitch_range": 1.5,
-        "elbow_range": 1.0,
-        "torso_pitch_range": 0.35,
         "threshold": 25.0,
-        "min_iterations": 400,
+        "min_iters": 400,
     },
     2: {
-        "name": "Light Squat + Arms 80%",
-        "vx_range": (-0.4, 0.9),
+        "name": "Arms 80% + Light Squat",
+        "arm_range": 2.0,
         "height_range": (0.45, 0.82),
-        "shoulder_pitch_range": 2.0,
-        "elbow_range": 1.3,
-        "torso_pitch_range": 0.40,
         "threshold": 24.0,
-        "min_iterations": 500,
+        "min_iters": 500,
     },
     3: {
-        "name": "Deep Squat + Full Arms",
-        "vx_range": (-0.5, 1.0),
+        "name": "Full Arms + Deep Squat",
+        "arm_range": 2.6,
         "height_range": (0.38, 0.85),
-        "shoulder_pitch_range": 2.6,
-        "elbow_range": 1.6,
-        "torso_pitch_range": 0.45,
         "threshold": 23.0,
-        "min_iterations": 600,
+        "min_iters": 600,
     },
     4: {
         "name": "FULL WORKSPACE",
-        "vx_range": (-0.5, 1.0),
+        "arm_range": 2.6,
         "height_range": (0.35, 0.85),
-        "shoulder_pitch_range": 2.6,
-        "elbow_range": 1.6,
-        "torso_pitch_range": 0.52,
         "threshold": None,
-        "min_iterations": None,
+        "min_iters": None,
     },
 }
 
 
 # ============================================================
-# ACTOR-CRITIC NETWORK
+# ACTOR-CRITIC (Stage 4 ile AYNI mimari)
 # ============================================================
 
 class ActorCritic(nn.Module):
-    """Actor-Critic with LayerNorm."""
-
     def __init__(self, obs_dim, action_dim, hidden_dims=[512, 256, 128]):
         super().__init__()
 
-        # Actor
         actor_layers = []
-        prev_dim = obs_dim
-        for dim in hidden_dims:
-            actor_layers.extend([
-                nn.Linear(prev_dim, dim),
-                nn.LayerNorm(dim),
-                nn.ELU(),
-            ])
-            prev_dim = dim
-        actor_layers.append(nn.Linear(prev_dim, action_dim))
+        prev = obs_dim
+        for h in hidden_dims:
+            actor_layers.extend([nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()])
+            prev = h
+        actor_layers.append(nn.Linear(prev, action_dim))
         self.actor = nn.Sequential(*actor_layers)
 
-        # Critic
         critic_layers = []
-        prev_dim = obs_dim
-        for dim in hidden_dims:
-            critic_layers.extend([
-                nn.Linear(prev_dim, dim),
-                nn.LayerNorm(dim),
-                nn.ELU(),
-            ])
-            prev_dim = dim
-        critic_layers.append(nn.Linear(prev_dim, 1))
+        prev = obs_dim
+        for h in hidden_dims:
+            critic_layers.extend([nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()])
+            prev = h
+        critic_layers.append(nn.Linear(prev, 1))
         self.critic = nn.Sequential(*critic_layers)
 
-        # Learnable log_std
         self.log_std = nn.Parameter(torch.zeros(action_dim))
 
-    def forward(self, obs):
-        return self.actor(obs)
+    def act(self, obs, deterministic=False):
+        mean = self.actor(obs)
+        if deterministic:
+            return mean
+        std = torch.exp(self.log_std)
+        return torch.distributions.Normal(mean, std).sample()
 
     def get_value(self, obs):
         return self.critic(obs)
@@ -169,142 +120,82 @@ class ActorCritic(nn.Module):
         mean = self.actor(obs)
         std = torch.exp(self.log_std)
         dist = torch.distributions.Normal(mean, std)
-
-        log_prob = dist.log_prob(actions).sum(-1)
-        entropy = dist.entropy().sum(-1)
-        value = self.critic(obs).squeeze(-1)
-
-        return value, log_prob, entropy
-
-    def act(self, obs, deterministic=False):
-        mean = self.actor(obs)
-        if deterministic:
-            return mean
-        std = torch.exp(self.log_std)
-        dist = torch.distributions.Normal(mean, std)
-        return dist.sample()
+        return self.critic(obs).squeeze(-1), dist.log_prob(actions).sum(-1), dist.entropy().sum(-1)
 
 
 # ============================================================
-# CURRICULUM MANAGER WITH COMMAND SAMPLING
+# CURRICULUM MANAGER
 # ============================================================
 
-class Stage5CurriculumManager:
-    """Curriculum manager that handles command sampling with expanded ranges."""
-
-    def __init__(self, env, curriculum_config):
+class CurriculumManager:
+    def __init__(self, env, config):
         self.env = env
-        self.curriculum = curriculum_config
-        self.current_level = 0
-        self.level_iterations = 0
-        self.reward_history = deque(maxlen=100)
+        self.config = config
+        self.level = 0
+        self.level_iters = 0
+        self.rewards = deque(maxlen=100)
         self.device = env.device
+        self._apply(0)
 
-        # Apply initial level
-        self._apply_level(0)
-
-    def _apply_level(self, level):
-        """Apply curriculum level settings."""
-        cfg = self.curriculum[level]
-        self.current_config = cfg
-
-        self.vx_range = cfg.get("vx_range", (-0.5, 1.0))
-        self.height_range = cfg.get("height_range", (0.35, 0.85))
-        self.shoulder_pitch_range = cfg.get("shoulder_pitch_range", 2.6)
-        self.elbow_range = cfg.get("elbow_range", 1.6)
-        self.torso_pitch_range = cfg.get("torso_pitch_range", 0.52)
-
-        print(f"[Stage5] Level {level}: {cfg['name']}")
-        print(f"  Arms: shoulder={self.shoulder_pitch_range:.1f}, elbow={self.elbow_range:.1f}")
-        print(f"  Height: {self.height_range}")
+    def _apply(self, level):
+        cfg = self.config[level]
+        self.arm_range = cfg["arm_range"]
+        self.height_range = cfg["height_range"]
+        print(f"[Curriculum] Level {level}: {cfg['name']}")
+        print(f"  Arms: ±{self.arm_range:.1f} rad, Height: {self.height_range}")
 
     def sample_commands(self):
-        """Sample commands with current curriculum ranges."""
-        num_envs = self.env.num_envs
-        device = self.device
+        n = self.env.num_envs
+        d = self.device
+        ar = self.arm_range
+        hr = self.height_range
 
-        # Velocity
-        self.env.velocity_commands[:, 0] = torch.empty(num_envs, device=device).uniform_(*self.vx_range)
-        self.env.velocity_commands[:, 1] = torch.empty(num_envs, device=device).uniform_(-0.3, 0.3)
-        self.env.velocity_commands[:, 2] = torch.empty(num_envs, device=device).uniform_(-0.5, 0.5)
+        # Height
+        self.env.height_command[:, 0] = torch.empty(n, device=d).uniform_(*hr)
 
-        # Height (squat!)
-        self.env.height_command[:, 0] = torch.empty(num_envs, device=device).uniform_(*self.height_range)
+        # Arms - genişletilmiş range
+        self.env.arm_commands[:, 0] = torch.empty(n, device=d).uniform_(-ar, ar)  # L shoulder_pitch
+        self.env.arm_commands[:, 3] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # L elbow
+        self.env.arm_commands[:, 5] = torch.empty(n, device=d).uniform_(-ar, ar)  # R shoulder_pitch
+        self.env.arm_commands[:, 8] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)  # R elbow
 
-        # Torso
-        self.env.torso_commands[:, 0] = torch.empty(num_envs, device=device).uniform_(
-            -0.3, 0.3)  # roll
-        self.env.torso_commands[:, 1] = torch.empty(num_envs, device=device).uniform_(
-            -self.torso_pitch_range, self.torso_pitch_range)  # pitch
-        self.env.torso_commands[:, 2] = torch.empty(num_envs, device=device).uniform_(
-            -0.3, 0.3)  # yaw
-
-        # Arms - FULL RANGE!
-        sp = self.shoulder_pitch_range
-        el = self.elbow_range
-
-        # Left arm (0-4)
-        self.env.arm_commands[:, 0] = torch.empty(num_envs, device=device).uniform_(-sp, sp)
-        self.env.arm_commands[:, 1] = torch.empty(num_envs, device=device).uniform_(-1.0, 1.0)
-        self.env.arm_commands[:, 2] = torch.empty(num_envs, device=device).uniform_(-1.0, 1.0)
-        self.env.arm_commands[:, 3] = torch.empty(num_envs, device=device).uniform_(-el, el)
-        self.env.arm_commands[:, 4] = torch.empty(num_envs, device=device).uniform_(-0.5, 0.5)
-
-        # Right arm (5-9)
-        self.env.arm_commands[:, 5] = torch.empty(num_envs, device=device).uniform_(-sp, sp)
-        self.env.arm_commands[:, 6] = torch.empty(num_envs, device=device).uniform_(-1.0, 1.0)
-        self.env.arm_commands[:, 7] = torch.empty(num_envs, device=device).uniform_(-1.0, 1.0)
-        self.env.arm_commands[:, 8] = torch.empty(num_envs, device=device).uniform_(-el, el)
-        self.env.arm_commands[:, 9] = torch.empty(num_envs, device=device).uniform_(-0.5, 0.5)
-
-    def resample_for_reset(self, env_ids):
-        """Resample commands for reset environments."""
-        if len(env_ids) == 0:
+    def resample(self, ids):
+        if len(ids) == 0:
             return
+        n = len(ids)
+        d = self.device
+        ar = self.arm_range
+        hr = self.height_range
 
-        num = len(env_ids)
-        device = self.device
-        sp = self.shoulder_pitch_range
-        el = self.elbow_range
+        self.env.height_command[ids, 0] = torch.empty(n, device=d).uniform_(*hr)
+        self.env.arm_commands[ids, 0] = torch.empty(n, device=d).uniform_(-ar, ar)
+        self.env.arm_commands[ids, 3] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)
+        self.env.arm_commands[ids, 5] = torch.empty(n, device=d).uniform_(-ar, ar)
+        self.env.arm_commands[ids, 8] = torch.empty(n, device=d).uniform_(-ar * 0.6, ar * 0.6)
 
-        self.env.velocity_commands[env_ids, 0] = torch.empty(num, device=device).uniform_(*self.vx_range)
-        self.env.height_command[env_ids, 0] = torch.empty(num, device=device).uniform_(*self.height_range)
-        self.env.torso_commands[env_ids, 1] = torch.empty(num, device=device).uniform_(
-            -self.torso_pitch_range, self.torso_pitch_range)
-        self.env.arm_commands[env_ids, 0] = torch.empty(num, device=device).uniform_(-sp, sp)
-        self.env.arm_commands[env_ids, 3] = torch.empty(num, device=device).uniform_(-el, el)
-        self.env.arm_commands[env_ids, 5] = torch.empty(num, device=device).uniform_(-sp, sp)
-        self.env.arm_commands[env_ids, 8] = torch.empty(num, device=device).uniform_(-el, el)
+    def update(self, reward):
+        self.level_iters += 1
+        self.rewards.append(reward)
 
-    def update(self, iteration, mean_reward):
-        """Check for level promotion."""
-        self.level_iterations += 1
-        self.reward_history.append(mean_reward)
-
-        if len(self.reward_history) < 50:
+        if len(self.rewards) < 50:
             return False
 
-        cfg = self.curriculum[self.current_level]
-        threshold = cfg.get("threshold")
-        min_iters = cfg.get("min_iterations", 0)
-
-        if threshold is None:
+        cfg = self.config[self.level]
+        if cfg["threshold"] is None:
             return False
 
-        avg_reward = sum(self.reward_history) / len(self.reward_history)
-
-        if self.level_iterations >= min_iters and avg_reward >= threshold:
-            next_level = self.current_level + 1
-            if next_level in self.curriculum:
-                self.current_level = next_level
-                self._apply_level(next_level)
-                self.level_iterations = 0
-                self.reward_history.clear()
+        avg = sum(self.rewards) / len(self.rewards)
+        if self.level_iters >= cfg["min_iters"] and avg >= cfg["threshold"]:
+            if self.level + 1 in self.config:
+                self.level += 1
+                self._apply(self.level)
+                self.level_iters = 0
+                self.rewards.clear()
                 return True
         return False
 
-    def get_workspace_pct(self):
-        return (self.shoulder_pitch_range / 2.6) * 100
+    def workspace_pct(self):
+        return (self.arm_range / 2.6) * 100
 
 
 # ============================================================
@@ -312,137 +203,105 @@ class Stage5CurriculumManager:
 # ============================================================
 
 class PPOTrainer:
-    """Simple PPO trainer."""
-
-    def __init__(self, env, policy, curriculum_mgr, device="cuda:0"):
+    def __init__(self, env, policy, curriculum, device="cuda:0"):
         self.env = env
         self.policy = policy
-        self.curriculum = curriculum_mgr
+        self.curriculum = curriculum
         self.device = device
+        self.optimizer = torch.optim.Adam(policy.parameters(), lr=3e-4)
 
-        # Hyperparameters
-        self.lr = 3e-4
         self.gamma = 0.99
         self.lam = 0.95
-        self.clip_param = 0.2
-        self.entropy_coef = 0.01
-        self.value_coef = 1.0
-        self.max_grad_norm = 1.0
-        self.num_epochs = 5
-        self.mini_batch_size = 4096
-        self.num_steps = 24
+        self.clip = 0.2
+        self.epochs = 5
+        self.batch_size = 4096
+        self.steps = 24
 
-        self.optimizer = torch.optim.Adam(policy.parameters(), lr=self.lr)
+        # Get initial obs
+        obs_dict, _ = env.reset()
+        self.obs = obs_dict["policy"]
 
-    def collect_rollout(self):
-        """Collect experience."""
-        obs_list, act_list, rew_list, done_list, val_list, logp_list = [], [], [], [], [], []
+    def collect(self):
+        obs_l, act_l, rew_l, done_l, val_l, logp_l = [], [], [], [], [], []
+        obs = self.obs
 
-        obs_dict, _ = self.env.reset()
-        obs = obs_dict["policy"]
-
-        for _ in range(self.num_steps):
+        for _ in range(self.steps):
             with torch.no_grad():
                 action = self.policy.act(obs)
                 value = self.policy.get_value(obs).squeeze(-1)
                 mean = self.policy.actor(obs)
                 std = torch.exp(self.policy.log_std)
-                log_prob = torch.distributions.Normal(mean, std).log_prob(action).sum(-1)
+                logp = torch.distributions.Normal(mean, std).log_prob(action).sum(-1)
 
-            obs_list.append(obs)
-            act_list.append(action)
-            val_list.append(value)
-            logp_list.append(log_prob)
+            obs_l.append(obs)
+            act_l.append(action)
+            val_l.append(value)
+            logp_l.append(logp)
 
-            obs_dict, reward, terminated, truncated, info = self.env.step(action)
+            obs_dict, reward, term, trunc, _ = self.env.step(action)
             obs = obs_dict["policy"]
-            done = terminated | truncated
+            done = term | trunc
 
-            rew_list.append(reward)
-            done_list.append(done)
+            rew_l.append(reward)
+            done_l.append(done)
 
-            # Resample commands for reset environments
             reset_ids = done.nonzero(as_tuple=False).squeeze(-1)
-            self.curriculum.resample_for_reset(reset_ids)
+            self.curriculum.resample(reset_ids)
+
+        self.obs = obs
 
         return {
-            "obs": torch.stack(obs_list),
-            "actions": torch.stack(act_list),
-            "rewards": torch.stack(rew_list),
-            "dones": torch.stack(done_list),
-            "values": torch.stack(val_list),
-            "log_probs": torch.stack(logp_list),
+            "obs": torch.stack(obs_l),
+            "act": torch.stack(act_l),
+            "rew": torch.stack(rew_l),
+            "done": torch.stack(done_l),
+            "val": torch.stack(val_l),
+            "logp": torch.stack(logp_l),
             "last_obs": obs,
         }
 
-    def compute_returns(self, rollout):
-        """Compute GAE."""
-        rewards = rollout["rewards"]
-        values = rollout["values"]
-        dones = rollout["dones"]
-
+    def compute_gae(self, r):
         with torch.no_grad():
-            last_value = self.policy.get_value(rollout["last_obs"]).squeeze(-1)
+            last_val = self.policy.get_value(r["last_obs"]).squeeze(-1)
 
-        advantages = torch.zeros_like(rewards)
-        last_gae = 0
+        adv = torch.zeros_like(r["rew"])
+        gae = 0
+        for t in reversed(range(r["rew"].shape[0])):
+            nv = last_val if t == r["rew"].shape[0] - 1 else r["val"][t + 1]
+            delta = r["rew"][t] + self.gamma * nv * (~r["done"][t]) - r["val"][t]
+            adv[t] = gae = delta + self.gamma * self.lam * (~r["done"][t]) * gae
 
-        for t in reversed(range(rewards.shape[0])):
-            next_val = last_value if t == rewards.shape[0] - 1 else values[t + 1]
-            delta = rewards[t] + self.gamma * next_val * (~dones[t]) - values[t]
-            advantages[t] = last_gae = delta + self.gamma * self.lam * (~dones[t]) * last_gae
+        return adv + r["val"], adv
 
-        returns = advantages + values
-        return returns, advantages
+    def update(self, r, ret, adv):
+        obs = r["obs"].view(-1, r["obs"].shape[-1])
+        act = r["act"].view(-1, r["act"].shape[-1])
+        old_logp = r["logp"].view(-1)
+        ret_flat = ret.view(-1)
+        adv_flat = (adv.view(-1) - adv.mean()) / (adv.std() + 1e-8)
 
-    def update(self, rollout, returns, advantages):
-        """PPO update."""
-        obs = rollout["obs"].view(-1, rollout["obs"].shape[-1])
-        actions = rollout["actions"].view(-1, rollout["actions"].shape[-1])
-        old_log_probs = rollout["log_probs"].view(-1)
-        returns_flat = returns.view(-1)
-        advantages_flat = (advantages.view(-1) - advantages.mean()) / (advantages.std() + 1e-8)
-
-        total_loss = 0
-        n_updates = 0
-
-        for _ in range(self.num_epochs):
+        for _ in range(self.epochs):
             perm = torch.randperm(obs.shape[0])
-            for start in range(0, obs.shape[0], self.mini_batch_size):
-                idx = perm[start:start + self.mini_batch_size]
+            for i in range(0, obs.shape[0], self.batch_size):
+                idx = perm[i:i + self.batch_size]
+                val, logp, ent = self.policy.evaluate(obs[idx], act[idx])
 
-                values, log_probs, entropy = self.policy.evaluate(obs[idx], actions[idx])
+                ratio = torch.exp(logp - old_logp[idx])
+                s1 = ratio * adv_flat[idx]
+                s2 = torch.clamp(ratio, 1 - self.clip, 1 + self.clip) * adv_flat[idx]
 
-                ratio = torch.exp(log_probs - old_log_probs[idx])
-                surr1 = ratio * advantages_flat[idx]
-                surr2 = torch.clamp(ratio, 1 - self.clip_param, 1 + self.clip_param) * advantages_flat[idx]
-
-                policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = 0.5 * ((values - returns_flat[idx]) ** 2).mean()
-                entropy_loss = -entropy.mean()
-
-                loss = policy_loss + self.value_coef * value_loss + self.entropy_coef * entropy_loss
+                loss = -torch.min(s1, s2).mean() + 0.5 * ((val - ret_flat[idx]) ** 2).mean() - 0.01 * ent.mean()
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
                 self.optimizer.step()
 
-                total_loss += loss.item()
-                n_updates += 1
-
-        return total_loss / n_updates
-
-    def train_one_iteration(self):
-        """Single training iteration."""
-        rollout = self.collect_rollout()
-        returns, advantages = self.compute_returns(rollout)
-        loss = self.update(rollout, returns, advantages)
-
-        return {
-            "loss": loss,
-            "mean_reward": rollout["rewards"].mean().item(),
-        }
+    def train_iter(self):
+        r = self.collect()
+        ret, adv = self.compute_gae(r)
+        self.update(r, ret, adv)
+        return r["rew"].mean().item()
 
 
 # ============================================================
@@ -450,172 +309,96 @@ class PPOTrainer:
 # ============================================================
 
 def main():
-    print("\n" + "=" * 70)
-    print("🔥 ULC G1 STAGE 5 - FULL MECHANICAL WORKSPACE 🔥")
-    print("=" * 70)
-    print(f"Stage 4 Checkpoint: {args.stage4_checkpoint}")
-    print(f"Environments: {args.num_envs}")
-    print(f"Max Iterations: {args.max_iterations}")
-    print()
+    print("\n" + "=" * 60)
+    print("🔥 ULC G1 STAGE 5 - FULL WORKSPACE 🔥")
+    print("=" * 60)
 
-    print("G1 FULL LIMITS (Unitree Official):")
-    print("  shoulder_pitch: ±2.6 rad (±149°)")
-    print("  elbow: ±1.6 rad (±92°)")
-    print("  hip_pitch: ±1.57 rad (±90°) - Squat!")
-    print("  knee: 2.0 rad (115°) - Squat!")
-    print()
+    # Load checkpoint
+    print(f"[INFO] Loading: {args.stage4_checkpoint}")
+    ckpt = torch.load(args.stage4_checkpoint, map_location="cuda:0", weights_only=True)
+    print(f"[INFO] Keys: {list(ckpt.keys())}")
 
-    # Load Stage 4 checkpoint if provided
-    stage4_ckpt = None
-    if args.stage4_checkpoint:
-        print("[INFO] Loading Stage 4 checkpoint...")
-        if not os.path.exists(args.stage4_checkpoint):
-            print(f"[WARNING] Checkpoint not found: {args.stage4_checkpoint}")
-            print("[INFO] Starting with random initialization")
-        else:
-            stage4_ckpt = torch.load(args.stage4_checkpoint, map_location="cuda:0", weights_only=True)
-            print("[INFO] Stage 4 checkpoint loaded ✓")
-            print(f"[INFO] Checkpoint keys: {list(stage4_ckpt.keys())}")
-    else:
-        print("[INFO] No checkpoint provided, starting from scratch")
+    # Create env
+    print(f"[INFO] Creating env with {args.num_envs} envs...")
+    cfg = ULC_G1_Stage4_EnvCfg()
+    cfg.scene.num_envs = args.num_envs
+    cfg.termination["base_height_min"] = 0.25  # Allow squat
 
-    # Create environment
-    print(f"[INFO] Creating environment with {args.num_envs} envs...")
+    # Add spaces for newer Isaac Lab
+    cfg.observation_space = gym.spaces.Box(low=-float('inf'), high=float('inf'), shape=(cfg.num_observations,))
+    cfg.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(cfg.num_actions,))
 
-    env_cfg = ULC_G1_Stage4_EnvCfg()
-    env_cfg.scene.num_envs = args.num_envs
+    env = ULC_G1_Env(cfg=cfg)
+    env.current_stage = 4
 
-    # IMPORTANT: Update termination for squat
-    env_cfg.termination["base_height_min"] = 0.25
-
-    # Add required fields for newer Isaac Lab
-    import gymnasium as gym
-    obs_dim = env_cfg.num_observations
-    act_dim = env_cfg.num_actions
-    env_cfg.observation_space = gym.spaces.Box(low=-float('inf'), high=float('inf'), shape=(obs_dim,))
-    env_cfg.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(act_dim,))
-
-    env = ULC_G1_Env(cfg=env_cfg)
-    env.current_stage = 4  # Set to Stage 4 mode
-
-    obs_dim = env_cfg.num_observations
-    action_dim = env_cfg.num_actions
+    # Get actual dims
+    obs_dict, _ = env.reset()
+    obs_dim = obs_dict["policy"].shape[1]
+    action_dim = cfg.num_actions
     print(f"[INFO] Obs: {obs_dim}, Actions: {action_dim}")
 
     # Create policy
     policy = ActorCritic(obs_dim, action_dim).to("cuda:0")
 
-    # Load Stage 4 weights if checkpoint was provided
-    if stage4_ckpt is not None:
-        print("[INFO] Loading Stage 4 weights...")
+    # Load weights
+    state_dict = ckpt.get("actor_critic", ckpt)
 
-        # Check what keys are in the checkpoint
-        if "actor_critic" in stage4_ckpt:
-            state_dict = stage4_ckpt["actor_critic"]
-            print("[INFO] Found actor_critic key")
-        elif "model_state_dict" in stage4_ckpt:
-            state_dict = stage4_ckpt["model_state_dict"]
-        elif "model" in stage4_ckpt:
-            state_dict = stage4_ckpt["model"]
-        else:
-            # Maybe the checkpoint IS the state dict
-            state_dict = stage4_ckpt
+    # Check dimensions
+    ckpt_obs = state_dict["actor.0.weight"].shape[1]
+    ckpt_act = state_dict["log_std"].shape[0]
+    print(f"[INFO] Checkpoint dims: obs={ckpt_obs}, act={ckpt_act}")
 
-        if state_dict is not None:
-            try:
-                # Check dimensions
-                first_key = list(state_dict.keys())[0]
-                print(f"[INFO] State dict first key: {first_key}")
-                print(f"[INFO] State dict keys: {list(state_dict.keys())[:5]}...")
-
-                policy.load_state_dict(state_dict)
-                print("[INFO] Weights loaded successfully ✓")
-            except RuntimeError as e:
-                if "size mismatch" in str(e):
-                    print(f"[WARNING] Dimension mismatch - Stage 4 was trained with different obs/action dims")
-                    print(f"[WARNING] Current: obs={obs_dim}, act={action_dim}")
-                    print("[INFO] Starting with random initialization")
-                else:
-                    print(f"[WARNING] Could not load weights: {e}")
-                    print("[INFO] Starting with random initialization")
-            except Exception as e:
-                print(f"[WARNING] Could not load weights: {e}")
-                print("[INFO] Starting with random initialization")
-        else:
-            print("[INFO] Could not extract weights, starting fresh")
+    if ckpt_obs == obs_dim and ckpt_act == action_dim:
+        policy.load_state_dict(state_dict)
+        print("[INFO] ✓ Weights loaded!")
     else:
-        print("[INFO] Starting with random initialization")
+        print(f"[WARNING] Dim mismatch! Starting fresh.")
 
-    # Create curriculum manager
-    curriculum = Stage5CurriculumManager(env, STAGE5_CURRICULUM)
+    # Curriculum
+    curriculum = CurriculumManager(env, CURRICULUM)
     curriculum.sample_commands()
 
-    # Create trainer
-    trainer = PPOTrainer(env, policy, curriculum, device="cuda:0")
+    # Trainer
+    trainer = PPOTrainer(env, policy, curriculum)
 
-    # Log directory
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = f"logs/ulc/ulc_g1_stage5_full_{timestamp}"
+    # Log dir
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_dir = f"logs/ulc/ulc_g1_stage5_{ts}"
     os.makedirs(log_dir, exist_ok=True)
-    print(f"[INFO] Log dir: {log_dir}")
+    print(f"[INFO] Logs: {log_dir}")
 
-    # Training loop
-    print("\n[INFO] Starting training...")
-    best_reward = -float('inf')
+    # Train
+    print("\n[INFO] Training...")
+    best = -float('inf')
 
-    for iteration in range(args.max_iterations):
-        stats = trainer.train_one_iteration()
-        mean_reward = stats["mean_reward"]
+    for i in range(args.max_iterations):
+        reward = trainer.train_iter()
 
-        # Curriculum update
-        promoted = curriculum.update(iteration, mean_reward)
-        if promoted:
-            pct = curriculum.get_workspace_pct()
-            print(f"\n{'=' * 60}")
-            print(f"🎯 LEVEL UP! Level {curriculum.current_level}: {curriculum.current_config['name']}")
-            print(f"   Workspace: {pct:.0f}%")
-            print(f"{'=' * 60}\n")
+        if curriculum.update(reward):
+            print(f"\n🎯 LEVEL UP! → {curriculum.level} ({curriculum.workspace_pct():.0f}%)\n")
 
-        # Track best
-        if mean_reward > best_reward:
-            best_reward = mean_reward
+        if reward > best:
+            best = reward
             torch.save({
-                "model_state_dict": policy.state_dict(),
-                "optimizer_state_dict": trainer.optimizer.state_dict(),
-                "iteration": iteration,
-                "best_reward": best_reward,
-                "curriculum_level": curriculum.current_level,
-            }, os.path.join(log_dir, "model_best.pt"))
+                "actor_critic": policy.state_dict(),
+                "iteration": i,
+                "best_reward": best,
+                "curriculum_level": curriculum.level,
+            }, f"{log_dir}/model_best.pt")
 
-        # Logging
-        if iteration % 50 == 0:
-            pct = curriculum.get_workspace_pct()
-            print(f"Iter {iteration:5d} | Reward: {mean_reward:7.2f} | Best: {best_reward:7.2f} | "
-                  f"Level: {curriculum.current_level} ({pct:.0f}%)")
+        if i % 50 == 0:
+            print(
+                f"Iter {i:5d} | Rew: {reward:7.2f} | Best: {best:7.2f} | Lvl: {curriculum.level} ({curriculum.workspace_pct():.0f}%)")
 
-        # Periodic save
-        if iteration % 500 == 0 and iteration > 0:
-            torch.save({
-                "model_state_dict": policy.state_dict(),
-                "iteration": iteration,
-                "curriculum_level": curriculum.current_level,
-            }, os.path.join(log_dir, f"model_{iteration}.pt"))
+        if i % 1000 == 0 and i > 0:
+            torch.save({"actor_critic": policy.state_dict(), "iteration": i}, f"{log_dir}/model_{i}.pt")
 
-    # Final save
-    torch.save({
-        "model_state_dict": policy.state_dict(),
-        "iteration": args.max_iterations,
-        "best_reward": best_reward,
-        "curriculum_level": curriculum.current_level,
-    }, os.path.join(log_dir, "model_final.pt"))
+    torch.save({"actor_critic": policy.state_dict(), "best_reward": best}, f"{log_dir}/model_final.pt")
 
-    print("\n" + "=" * 70)
-    print("🎉 STAGE 5 COMPLETE!")
-    print(f"Final Level: {curriculum.current_level}")
-    print(f"Workspace: {curriculum.get_workspace_pct():.0f}%")
-    print(f"Best Reward: {best_reward:.2f}")
+    print("\n" + "=" * 60)
+    print(f"🎉 DONE! Level: {curriculum.level}, Best: {best:.2f}")
     print(f"Saved: {log_dir}")
-    print("=" * 70)
+    print("=" * 60)
 
     env.close()
     simulation_app.close()
