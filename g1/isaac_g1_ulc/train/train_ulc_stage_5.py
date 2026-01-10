@@ -40,8 +40,6 @@ parser.add_argument("--num_envs", type=int, default=4096,
                     help="Number of parallel environments")
 parser.add_argument("--max_iterations", type=int, default=6000,
                     help="Maximum training iterations")
-parser.add_argument("--headless", action="store_true",
-                    help="Run headless (no GUI)")
 
 from isaaclab.app import AppLauncher
 
