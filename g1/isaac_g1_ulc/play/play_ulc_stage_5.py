@@ -30,7 +30,7 @@ parser.add_argument("--demo_mode", action="store_true", help="Show predefined de
 parser.add_argument("--full_workspace", action="store_true", help="Test with full mechanical limits")
 
 # Manual command overrides
-parser.add_argument("--height", type=float, default=0.75, help="Target height (0.35-0.85)")
+parser.add_argument("--target_height", type=float, default=0.75, help="Target height (0.35-0.85)")
 parser.add_argument("--vx", type=float, default=0.5, help="Forward velocity")
 parser.add_argument("--arm_range", type=float, default=1.5, help="Arm movement range")
 
@@ -203,8 +203,8 @@ def main():
     elif args.demo_mode:
         print("[MODE] Demo Mode")
     else:
-        set_commands(env, height=args.height, vx=args.vx)
-        print(f"[MODE] Fixed Commands: height={args.height}, vx={args.vx}")
+        set_commands(env, height=args.target_height, vx=args.vx)
+        print(f"[MODE] Fixed Commands: height={args.target_height}, vx={args.vx}")
 
     # Run simulation
     print("\n[PLAY] Starting simulation... Press Ctrl+C to stop")
