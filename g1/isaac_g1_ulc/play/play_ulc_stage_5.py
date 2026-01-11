@@ -119,7 +119,8 @@ def set_commands(env, height=0.75, vx=0.5, left_arm=(0, 0), right_arm=(0, 0), to
     n = env.num_envs
     d = env.device
 
-    env.height_command[:, 0] = height
+    # 1D tensors - ESKİ: env.height_command[:, 0] = height
+    env.height_command[:] = height
     env.velocity_commands[:, 0] = vx
     env.velocity_commands[:, 1] = 0.0
     env.velocity_commands[:, 2] = 0.0
@@ -140,7 +141,7 @@ def random_commands(env, arm_range=2.6):
     n = env.num_envs
     d = env.device
 
-    env.height_command[:, 0] = torch.empty(n, device=d).uniform_(0.35, 0.85)
+    env.height_command[:] = torch.empty(n, device=d).uniform_(0.35, 0.85)
     env.velocity_commands[:, 0] = torch.empty(n, device=d).uniform_(-0.8, 1.2)
     env.velocity_commands[:, 1] = torch.empty(n, device=d).uniform_(-0.4, 0.4)
     env.velocity_commands[:, 2] = torch.empty(n, device=d).uniform_(-0.8, 0.8)
@@ -268,7 +269,7 @@ def main():
             if step % 100 == 0:
                 height = env.robot.data.root_pos_w[:, 2].mean().item()
                 vel_x = env.robot.data.root_lin_vel_w[:, 0].mean().item()
-                cmd_h = env.height_command[0, 0].item()
+                cmd_h = env.height_command[0].item()
 
                 print(f"Step {step:5d} | H={height:.3f}m (cmd={cmd_h:.2f}) | "
                       f"Vx={vel_x:.2f}m/s | R={reward.mean():.2f}")
