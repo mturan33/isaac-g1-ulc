@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-ULC G1 Stage 5 - Play Script
-============================
+ULC G1 Stage 5 - Play Script (with Action Smoothing)
+=====================================================
 
 Eğitilmiş Stage 5 modelini görsel olarak test et.
+Action smoothing ile titremeleri azalt.
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/play_ulc_stage_5.py ^
-    --checkpoint logs/ulc/ulc_g1_stage5_.../model_best.pt ^
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_5.py ^
+    --checkpoint logs/ulc/ulc_g1_stage5_2026-01-11_00-23-34/model_30000.pt ^
     --num_envs 4
 
 PARAMETRELER:
 --random_commands : Her 5 saniyede yeni random komutlar
 --demo_mode      : Önceden tanımlı hareketler göster
 --full_workspace : Maksimum açılar ile test et
+--arms_forward   : Kolları ileri uzat (test için)
+--smoothing      : Action smoothing factor (0.0-0.95, default 0.7)
 """
 
 import argparse
@@ -28,11 +31,15 @@ parser.add_argument("--num_envs", type=int, default=4, help="Number of environme
 parser.add_argument("--random_commands", action="store_true", help="Randomize commands every 5 seconds")
 parser.add_argument("--demo_mode", action="store_true", help="Show predefined demo motions")
 parser.add_argument("--full_workspace", action="store_true", help="Test with full mechanical limits")
+parser.add_argument("--arms_forward", action="store_true", help="Arms forward position test")
 
 # Manual command overrides
-parser.add_argument("--target_height", type=float, default=0.75, help="Target height (0.35-0.85)")
-parser.add_argument("--vx", type=float, default=0.5, help="Forward velocity")
+parser.add_argument("--target_height", type=float, default=0.72, help="Target height (0.35-0.85)")
+parser.add_argument("--vx", type=float, default=0.0, help="Forward velocity (0 for standing)")
 parser.add_argument("--arm_range", type=float, default=1.5, help="Arm movement range")
+
+# Action smoothing
+parser.add_argument("--smoothing", type=float, default=0.7, help="Action smoothing factor (0.0-0.95)")
 
 from isaaclab.app import AppLauncher
 
@@ -88,52 +95,70 @@ class ActorCritic(nn.Module):
 
 DEMO_SEQUENCES = {
     "wave": [
-        {"duration": 2.0, "left_arm": [0.0, 0.0], "right_arm": [1.5, 0.5], "height": 0.75},
-        {"duration": 0.5, "left_arm": [0.0, 0.0], "right_arm": [1.5, -0.3], "height": 0.75},
-        {"duration": 0.5, "left_arm": [0.0, 0.0], "right_arm": [1.5, 0.5], "height": 0.75},
-        {"duration": 0.5, "left_arm": [0.0, 0.0], "right_arm": [1.5, -0.3], "height": 0.75},
-        {"duration": 2.0, "left_arm": [0.0, 0.0], "right_arm": [0.0, 0.0], "height": 0.75},
+        {"duration": 2.0, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.5, 0.0, 0.0, 0.5, 0.0], "height": 0.72},
+        {"duration": 0.5, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.5, 0.0, 0.0, -0.3, 0.0], "height": 0.72},
+        {"duration": 0.5, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.5, 0.0, 0.0, 0.5, 0.0], "height": 0.72},
+        {"duration": 0.5, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.5, 0.0, 0.0, -0.3, 0.0], "height": 0.72},
+        {"duration": 2.0, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "height": 0.72},
+    ],
+    "arms_forward": [
+        # Kolları yavaşça ileri uzat
+        {"duration": 3.0, "left_arm": [1.5, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.5, 0.0, 0.0, 0.0, 0.0], "height": 0.72},
+        {"duration": 3.0, "left_arm": [1.5, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.5, 0.0, 0.0, 0.0, 0.0], "height": 0.72},
     ],
     "squat": [
-        {"duration": 2.0, "left_arm": [0.0, 0.0], "right_arm": [0.0, 0.0], "height": 0.75},
-        {"duration": 2.0, "left_arm": [1.0, 0.0], "right_arm": [1.0, 0.0], "height": 0.45},
-        {"duration": 2.0, "left_arm": [0.0, 0.0], "right_arm": [0.0, 0.0], "height": 0.75},
-    ],
-    "arms_up": [
-        {"duration": 2.0, "left_arm": [0.0, 0.0], "right_arm": [0.0, 0.0], "height": 0.75},
-        {"duration": 2.0, "left_arm": [2.0, 0.0], "right_arm": [2.0, 0.0], "height": 0.75},
-        {"duration": 2.0, "left_arm": [-2.0, 0.0], "right_arm": [-2.0, 0.0], "height": 0.75},
-        {"duration": 2.0, "left_arm": [0.0, 0.0], "right_arm": [0.0, 0.0], "height": 0.75},
+        {"duration": 2.0, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "height": 0.72},
+        {"duration": 3.0, "left_arm": [1.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.0, 0.0, 0.0, 0.0, 0.0], "height": 0.45},
+        {"duration": 3.0, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "height": 0.72},
     ],
     "full_workspace": [
-        {"duration": 3.0, "left_arm": [2.6, 1.5], "right_arm": [-2.6, -1.5], "height": 0.85},
-        {"duration": 3.0, "left_arm": [-2.6, -1.5], "right_arm": [2.6, 1.5], "height": 0.35},
-        {"duration": 3.0, "left_arm": [2.6, 1.5], "right_arm": [2.6, 1.5], "height": 0.60},
-        {"duration": 3.0, "left_arm": [0.0, 0.0], "right_arm": [0.0, 0.0], "height": 0.75},
+        {"duration": 3.0, "left_arm": [2.0, 0.5, 0.0, 0.5, 0.0], "right_arm": [2.0, -0.5, 0.0, 0.5, 0.0], "height": 0.72},
+        {"duration": 3.0, "left_arm": [-1.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [-1.0, 0.0, 0.0, 0.0, 0.0], "height": 0.72},
+        {"duration": 3.0, "left_arm": [1.5, 0.0, 0.0, 0.0, 0.0], "right_arm": [1.5, 0.0, 0.0, 0.0, 0.0], "height": 0.50},
+        {"duration": 3.0, "left_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "right_arm": [0.0, 0.0, 0.0, 0.0, 0.0], "height": 0.72},
     ],
 }
 
 
-def set_commands(env, height=0.75, vx=0.5, left_arm=(0, 0), right_arm=(0, 0), torso=(0, 0, 0)):
+def set_commands(env, height=0.72, vx=0.0, left_arm=None, right_arm=None, torso=(0, 0, 0)):
     """Set commands for all environments."""
     n = env.num_envs
     d = env.device
 
-    # 1D tensors - ESKİ: env.height_command[:, 0] = height
+    if left_arm is None:
+        left_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
+    if right_arm is None:
+        right_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # Height command (1D tensor)
     env.height_command[:] = height
+
+    # Velocity commands
     env.velocity_commands[:, 0] = vx
     env.velocity_commands[:, 1] = 0.0
     env.velocity_commands[:, 2] = 0.0
 
+    # Torso commands
     env.torso_commands[:, 0] = torso[0]
     env.torso_commands[:, 1] = torso[1]
     env.torso_commands[:, 2] = torso[2]
 
-    # Arms - 10 joints (5 per arm)
-    env.arm_commands[:, 0] = left_arm[0]  # L shoulder_pitch
-    env.arm_commands[:, 3] = left_arm[1]  # L elbow_pitch
-    env.arm_commands[:, 5] = right_arm[0]  # R shoulder_pitch
-    env.arm_commands[:, 8] = right_arm[1]  # R elbow_pitch
+    # Left arm - 5 joints: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow_pitch, elbow_roll
+    env.left_arm_cmd[:, 0] = left_arm[0]  # shoulder_pitch (ileri/geri)
+    env.left_arm_cmd[:, 1] = left_arm[1]  # shoulder_roll
+    env.left_arm_cmd[:, 2] = left_arm[2]  # shoulder_yaw
+    env.left_arm_cmd[:, 3] = left_arm[3]  # elbow_pitch
+    env.left_arm_cmd[:, 4] = left_arm[4]  # elbow_roll
+
+    # Right arm - 5 joints
+    env.right_arm_cmd[:, 0] = right_arm[0]
+    env.right_arm_cmd[:, 1] = right_arm[1]
+    env.right_arm_cmd[:, 2] = right_arm[2]
+    env.right_arm_cmd[:, 3] = right_arm[3]
+    env.right_arm_cmd[:, 4] = right_arm[4]
+
+    # Update combined arm_commands
+    env.arm_commands = torch.cat([env.left_arm_cmd, env.right_arm_cmd], dim=-1)
 
 
 def random_commands(env, arm_range=2.6):
@@ -141,25 +166,36 @@ def random_commands(env, arm_range=2.6):
     n = env.num_envs
     d = env.device
 
-    env.height_command[:] = torch.empty(n, device=d).uniform_(0.35, 0.85)
-    env.velocity_commands[:, 0] = torch.empty(n, device=d).uniform_(-0.8, 1.2)
-    env.velocity_commands[:, 1] = torch.empty(n, device=d).uniform_(-0.4, 0.4)
-    env.velocity_commands[:, 2] = torch.empty(n, device=d).uniform_(-0.8, 0.8)
+    env.height_command[:] = torch.empty(n, device=d).uniform_(0.50, 0.80)
+    env.velocity_commands[:, 0] = torch.empty(n, device=d).uniform_(-0.3, 0.5)
+    env.velocity_commands[:, 1] = torch.empty(n, device=d).uniform_(-0.2, 0.2)
+    env.velocity_commands[:, 2] = torch.empty(n, device=d).uniform_(-0.3, 0.3)
 
-    env.torso_commands[:, 0] = torch.empty(n, device=d).uniform_(-0.5, 0.5)
-    env.torso_commands[:, 1] = torch.empty(n, device=d).uniform_(-0.5, 0.5)
-    env.torso_commands[:, 2] = torch.empty(n, device=d).uniform_(-0.5, 0.5)
+    env.torso_commands[:, 0] = torch.empty(n, device=d).uniform_(-0.2, 0.2)
+    env.torso_commands[:, 1] = torch.empty(n, device=d).uniform_(-0.2, 0.2)
+    env.torso_commands[:, 2] = torch.empty(n, device=d).uniform_(-0.2, 0.2)
 
-    # Arms - 10 joints
-    env.arm_commands[:, 0] = torch.empty(n, device=d).uniform_(-arm_range, arm_range)
-    env.arm_commands[:, 3] = torch.empty(n, device=d).uniform_(-arm_range * 0.6, arm_range * 0.6)
-    env.arm_commands[:, 5] = torch.empty(n, device=d).uniform_(-arm_range, arm_range)
-    env.arm_commands[:, 8] = torch.empty(n, device=d).uniform_(-arm_range * 0.6, arm_range * 0.6)
+    # Left arm
+    env.left_arm_cmd[:, 0] = torch.empty(n, device=d).uniform_(-arm_range, arm_range)
+    env.left_arm_cmd[:, 1] = torch.empty(n, device=d).uniform_(-arm_range * 0.4, arm_range * 0.4)
+    env.left_arm_cmd[:, 2] = torch.empty(n, device=d).uniform_(-arm_range * 0.3, arm_range * 0.3)
+    env.left_arm_cmd[:, 3] = torch.empty(n, device=d).uniform_(-arm_range * 0.5, arm_range * 0.5)
+    env.left_arm_cmd[:, 4] = torch.empty(n, device=d).uniform_(-arm_range * 0.2, arm_range * 0.2)
+
+    # Right arm
+    env.right_arm_cmd[:, 0] = torch.empty(n, device=d).uniform_(-arm_range, arm_range)
+    env.right_arm_cmd[:, 1] = torch.empty(n, device=d).uniform_(-arm_range * 0.4, arm_range * 0.4)
+    env.right_arm_cmd[:, 2] = torch.empty(n, device=d).uniform_(-arm_range * 0.3, arm_range * 0.3)
+    env.right_arm_cmd[:, 3] = torch.empty(n, device=d).uniform_(-arm_range * 0.5, arm_range * 0.5)
+    env.right_arm_cmd[:, 4] = torch.empty(n, device=d).uniform_(-arm_range * 0.2, arm_range * 0.2)
+
+    # Update combined
+    env.arm_commands = torch.cat([env.left_arm_cmd, env.right_arm_cmd], dim=-1)
 
 
 def main():
     print("=" * 60)
-    print("🤖 ULC G1 STAGE 5 - PLAY MODE")
+    print("🤖 ULC G1 STAGE 5 - PLAY MODE (with Action Smoothing)")
     print("=" * 60)
 
     # Load checkpoint
@@ -191,21 +227,38 @@ def main():
     policy.eval()
     print("[INFO] ✓ Model loaded!")
 
-    # Initial commands
+    # Smoothing setup
+    smoothing = args.smoothing
+    print(f"[INFO] Action smoothing: {smoothing}")
+
+    # Determine mode and set commands
     if args.full_workspace:
         arm_range = 2.6
+        demo_seq = DEMO_SEQUENCES["full_workspace"]
         print("[MODE] Full Workspace Test")
-    else:
+    elif args.arms_forward:
+        arm_range = 2.0
+        demo_seq = DEMO_SEQUENCES["arms_forward"]
+        print("[MODE] Arms Forward Test - Kollar ileri uzanacak")
+    elif args.random_commands:
         arm_range = args.arm_range
-
-    if args.random_commands:
+        demo_seq = []
         random_commands(env, arm_range)
         print("[MODE] Random Commands (every 5 sec)")
     elif args.demo_mode:
-        print("[MODE] Demo Mode")
+        demo_seq = DEMO_SEQUENCES["wave"]
+        print("[MODE] Demo Mode - Wave")
     else:
-        set_commands(env, height=args.target_height, vx=args.vx)
-        print(f"[MODE] Fixed Commands: height={args.target_height}, vx={args.vx}")
+        demo_seq = []
+        # Default: standing with arms slightly forward
+        set_commands(
+            env,
+            height=args.target_height,
+            vx=args.vx,
+            left_arm=[0.5, 0.0, 0.0, 0.0, 0.0],  # Slightly forward
+            right_arm=[0.5, 0.0, 0.0, 0.0, 0.0],
+        )
+        print(f"[MODE] Fixed Commands: height={args.target_height}, vx={args.vx}, arms slightly forward")
 
     # Run simulation
     print("\n[PLAY] Starting simulation... Press Ctrl+C to stop")
@@ -217,12 +270,21 @@ def main():
     last_random_time = time.time()
     demo_start_time = time.time()
     demo_idx = 0
-    demo_seq = DEMO_SEQUENCES.get("full_workspace" if args.full_workspace else "wave", [])
+
+    # Initialize previous action for smoothing
+    prev_action = torch.zeros(env.num_envs, act_dim, device="cuda:0")
 
     try:
         while simulation_app.is_running():
             with torch.no_grad():
-                action = policy.act(obs, deterministic=True)
+                raw_action = policy.act(obs, deterministic=True)
+
+                # Apply action smoothing (exponential moving average)
+                if smoothing > 0:
+                    action = smoothing * prev_action + (1 - smoothing) * raw_action
+                    prev_action = action.clone()
+                else:
+                    action = raw_action
 
             obs_dict, reward, term, trunc, _ = env.step(action)
             obs = obs_dict["policy"]
@@ -231,6 +293,9 @@ def main():
             # Handle resets
             done = term | trunc
             if done.any():
+                reset_ids = done.nonzero(as_tuple=False).squeeze(-1)
+                # Reset prev_action for reset envs
+                prev_action[reset_ids] = 0.0
                 if args.random_commands:
                     random_commands(env, arm_range)
 
@@ -240,8 +305,8 @@ def main():
                 last_random_time = time.time()
                 print("[CMD] New random commands!")
 
-            # Demo mode
-            if args.demo_mode and len(demo_seq) > 0:
+            # Demo/arms_forward mode
+            if (args.demo_mode or args.arms_forward or args.full_workspace) and len(demo_seq) > 0:
                 elapsed = time.time() - demo_start_time
 
                 # Find current demo step
@@ -251,7 +316,7 @@ def main():
                     if elapsed < total_time:
                         if i != demo_idx:
                             demo_idx = i
-                            print(f"[DEMO] Step {i + 1}/{len(demo_seq)}")
+                            print(f"[DEMO] Step {i + 1}/{len(demo_seq)}: {step_cfg}")
                         set_commands(
                             env,
                             height=step_cfg["height"],
@@ -269,10 +334,19 @@ def main():
             if step % 100 == 0:
                 height = env.robot.data.root_pos_w[:, 2].mean().item()
                 vel_x = env.robot.data.root_lin_vel_w[:, 0].mean().item()
+                vel_z = env.robot.data.root_lin_vel_w[:, 2].mean().item()  # Vertical velocity (bouncing)
                 cmd_h = env.height_command[0].item()
 
-                print(f"Step {step:5d} | H={height:.3f}m (cmd={cmd_h:.2f}) | "
-                      f"Vx={vel_x:.2f}m/s | R={reward.mean():.2f}")
+                # Get arm positions
+                left_arm_pos = env.robot.data.joint_pos[:, 12:17].mean(dim=0)  # Assuming arm joints start at 12
+                right_arm_pos = env.robot.data.joint_pos[:, 17:22].mean(dim=0)
+
+                print(
+                    f"Step {step:5d} | H={height:.3f}m (cmd={cmd_h:.2f}) | "
+                    f"Vx={vel_x:.2f} Vz={vel_z:.2f} | "
+                    f"L_arm[0]={left_arm_pos[0]:.2f} R_arm[0]={right_arm_pos[0]:.2f} | "
+                    f"R={reward.mean():.2f}"
+                )
 
     except KeyboardInterrupt:
         print("\n[INFO] Stopping simulation...")
