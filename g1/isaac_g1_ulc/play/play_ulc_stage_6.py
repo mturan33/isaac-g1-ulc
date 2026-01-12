@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 """
-ULC G1 Stage 6 - FIXED Play Script
-===================================
+ULC G1 Stage 6 - STABLE Play Script
+====================================
 
-KRİTİK FIX: Komutlar reset() SONRASI ayarlanmalı ve HER STEP güncellenmeli!
-
-Önceki bug: set_commands() → reset() → komutlar sıfırlanıyordu!
+Yüksek smoothing ve arm action limiting ile sallanmayı azalt.
 
 KULLANIM:
-cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/.../play/play_ulc_stage_6_fixed.py ^
+./isaaclab.bat -p .../play_ulc_stage_6_stable.py ^
     --checkpoint logs/ulc/ulc_g1_stage6_.../model_best.pt ^
     --num_envs 4 --arms_forward
 """
 
 import argparse
-import time
 
-parser = argparse.ArgumentParser(description="ULC G1 Stage 6 Play - FIXED")
+parser = argparse.ArgumentParser(description="ULC G1 Stage 6 Play - STABLE")
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--arms_forward", action="store_true", help="Test arms forward (1.5 rad)")
-parser.add_argument("--arms_up", action="store_true", help="Test arms up")
-parser.add_argument("--arms_side", action="store_true", help="Test arms to side")
+parser.add_argument("--arms_neutral", action="store_true", help="Arms at neutral position")
 parser.add_argument("--target_height", type=float, default=0.72)
-parser.add_argument("--smoothing", type=float, default=0.3, help="Action smoothing (0-0.9)")
+parser.add_argument("--smoothing", type=float, default=0.8, help="Action smoothing (higher=more stable)")
+parser.add_argument("--arm_action_scale", type=float, default=0.3, help="Scale arm actions (lower=more stable)")
 
 from isaaclab.app import AppLauncher
 
@@ -66,21 +62,29 @@ class ActorCritic(nn.Module):
         return mean if deterministic else torch.distributions.Normal(mean, torch.exp(self.log_std)).sample()
 
 
-class Stage6PlayEnv(ULC_G1_Env):
-    """Play environment with Stage 6 residual scales."""
+class Stage6StablePlayEnv(ULC_G1_Env):
+    """Play environment with stability improvements."""
 
-    def __init__(self, cfg, **kwargs):
+    def __init__(self, cfg, arm_action_scale=0.3, **kwargs):
         super().__init__(cfg, **kwargs)
 
-        # Stage 6 residual scales (larger for better arm tracking)
-        self.residual_scales = torch.tensor(
+        self.arm_action_scale = arm_action_scale
+
+        # Stage 6 residual scales - ama play'de daha düşük kullan
+        self.base_residual_scales = torch.tensor(
             [1.5, 1.0, 1.0, 1.2, 0.8,
              1.5, 1.0, 1.0, 1.2, 0.8],
             device=self.device
         )
 
+        # Effective scales = base * arm_action_scale
+        self.residual_scales = self.base_residual_scales * self.arm_action_scale
+
+        print(f"[STABLE] Arm action scale: {arm_action_scale}")
+        print(f"[STABLE] Effective residual scales: {self.residual_scales.tolist()}")
+
     def _pre_physics_step(self, actions: torch.Tensor):
-        """Use Stage 6 arm target calculation."""
+        """Use reduced arm actions for stability."""
         self.actions = torch.clamp(actions, -1.0, 1.0)
 
         leg_actions = self.actions[:, :12]
@@ -89,7 +93,7 @@ class Stage6PlayEnv(ULC_G1_Env):
         target_pos = self.robot.data.default_joint_pos.clone()
         target_pos[:, self.leg_joint_indices] = self.default_leg + leg_actions * 0.4
 
-        # Stage 6: Direct scaling (no double tanh)
+        # Reduced arm residuals for stability
         arm_cmd = torch.cat([self.left_arm_cmd, self.right_arm_cmd], dim=-1)
         arm_residual = arm_actions * self.residual_scales
         arm_target = torch.clamp(arm_cmd + arm_residual, -2.6, 2.6)
@@ -103,25 +107,16 @@ class Stage6PlayEnv(ULC_G1_Env):
 
 
 def apply_arm_commands(env, left_arm, right_arm):
-    """
-    HER STEP çağrılmalı - komutları env'e ve observation'a yazar.
-
-    Bu fonksiyon kritik: base env'in _get_observations() fonksiyonu
-    arm_cmd değerlerini observation'a yazıyor, bu yüzden her step
-    güncel tutulmalı.
-    """
-    # Set arm commands
+    """Set arm commands."""
     for i in range(5):
         env.left_arm_cmd[:, i] = left_arm[i]
         env.right_arm_cmd[:, i] = right_arm[i]
-
-    # Update combined tensor (observation için kullanılıyor)
     env.arm_commands = torch.cat([env.left_arm_cmd, env.right_arm_cmd], dim=-1)
 
 
 def main():
     print("=" * 60)
-    print("🤖 ULC G1 STAGE 6 - FIXED PLAY MODE")
+    print("🤖 ULC G1 STAGE 6 - STABLE PLAY MODE")
     print("=" * 60)
 
     # Load checkpoint
@@ -131,14 +126,14 @@ def main():
     act_dim = state_dict["log_std"].shape[0]
     print(f"[INFO] Model dims: obs={obs_dim}, act={act_dim}")
 
-    # Create environment
+    # Create environment with arm action scaling
     cfg = ULC_G1_Stage4_EnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.termination["base_height_min"] = 0.25
     cfg.observation_space = gym.spaces.Box(low=-float('inf'), high=float('inf'), shape=(cfg.num_observations,))
     cfg.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(cfg.num_actions,))
 
-    env = Stage6PlayEnv(cfg=cfg)
+    env = Stage6StablePlayEnv(cfg=cfg, arm_action_scale=args.arm_action_scale)
     env.current_stage = 4
 
     # Load policy
@@ -147,67 +142,56 @@ def main():
     policy.eval()
     print("[INFO] ✓ Model loaded!")
 
-    # Determine arm commands based on mode
+    # Determine arm commands
     if args.arms_forward:
-        # Shoulder pitch forward (positive = forward)
         left_arm = [1.5, 0.0, 0.0, 0.0, 0.0]
         right_arm = [1.5, 0.0, 0.0, 0.0, 0.0]
         mode_name = "Arms Forward (1.5 rad)"
-    elif args.arms_up:
-        # Shoulder pitch up
-        left_arm = [0.0, -1.0, 0.0, 0.0, 0.0]
-        right_arm = [0.0, 1.0, 0.0, 0.0, 0.0]
-        mode_name = "Arms Up"
-    elif args.arms_side:
-        # Shoulder roll out
-        left_arm = [0.0, 0.0, 1.0, 0.0, 0.0]
-        right_arm = [0.0, 0.0, -1.0, 0.0, 0.0]
-        mode_name = "Arms Side"
-    else:
+    elif args.arms_neutral:
         left_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
         right_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
         mode_name = "Arms Neutral"
+    else:
+        left_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
+        right_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
+        mode_name = "Arms Neutral (default)"
 
     print(f"[MODE] {mode_name}")
     print(f"[CMD] Left arm: {left_arm}")
     print(f"[CMD] Right arm: {right_arm}")
-    print(f"[INFO] Smoothing: {args.smoothing}")
+    print(f"[STABILITY] Smoothing: {args.smoothing}")
+    print(f"[STABILITY] Arm action scale: {args.arm_action_scale}")
 
-    # RESET FIRST
+    # Reset and set commands
     obs_dict, _ = env.reset()
-
-    # THEN SET COMMANDS (kritik sıralama!)
     env.height_command[:] = args.target_height
     env.velocity_commands[:, :] = 0.0
     env.torso_commands[:] = 0.0
     apply_arm_commands(env, left_arm, right_arm)
-
-    # Re-get observation with correct commands
     obs = env._get_observations()["policy"]
 
-    # Verify commands are set
+    # Verify
     cmd_left = env.left_arm_cmd[0, 0].item()
     cmd_right = env.right_arm_cmd[0, 0].item()
-    print(f"[VERIFY] Arm cmd after reset: L={cmd_left:.2f}, R={cmd_right:.2f}")
-
-    if abs(cmd_left) < 0.01 and args.arms_forward:
-        print("[ERROR] Commands not set! There's still a bug.")
-        return
+    print(f"[VERIFY] Arm cmd: L={cmd_left:.2f}, R={cmd_right:.2f}")
 
     print("\n[PLAY] Starting... Press Ctrl+C to stop\n")
 
     prev_action = torch.zeros(env.num_envs, act_dim, device="cuda:0")
     step = 0
 
+    # Statistics for tracking
+    errors_left = []
+    errors_right = []
+
     try:
         while simulation_app.is_running():
-            # ÖNEMLİ: Her step komutları tekrar ayarla
-            # (bazı env'ler reset sonrası veya termination sonrası sıfırlıyor olabilir)
             apply_arm_commands(env, left_arm, right_arm)
             env.height_command[:] = args.target_height
 
             with torch.no_grad():
                 raw_action = policy.act(obs, deterministic=True)
+                # High smoothing for stability
                 action = args.smoothing * prev_action + (1 - args.smoothing) * raw_action
                 prev_action = action.clone()
 
@@ -219,32 +203,38 @@ def main():
             if done.any():
                 reset_ids = done.nonzero(as_tuple=False).squeeze(-1)
                 prev_action[reset_ids] = 0.0
-                # Reset sonrası komutları tekrar ayarla
                 apply_arm_commands(env, left_arm, right_arm)
 
             if step % 100 == 0:
                 height = env.robot.data.root_pos_w[:, 2].mean().item()
                 vel_z = env.robot.data.root_lin_vel_w[:, 2].mean().item()
 
-                # Actual arm positions
                 left_arm_pos = env.robot.data.joint_pos[:, env.left_arm_indices[0]].mean().item()
                 right_arm_pos = env.robot.data.joint_pos[:, env.right_arm_indices[0]].mean().item()
 
-                # Commands (should not be 0!)
                 cmd_left = env.left_arm_cmd[0, 0].item()
                 cmd_right = env.right_arm_cmd[0, 0].item()
 
-                # Tracking error
                 left_err = abs(left_arm_pos - cmd_left)
                 right_err = abs(right_arm_pos - cmd_right)
 
+                errors_left.append(left_err)
+                errors_right.append(right_err)
+
+                # Running average error
+                avg_left = sum(errors_left[-10:]) / min(10, len(errors_left))
+                avg_right = sum(errors_right[-10:]) / min(10, len(errors_right))
+
                 print(f"Step {step:5d} | H={height:.3f}m | Vz={vel_z:+.3f} | "
-                      f"L_arm={left_arm_pos:+.2f} (cmd={cmd_left:+.2f}, err={left_err:.2f}) | "
-                      f"R_arm={right_arm_pos:+.2f} (cmd={cmd_right:+.2f}, err={right_err:.2f}) | "
+                      f"L={left_arm_pos:+.2f} (err={left_err:.2f}, avg={avg_left:.2f}) | "
+                      f"R={right_arm_pos:+.2f} (err={right_err:.2f}, avg={avg_right:.2f}) | "
                       f"R={reward.mean():.2f}")
 
     except KeyboardInterrupt:
         print("\n[INFO] Stopping...")
+        if errors_left:
+            print(f"[STATS] Avg L_err: {sum(errors_left) / len(errors_left):.3f}")
+            print(f"[STATS] Avg R_err: {sum(errors_right) / len(errors_right):.3f}")
 
     env.close()
     simulation_app.close()
