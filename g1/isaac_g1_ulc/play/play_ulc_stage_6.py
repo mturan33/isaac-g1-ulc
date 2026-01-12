@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-ULC G1 Stage 6 - Play Script
-============================
+ULC G1 Stage 6 - FIXED Play Script
+===================================
 
-Stage 6 modelini test et - düzeltilmiş arm tracking ile.
+KRİTİK FIX: Komutlar reset() SONRASI ayarlanmalı ve HER STEP güncellenmeli!
+
+Önceki bug: set_commands() → reset() → komutlar sıfırlanıyordu!
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_6.py ^
+./isaaclab.bat -p source/isaaclab_tasks/.../play/play_ulc_stage_6_fixed.py ^
     --checkpoint logs/ulc/ulc_g1_stage6_.../model_best.pt ^
     --num_envs 4 --arms_forward
 """
@@ -15,13 +17,14 @@ cd C:\IsaacLab
 import argparse
 import time
 
-parser = argparse.ArgumentParser(description="ULC G1 Stage 6 Play")
+parser = argparse.ArgumentParser(description="ULC G1 Stage 6 Play - FIXED")
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=4)
-parser.add_argument("--arms_forward", action="store_true", help="Test arms forward")
-parser.add_argument("--random_commands", action="store_true")
+parser.add_argument("--arms_forward", action="store_true", help="Test arms forward (1.5 rad)")
+parser.add_argument("--arms_up", action="store_true", help="Test arms up")
+parser.add_argument("--arms_side", action="store_true", help="Test arms to side")
 parser.add_argument("--target_height", type=float, default=0.72)
-parser.add_argument("--smoothing", type=float, default=0.5, help="Action smoothing (0-0.9)")
+parser.add_argument("--smoothing", type=float, default=0.3, help="Action smoothing (0-0.9)")
 
 from isaaclab.app import AppLauncher
 
@@ -99,29 +102,26 @@ class Stage6PlayEnv(ULC_G1_Env):
         self.prev_actions = self.actions.clone()
 
 
-def set_commands(env, height=0.72, vx=0.0, left_arm=None, right_arm=None):
-    """Set commands."""
-    if left_arm is None:
-        left_arm = [0.0] * 5
-    if right_arm is None:
-        right_arm = [0.0] * 5
+def apply_arm_commands(env, left_arm, right_arm):
+    """
+    HER STEP çağrılmalı - komutları env'e ve observation'a yazar.
 
-    env.height_command[:] = height
-    env.velocity_commands[:, 0] = vx
-    env.velocity_commands[:, 1] = 0.0
-    env.velocity_commands[:, 2] = 0.0
-    env.torso_commands[:] = 0.0
-
+    Bu fonksiyon kritik: base env'in _get_observations() fonksiyonu
+    arm_cmd değerlerini observation'a yazıyor, bu yüzden her step
+    güncel tutulmalı.
+    """
+    # Set arm commands
     for i in range(5):
         env.left_arm_cmd[:, i] = left_arm[i]
         env.right_arm_cmd[:, i] = right_arm[i]
 
+    # Update combined tensor (observation için kullanılıyor)
     env.arm_commands = torch.cat([env.left_arm_cmd, env.right_arm_cmd], dim=-1)
 
 
 def main():
     print("=" * 60)
-    print("🤖 ULC G1 STAGE 6 - PLAY MODE")
+    print("🤖 ULC G1 STAGE 6 - FIXED PLAY MODE")
     print("=" * 60)
 
     # Load checkpoint
@@ -147,25 +147,65 @@ def main():
     policy.eval()
     print("[INFO] ✓ Model loaded!")
 
-    # Set initial commands
+    # Determine arm commands based on mode
     if args.arms_forward:
-        print("[MODE] Arms Forward Test")
-        set_commands(env, height=0.72, vx=0.0,
-                     left_arm=[1.5, 0.0, 0.0, 0.0, 0.0],
-                     right_arm=[1.5, 0.0, 0.0, 0.0, 0.0])
+        # Shoulder pitch forward (positive = forward)
+        left_arm = [1.5, 0.0, 0.0, 0.0, 0.0]
+        right_arm = [1.5, 0.0, 0.0, 0.0, 0.0]
+        mode_name = "Arms Forward (1.5 rad)"
+    elif args.arms_up:
+        # Shoulder pitch up
+        left_arm = [0.0, -1.0, 0.0, 0.0, 0.0]
+        right_arm = [0.0, 1.0, 0.0, 0.0, 0.0]
+        mode_name = "Arms Up"
+    elif args.arms_side:
+        # Shoulder roll out
+        left_arm = [0.0, 0.0, 1.0, 0.0, 0.0]
+        right_arm = [0.0, 0.0, -1.0, 0.0, 0.0]
+        mode_name = "Arms Side"
     else:
-        set_commands(env, height=args.target_height, vx=0.0)
+        left_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
+        right_arm = [0.0, 0.0, 0.0, 0.0, 0.0]
+        mode_name = "Arms Neutral"
 
+    print(f"[MODE] {mode_name}")
+    print(f"[CMD] Left arm: {left_arm}")
+    print(f"[CMD] Right arm: {right_arm}")
     print(f"[INFO] Smoothing: {args.smoothing}")
+
+    # RESET FIRST
+    obs_dict, _ = env.reset()
+
+    # THEN SET COMMANDS (kritik sıralama!)
+    env.height_command[:] = args.target_height
+    env.velocity_commands[:, :] = 0.0
+    env.torso_commands[:] = 0.0
+    apply_arm_commands(env, left_arm, right_arm)
+
+    # Re-get observation with correct commands
+    obs = env._get_observations()["policy"]
+
+    # Verify commands are set
+    cmd_left = env.left_arm_cmd[0, 0].item()
+    cmd_right = env.right_arm_cmd[0, 0].item()
+    print(f"[VERIFY] Arm cmd after reset: L={cmd_left:.2f}, R={cmd_right:.2f}")
+
+    if abs(cmd_left) < 0.01 and args.arms_forward:
+        print("[ERROR] Commands not set! There's still a bug.")
+        return
+
     print("\n[PLAY] Starting... Press Ctrl+C to stop\n")
 
-    obs_dict, _ = env.reset()
-    obs = obs_dict["policy"]
     prev_action = torch.zeros(env.num_envs, act_dim, device="cuda:0")
     step = 0
 
     try:
         while simulation_app.is_running():
+            # ÖNEMLİ: Her step komutları tekrar ayarla
+            # (bazı env'ler reset sonrası veya termination sonrası sıfırlıyor olabilir)
+            apply_arm_commands(env, left_arm, right_arm)
+            env.height_command[:] = args.target_height
+
             with torch.no_grad():
                 raw_action = policy.act(obs, deterministic=True)
                 action = args.smoothing * prev_action + (1 - args.smoothing) * raw_action
@@ -179,16 +219,29 @@ def main():
             if done.any():
                 reset_ids = done.nonzero(as_tuple=False).squeeze(-1)
                 prev_action[reset_ids] = 0.0
+                # Reset sonrası komutları tekrar ayarla
+                apply_arm_commands(env, left_arm, right_arm)
 
             if step % 100 == 0:
                 height = env.robot.data.root_pos_w[:, 2].mean().item()
                 vel_z = env.robot.data.root_lin_vel_w[:, 2].mean().item()
-                left_arm = env.robot.data.joint_pos[:, env.left_arm_indices[0]].mean().item()
-                right_arm = env.robot.data.joint_pos[:, env.right_arm_indices[0]].mean().item()
-                cmd_left = env.left_arm_cmd[0, 0].item()
 
-                print(f"Step {step:5d} | H={height:.3f}m | Vz={vel_z:.3f} | "
-                      f"L_arm={left_arm:.2f} (cmd={cmd_left:.2f}) | R_arm={right_arm:.2f} | R={reward.mean():.2f}")
+                # Actual arm positions
+                left_arm_pos = env.robot.data.joint_pos[:, env.left_arm_indices[0]].mean().item()
+                right_arm_pos = env.robot.data.joint_pos[:, env.right_arm_indices[0]].mean().item()
+
+                # Commands (should not be 0!)
+                cmd_left = env.left_arm_cmd[0, 0].item()
+                cmd_right = env.right_arm_cmd[0, 0].item()
+
+                # Tracking error
+                left_err = abs(left_arm_pos - cmd_left)
+                right_err = abs(right_arm_pos - cmd_right)
+
+                print(f"Step {step:5d} | H={height:.3f}m | Vz={vel_z:+.3f} | "
+                      f"L_arm={left_arm_pos:+.2f} (cmd={cmd_left:+.2f}, err={left_err:.2f}) | "
+                      f"R_arm={right_arm_pos:+.2f} (cmd={cmd_right:+.2f}, err={right_err:.2f}) | "
+                      f"R={reward.mean():.2f}")
 
     except KeyboardInterrupt:
         print("\n[INFO] Stopping...")
