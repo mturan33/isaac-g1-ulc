@@ -150,7 +150,8 @@ def main():
     unwrapped_env = env.unwrapped if hasattr(env, 'unwrapped') else env._env
 
     # Reset environment
-    obs, _ = env.get_observations()
+    obs_dict = env.get_observations()
+    obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
 
     runner.alg.actor_critic.train()
 
@@ -170,7 +171,8 @@ def main():
         with torch.inference_mode():
             for _ in range(runner_cfg.num_steps_per_env):
                 actions = runner.alg.act(obs, obs)
-                obs, rewards, dones, infos = env.step(actions)
+                obs_dict, rewards, dones, infos = env.step(actions)
+                obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
                 runner.alg.process_env_step(rewards, dones, infos)
 
         # Update policy
