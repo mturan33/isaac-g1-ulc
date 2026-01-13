@@ -142,7 +142,7 @@ class G1ArmReachSceneCfg(InteractiveSceneCfg):
         actuators={
             "body_joints": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    ".*hip.*", ".*knee.*", ".*ankle.*", ".*waist.*",
+                    ".*hip.*", ".*knee.*", ".*ankle.*", "torso.*",
                     "left_shoulder.*", "left_elbow.*",
                 ],
                 stiffness=1000.0,
