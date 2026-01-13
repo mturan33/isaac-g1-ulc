@@ -135,7 +135,6 @@ class G1ArmReachSceneCfg(InteractiveSceneCfg):
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 1.0),
             joint_pos={
-                ".*": 0.0,
                 "right_shoulder_pitch_joint": -0.3,
                 "right_elbow_pitch_joint": 0.5,
             },
