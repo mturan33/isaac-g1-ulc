@@ -23,7 +23,6 @@ parser = argparse.ArgumentParser(description="G1 Arm Reach Training - Stage 4")
 parser.add_argument("--num_envs", type=int, default=1024, help="Number of environments")
 parser.add_argument("--max_iterations", type=int, default=5000, help="Max training iterations")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
