@@ -46,9 +46,13 @@ env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(env_dir, "envs"))
 
 from g1_arm_reach_env import G1ArmReachEnv, G1ArmReachEnvCfg
-from isaaclab_tasks.utils.wrappers.rsl_rl import RslRlVecEnvWrapper
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg, RslRlPpoActorCriticCfg
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunner
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoAlgorithmCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlOnPolicyRunner,
+    RslRlVecEnvWrapper,
+)
 from isaaclab.utils import configclass
 
 
