@@ -620,10 +620,11 @@ class G1ArmReachEnv(DirectRLEnv):
         self.prev_ee_distance[env_ids] = 0.5
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        """Apply actions with smoothing filter (called before physics step)."""
-
-        # Store raw actions
+        """Store actions before physics step."""
         self.actions = actions
+
+    def _apply_action(self):
+        """Apply actions with smoothing filter."""
 
         # Action smoothing (EMA)
         alpha = self.cfg.action_smoothing_alpha
