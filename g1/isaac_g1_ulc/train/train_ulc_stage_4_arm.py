@@ -40,7 +40,6 @@ simulation_app = app_launcher.app
 # =============================================================================
 
 import torch
-import time
 from datetime import datetime
 
 env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -95,6 +94,38 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 # =============================================================================
+# CURRICULUM WRAPPER
+# =============================================================================
+
+class CurriculumEnvWrapper(RslRlVecEnvWrapper):
+    """Wrapper that updates curriculum based on iteration count."""
+
+    def __init__(self, env):
+        super().__init__(env)
+        self._iteration = 0
+        self._step_count = 0
+        # Access unwrapped env
+        self._unwrapped = env
+
+    def step(self, actions):
+        """Step with curriculum update."""
+        self._step_count += 1
+
+        # Update curriculum every 24 steps (approx 1 iteration)
+        if self._step_count % 24 == 0:
+            self._iteration += 1
+            if hasattr(self._unwrapped, 'update_curriculum'):
+                self._unwrapped.update_curriculum(self._iteration)
+
+                # Log curriculum progress
+                if self._iteration % 500 == 0:
+                    print(f"[Curriculum] Iteration {self._iteration}: "
+                          f"target_radius = {self._unwrapped.current_target_radius:.3f}m")
+
+        return super().step(actions)
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -103,7 +134,7 @@ def main():
     env_cfg.scene.num_envs = args.num_envs
 
     env = G1ArmReachEnv(cfg=env_cfg)
-    env = RslRlVecEnvWrapper(env)
+    env = CurriculumEnvWrapper(env)
 
     runner_cfg = G1ArmReachPPORunnerCfg()
     runner_cfg.max_iterations = args.max_iterations
@@ -112,7 +143,7 @@ def main():
     log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage4_arm_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
 
-    # Create runner with config dict
+    # Create runner
     runner = OnPolicyRunner(env, runner_cfg.to_dict(), log_dir=log_dir, device="cuda:0")
 
     if args.resume:
@@ -146,66 +177,14 @@ def main():
         print(f"  Resume from: {args.resume}")
     print("=" * 70 + "\n")
 
-    # Custom training loop with curriculum
-    unwrapped_env = env.unwrapped if hasattr(env, 'unwrapped') else env._env
-
-    # Reset environment
-    obs_dict = env.get_observations()
-    obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
-
-    runner.alg.actor_critic.train()
-
-    best_reward = float('-inf')
-    start_time = time.time()
-
-    for iteration in range(args.max_iterations):
-        # =============================================
-        # CURRICULUM UPDATE
-        # =============================================
-        if hasattr(unwrapped_env, 'update_curriculum'):
-            unwrapped_env.update_curriculum(iteration)
-            if iteration % 500 == 0 and iteration > 0:
-                print(f"[Curriculum] Iteration {iteration}: target_radius = {unwrapped_env.current_target_radius:.3f}m")
-
-        # Collect rollouts
-        with torch.inference_mode():
-            for _ in range(runner_cfg.num_steps_per_env):
-                actions = runner.alg.act(obs, obs)
-                obs_dict, rewards, dones, infos = env.step(actions)
-                obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
-                runner.alg.process_env_step(rewards, dones, infos)
-
-        # Update policy
-        runner.alg.compute_returns(obs)
-        mean_value_loss, mean_surrogate_loss = runner.alg.update()
-
-        # Logging
-        mean_reward = runner.alg.storage.rewards.mean().item()
-
-        if iteration % 100 == 0:
-            elapsed = time.time() - start_time
-            fps = int((iteration + 1) * runner_cfg.num_steps_per_env * args.num_envs / elapsed)
-            print(f"[Iter {iteration:5d}] Reward: {mean_reward:7.3f} | FPS: {fps:5d} | "
-                  f"VLoss: {mean_value_loss:.4f} | SLoss: {mean_surrogate_loss:.4f}")
-
-        # Save best model
-        if mean_reward > best_reward:
-            best_reward = mean_reward
-            runner.save(os.path.join(log_dir, "model_best.pt"))
-
-        # Periodic save
-        if iteration % runner_cfg.save_interval == 0 and iteration > 0:
-            runner.save(os.path.join(log_dir, f"model_{iteration}.pt"))
-
-    # Final save
-    runner.save(os.path.join(log_dir, f"model_{args.max_iterations}.pt"))
+    # Train using standard runner.learn()
+    runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
     print("\n" + "=" * 70)
     print("TRAINING COMPLETE")
     print("=" * 70)
     print(f"  Logs saved to: {log_dir}")
-    print(f"  Best model: {log_dir}/model_best.pt")
-    print(f"  Best reward: {best_reward:.3f}")
+    print(f"  Final model: {log_dir}/model_{args.max_iterations}.pt")
     print("=" * 70 + "\n")
 
     env.close()
