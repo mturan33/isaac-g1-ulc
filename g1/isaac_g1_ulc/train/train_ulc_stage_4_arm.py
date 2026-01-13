@@ -40,6 +40,7 @@ simulation_app = app_launcher.app
 # =============================================================================
 
 import torch
+import time
 from datetime import datetime
 
 env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,114 +51,10 @@ from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
     RslRlPpoActorCriticCfg,
-    RslRlOnPolicyRunner,
     RslRlVecEnvWrapper,
 )
+from rsl_rl.runners import OnPolicyRunner
 from isaaclab.utils import configclass
-
-
-# =============================================================================
-# CUSTOM RUNNER WITH CURRICULUM
-# =============================================================================
-
-class CurriculumRunner(RslRlOnPolicyRunner):
-    """PPO Runner with curriculum learning support."""
-
-    def __init__(self, env, train_cfg, log_dir, device):
-        super().__init__(env, train_cfg, log_dir, device)
-        self.unwrapped_env = env.unwrapped if hasattr(env, 'unwrapped') else env._env
-
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = True):
-        """Override learn to add curriculum updates."""
-
-        # Get the original learn method's setup
-        if init_at_random_ep_len:
-            self.env.reset()
-
-        obs = self.env.get_observations()
-        critic_obs = obs.get("critic", obs["policy"])
-        obs, critic_obs = obs["policy"], critic_obs
-
-        self.alg.actor_critic.train()
-
-        ep_infos = []
-        rewbuffer = []
-        lenbuffer = []
-
-        self.tot_timesteps = 0
-        self.tot_time = 0
-        self.current_learning_iteration = 0
-
-        import time
-        start_time = time.time()
-
-        for it in range(self.current_learning_iteration, num_learning_iterations):
-            # =============================================
-            # CURRICULUM UPDATE
-            # =============================================
-            if hasattr(self.unwrapped_env, 'update_curriculum'):
-                self.unwrapped_env.update_curriculum(it)
-                if it % 500 == 0:
-                    print(f"[Curriculum] Iteration {it}: target_radius = {self.unwrapped_env.current_target_radius:.3f}m")
-
-            # Rollout
-            with torch.inference_mode():
-                for _ in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs)
-                    obs, rewards, dones, infos = self.env.step(actions)
-                    critic_obs = obs.get("critic", obs)
-                    obs, critic_obs = obs["policy"] if isinstance(obs, dict) else obs, critic_obs["policy"] if isinstance(critic_obs, dict) else critic_obs
-
-                    self.alg.process_env_step(rewards, dones, infos)
-
-                    if "episode" in infos:
-                        ep_infos.append(infos["episode"])
-
-            # Compute returns and update
-            self.alg.compute_returns(critic_obs)
-
-            mean_value_loss, mean_surrogate_loss = self.alg.update()
-
-            # Logging
-            self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
-            self.current_learning_iteration = it + 1
-
-            stop_time = time.time()
-            self.tot_time += stop_time - start_time
-            start_time = stop_time
-
-            if len(ep_infos) > 0:
-                for key in ep_infos[0]:
-                    infotensor = torch.tensor([], device=self.device)
-                    for ep_info in ep_infos:
-                        if key in ep_info:
-                            infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
-                    if infotensor.numel() > 0:
-                        self.writer.add_scalar(f"Episode/{key}", infotensor.mean(), it)
-                ep_infos = []
-
-            # Standard logging
-            fps = int(self.num_steps_per_env * self.env.num_envs / (stop_time - start_time + 1e-9))
-
-            if it % 100 == 0:
-                mean_reward = self.alg.storage.rewards.mean()
-                print(f"[Iter {it:5d}] Reward: {mean_reward:.3f} | FPS: {fps:5d} | Value Loss: {mean_value_loss:.4f}")
-
-            self.writer.add_scalar("Loss/value_function", mean_value_loss, it)
-            self.writer.add_scalar("Loss/surrogate", mean_surrogate_loss, it)
-            self.writer.add_scalar("Perf/fps", fps, it)
-
-            if it % self.save_interval == 0:
-                self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
-
-            # Save best model based on mean reward
-            mean_reward = self.alg.storage.rewards.mean().item()
-            if not hasattr(self, 'best_reward') or mean_reward > self.best_reward:
-                self.best_reward = mean_reward
-                self.save(os.path.join(self.log_dir, "model_best.pt"))
-
-        # Final save
-        self.save(os.path.join(self.log_dir, f"model_{num_learning_iterations}.pt"))
 
 
 # =============================================================================
@@ -175,7 +72,7 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,  # Lower initial noise for smoother start
+        init_noise_std=0.5,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -185,14 +82,14 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.003,  # Lower entropy for less exploration noise
+        entropy_coef=0.003,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1e-4,  # Lower LR for smoother learning
+        learning_rate=1e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
-        desired_kl=0.008,  # Tighter KL for stability
+        desired_kl=0.008,
         max_grad_norm=1.0,
     )
 
@@ -215,8 +112,8 @@ def main():
     log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage4_arm_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
 
-    # Use curriculum runner
-    runner = CurriculumRunner(env, runner_cfg, log_dir=log_dir, device="cuda:0")
+    # Create runner with config dict
+    runner = OnPolicyRunner(env, runner_cfg.to_dict(), log_dir=log_dir, device="cuda:0")
 
     if args.resume:
         print(f"\n[INFO] Resuming from: {args.resume}")
@@ -244,21 +141,69 @@ def main():
     print(f"    Orientation distance: {env_cfg.reward_ori_distance}")
     print(f"    Reaching bonus: {env_cfg.reward_reaching}")
     print(f"    Action rate penalty: {env_cfg.reward_action_rate}")
-    print(f"    Action accel penalty: {env_cfg.reward_action_accel}")
-    print(f"    Joint velocity penalty: {env_cfg.reward_joint_vel}")
-    print(f"    Joint accel penalty: {env_cfg.reward_joint_accel}")
     print(f"    Smooth approach bonus: {env_cfg.reward_smooth_approach}")
     if args.resume:
         print(f"  Resume from: {args.resume}")
     print("=" * 70 + "\n")
 
-    runner.learn(num_learning_iterations=runner_cfg.max_iterations, init_at_random_ep_len=True)
+    # Custom training loop with curriculum
+    unwrapped_env = env.unwrapped if hasattr(env, 'unwrapped') else env._env
+
+    # Reset environment
+    obs, _ = env.get_observations()
+
+    runner.alg.actor_critic.train()
+
+    best_reward = float('-inf')
+    start_time = time.time()
+
+    for iteration in range(args.max_iterations):
+        # =============================================
+        # CURRICULUM UPDATE
+        # =============================================
+        if hasattr(unwrapped_env, 'update_curriculum'):
+            unwrapped_env.update_curriculum(iteration)
+            if iteration % 500 == 0 and iteration > 0:
+                print(f"[Curriculum] Iteration {iteration}: target_radius = {unwrapped_env.current_target_radius:.3f}m")
+
+        # Collect rollouts
+        with torch.inference_mode():
+            for _ in range(runner_cfg.num_steps_per_env):
+                actions = runner.alg.act(obs, obs)
+                obs, rewards, dones, infos = env.step(actions)
+                runner.alg.process_env_step(rewards, dones, infos)
+
+        # Update policy
+        runner.alg.compute_returns(obs)
+        mean_value_loss, mean_surrogate_loss = runner.alg.update()
+
+        # Logging
+        mean_reward = runner.alg.storage.rewards.mean().item()
+
+        if iteration % 100 == 0:
+            elapsed = time.time() - start_time
+            fps = int((iteration + 1) * runner_cfg.num_steps_per_env * args.num_envs / elapsed)
+            print(f"[Iter {iteration:5d}] Reward: {mean_reward:7.3f} | FPS: {fps:5d} | "
+                  f"VLoss: {mean_value_loss:.4f} | SLoss: {mean_surrogate_loss:.4f}")
+
+        # Save best model
+        if mean_reward > best_reward:
+            best_reward = mean_reward
+            runner.save(os.path.join(log_dir, "model_best.pt"))
+
+        # Periodic save
+        if iteration % runner_cfg.save_interval == 0 and iteration > 0:
+            runner.save(os.path.join(log_dir, f"model_{iteration}.pt"))
+
+    # Final save
+    runner.save(os.path.join(log_dir, f"model_{args.max_iterations}.pt"))
 
     print("\n" + "=" * 70)
     print("TRAINING COMPLETE")
     print("=" * 70)
     print(f"  Logs saved to: {log_dir}")
     print(f"  Best model: {log_dir}/model_best.pt")
+    print(f"  Best reward: {best_reward:.3f}")
     print("=" * 70 + "\n")
 
     env.close()
