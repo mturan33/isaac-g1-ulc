@@ -218,6 +218,11 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
     num_observations = 30
     num_states = 0
 
+    # Action and observation spaces (required by Isaac Lab 2.x)
+    action_space = 5
+    observation_space = 30
+    state_space = 0
+
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 120,
         render_interval=decimation,
