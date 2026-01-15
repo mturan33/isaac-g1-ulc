@@ -1,12 +1,12 @@
 """
-G1 Arm Reach - Training Script (Stage 4) with Curriculum Learning
-===================================================================
+G1 Arm Reach - Training Script (Stage 4a) - SIMPLIFIED
+========================================================
 
-Fixed-base arm reaching with ULC-style smooth motion and curriculum.
+Fixed-base arm reaching - POSITION ONLY, no orientation.
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_4_arm.py --num_envs 4096 --max_iterations 5000 --headless
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_4a_arm.py --num_envs 4096 --max_iterations 5000 --headless
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ import sys
 # ARGUMENT PARSING (BEFORE AppLauncher)
 # =============================================================================
 
-parser = argparse.ArgumentParser(description="G1 Arm Reach Training - Stage 4")
-parser.add_argument("--num_envs", type=int, default=1024, help="Number of environments")
+parser = argparse.ArgumentParser(description="G1 Arm Reach Training - Stage 4a (Simplified)")
+parser.add_argument("--num_envs", type=int, default=2048, help="Number of environments")
 parser.add_argument("--max_iterations", type=int, default=5000, help="Max training iterations")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
 
@@ -45,7 +45,7 @@ from datetime import datetime
 env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(env_dir, "envs"))
 
-from g1_arm_reach_env import G1ArmReachEnv, G1ArmReachEnvCfg
+from g1_arm_reach_env_v4 import G1ArmReachEnv, G1ArmReachEnvCfg
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
@@ -62,16 +62,16 @@ from isaaclab.utils import configclass
 
 @configclass
 class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """PPO runner config for arm reaching with smooth motion."""
+    """PPO runner config for SIMPLIFIED arm reaching."""
 
     num_steps_per_env = 24
     max_iterations = 5000
     save_interval = 500
-    experiment_name = "g1_arm_reach"
+    experiment_name = "g1_arm_reach_simple"
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
+        init_noise_std=0.8,              # Higher exploration
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -81,14 +81,14 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.003,
+        entropy_coef=0.005,              # Slightly higher entropy
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1e-4,
+        learning_rate=3e-4,              # Higher learning rate
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
-        desired_kl=0.008,
+        desired_kl=0.01,                 # Slightly higher KL target
         max_grad_norm=1.0,
     )
 
@@ -98,13 +98,13 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 # =============================================================================
 
 class CurriculumEnvWrapper(RslRlVecEnvWrapper):
-    """Wrapper that updates curriculum based on iteration count."""
+    """Wrapper that updates curriculum and logs progress."""
 
     def __init__(self, env):
         super().__init__(env)
         self._iteration = 0
         self._step_count = 0
-        # Access unwrapped env
+        self._total_reaches = 0
         self._unwrapped = env
 
     def step(self, actions):
@@ -118,9 +118,11 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                 self._unwrapped.update_curriculum(self._iteration)
 
                 # Log curriculum progress
-                if self._iteration % 500 == 0:
-                    print(f"[Curriculum] Iteration {self._iteration}: "
-                          f"target_radius = {self._unwrapped.current_target_radius:.3f}m")
+                if self._iteration % 200 == 0:
+                    reach_rate = self._unwrapped.reach_count.mean().item()
+                    print(f"[Curriculum] Iter {self._iteration}: "
+                          f"radius={self._unwrapped.current_target_radius:.3f}m, "
+                          f"avg_reaches={reach_rate:.1f}")
 
         return super().step(actions)
 
@@ -140,7 +142,7 @@ def main():
     runner_cfg.max_iterations = args.max_iterations
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage4_arm_{timestamp}")
+    log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage4a_arm_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
 
     # Create runner
@@ -151,33 +153,33 @@ def main():
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("         G1 ARM REACH TRAINING - STAGE 4 (ULC Smooth Motion)")
+    print("    G1 ARM REACH TRAINING - STAGE 4a (SIMPLIFIED - Position Only)")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  ULC SMOOTH MOTION FEATURES:")
-    print(f"    Action smoothing α: {env_cfg.action_smoothing_alpha}")
-    print(f"    Action scale: {env_cfg.action_scale} rad")
-    print(f"    Max joint velocity: {env_cfg.max_joint_vel} rad/s")
+    print("  SIMPLIFIED FEATURES:")
+    print("    ✓ Position target ONLY (no orientation)")
+    print(f"    ✓ Position threshold: {env_cfg.pos_threshold}m (8cm)")
+    print(f"    ✓ Reaching bonus: +{env_cfg.reward_reaching}")
+    print(f"    ✓ Action scale: {env_cfg.action_scale} rad")
     print("-" * 70)
     print("  CURRICULUM:")
-    print(f"    Initial radius: {env_cfg.initial_target_radius}m")
-    print(f"    Final radius: {env_cfg.max_target_radius}m")
-    print(f"    Curriculum steps: {env_cfg.curriculum_steps}")
+    print(f"    Start radius: {env_cfg.initial_target_radius}m (5cm)")
+    print(f"    Final radius: {env_cfg.max_target_radius}m (25cm)")
+    print(f"    Steps: {env_cfg.curriculum_steps}")
     print("-" * 70)
     print("  REWARD STRUCTURE:")
     print(f"    Position distance: {env_cfg.reward_pos_distance}")
-    print(f"    Orientation distance: {env_cfg.reward_ori_distance}")
-    print(f"    Reaching bonus: {env_cfg.reward_reaching}")
-    print(f"    Action rate penalty: {env_cfg.reward_action_rate}")
-    print(f"    Smooth approach bonus: {env_cfg.reward_smooth_approach}")
+    print(f"    Reaching bonus:    +{env_cfg.reward_reaching}")
+    print(f"    Approach bonus:    +{env_cfg.reward_approach}")
+    print(f"    Stay near bonus:   +{env_cfg.reward_stay_near}")
     if args.resume:
         print(f"  Resume from: {args.resume}")
     print("=" * 70 + "\n")
 
-    # Train using standard runner.learn()
+    # Train
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
     print("\n" + "=" * 70)

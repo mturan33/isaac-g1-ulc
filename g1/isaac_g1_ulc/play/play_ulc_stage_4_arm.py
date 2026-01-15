@@ -1,12 +1,12 @@
 """
-G1 Arm Reach - Play/Test Script (Stage 4)
-==========================================
+G1 Arm Reach - Play/Test Script (Stage 4a) - SIMPLIFIED
+=========================================================
 
 Eğitilmiş arm policy'yi test et.
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_4_arm.py --num_envs 4 --checkpoint logs/ulc/ulc_g1_stage4_arm_XXXX/model_5000.pt
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_4a_arm.py --num_envs 4 --checkpoint logs/ulc/ulc_g1_stage4a_arm_XXXX/model_5000.pt
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import sys
 # ARGUMENT PARSING
 # =============================================================================
 
-parser = argparse.ArgumentParser(description="G1 Arm Reach Play - Stage 4")
+parser = argparse.ArgumentParser(description="G1 Arm Reach Play - Stage 4a (Simplified)")
 parser.add_argument("--num_envs", type=int, default=4, help="Number of environments")
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
 parser.add_argument("--duration", type=float, default=60.0, help="Play duration in seconds")
@@ -44,7 +44,7 @@ import torch
 env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(env_dir, "envs"))
 
-from g1_arm_reach_env import G1ArmReachEnv, G1ArmReachEnvCfg
+from g1_arm_reach_env_v4 import G1ArmReachEnv, G1ArmReachEnvCfg
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
@@ -64,11 +64,11 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 5000
     save_interval = 500
-    experiment_name = "g1_arm_reach"
+    experiment_name = "g1_arm_reach_simple"
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
+        init_noise_std=0.8,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -78,14 +78,14 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.003,
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1e-4,
+        learning_rate=3e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
-        desired_kl=0.008,
+        desired_kl=0.01,
         max_grad_norm=1.0,
     )
 
@@ -107,27 +107,20 @@ def main():
 
     print(f"\n[INFO] Loading checkpoint: {args.checkpoint}")
 
-    # Create runner with same config as training
     runner_cfg = G1ArmReachPPORunnerCfg()
-
-    # Use checkpoint directory as log_dir
     checkpoint_dir = os.path.dirname(args.checkpoint)
 
     runner = OnPolicyRunner(env, runner_cfg.to_dict(), log_dir=checkpoint_dir, device="cuda:0")
-
-    # Load checkpoint
     runner.load(args.checkpoint)
 
     print("[INFO] Policy loaded successfully!")
     print(f"[INFO] Running for {args.duration} seconds...")
     print("[INFO] Legend:")
     print("  🟢 Green sphere = Target position")
-    print("  🟢 Green cone = Target orientation")
-    print("  🟠 Orange sphere = End effector (2cm in front of palm)")
-    print("  🟣 Purple sphere = Palm center")
+    print("  🟠 Orange sphere = End effector (palm + 2cm)")
     print("[INFO] Press Ctrl+C to exit\n")
 
-    # Get inference policy from runner
+    # Get inference policy
     policy = runner.get_inference_policy(device="cuda:0")
 
     # Run
@@ -136,6 +129,7 @@ def main():
 
     step_count = 0
     total_reward = 0.0
+    reach_count = 0
 
     try:
         while simulation_app.is_running():
@@ -148,9 +142,13 @@ def main():
             total_reward += rewards.mean().item()
             step_count += 1
 
+            # Check for reaches (reward > threshold means reaching bonus triggered)
+            if rewards.max().item() > 40:
+                reach_count += 1
+
             if step_count % 100 == 0:
                 avg_reward = total_reward / step_count
-                print(f"[Step {step_count:5d}] Avg Reward: {avg_reward:.3f}")
+                print(f"[Step {step_count:5d}] Avg Reward: {avg_reward:+.3f} | Reaches: {reach_count}")
 
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted by user")
@@ -159,7 +157,8 @@ def main():
     print("PLAY SESSION COMPLETE")
     print("=" * 70)
     print(f"  Total steps:       {step_count}")
-    print(f"  Average reward:    {total_reward / max(step_count, 1):.4f}")
+    print(f"  Average reward:    {total_reward / max(step_count, 1):+.4f}")
+    print(f"  Total reaches:     {reach_count}")
     print("=" * 70)
 
     env.close()
