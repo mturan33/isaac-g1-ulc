@@ -71,7 +71,7 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.8,
+        init_noise_std=0.5,           # Daha düşük başla
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -81,11 +81,11 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,
+        entropy_coef=0.001,           # ÇOK DÜŞÜK - noise artışını engelle
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=3e-4,
-        schedule="adaptive",
+        learning_rate=1e-4,           # Daha düşük LR
+        schedule="fixed",             # FIXED schedule - adaptive değil!
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,
@@ -105,9 +105,19 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
         self._iteration = 0
         self._step_count = 0
         self._unwrapped = env
+        self._total_reaches = 0
+
+        # TensorBoard writer
+        from torch.utils.tensorboard import SummaryWriter
+        self._writer = None
+
+    def set_writer(self, log_dir):
+        """Set TensorBoard writer."""
+        from torch.utils.tensorboard import SummaryWriter
+        self._writer = SummaryWriter(log_dir=log_dir, flush_secs=10)
 
     def step(self, actions):
-        """Step with curriculum update."""
+        """Step with curriculum update and logging."""
         self._step_count += 1
 
         if self._step_count % 24 == 0:
@@ -115,10 +125,32 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
             if hasattr(self._unwrapped, 'update_curriculum'):
                 self._unwrapped.update_curriculum(self._iteration)
 
+                # Log to TensorBoard
+                if self._writer is not None:
+                    self._writer.add_scalar(
+                        'Curriculum/target_radius',
+                        self._unwrapped.current_target_radius,
+                        self._iteration
+                    )
+                    self._writer.add_scalar(
+                        'Curriculum/progress',
+                        self._unwrapped.curriculum_progress,
+                        self._iteration
+                    )
+
+                    # Log reach count
+                    avg_reaches = self._unwrapped.reach_count.mean().item()
+                    self._writer.add_scalar(
+                        'Curriculum/avg_reaches_per_env',
+                        avg_reaches,
+                        self._iteration
+                    )
+
                 if self._iteration % 200 == 0:
                     reach_rate = self._unwrapped.reach_count.mean().item()
                     print(f"[Curriculum] Iter {self._iteration}: "
                           f"radius={self._unwrapped.current_target_radius:.3f}m, "
+                          f"progress={self._unwrapped.curriculum_progress:.1%}, "
                           f"avg_reaches={reach_rate:.1f}")
 
         return super().step(actions)
@@ -141,6 +173,9 @@ def main():
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage4_arm_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
+
+    # Set TensorBoard writer for curriculum logging
+    env.set_writer(log_dir)
 
     runner = OnPolicyRunner(env, runner_cfg.to_dict(), log_dir=log_dir, device="cuda:0")
 
