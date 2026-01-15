@@ -182,11 +182,10 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
     # REWARD SCALES
     # =========================================================================
 
-    reward_reaching = 50.0
-    reward_pos_distance = -2.0
-    reward_approach = 5.0
-    reward_stay_near = 10.0
-    reward_action_rate = -0.025
+    reward_reaching = 20.0      # Sparse - sadece hedefe ulaşınca (azaltıldı)
+    reward_pos_distance = -1.0  # Mesafe cezası (azaltıldı)
+    reward_approach = 2.0       # Yaklaşma bonusu
+    reward_action_rate = -0.02
     reward_joint_vel = -0.01
     reward_joint_limit = -2.0
 
@@ -202,12 +201,14 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
     # TASK PARAMETERS
     # =========================================================================
 
-    pos_threshold = 0.10  # 10cm - daha toleranslı
+    pos_threshold = 0.05  # 5cm threshold
 
-    # Curriculum - ÇOK YAKIN BAŞLA
-    initial_target_radius = 0.03  # 3cm! Neredeyse yerinde
-    max_target_radius = 0.25
-    curriculum_steps = 2000  # Daha hızlı genişle
+    # Curriculum - radius MUST be > threshold!
+    # min_dist = threshold + 2cm = 7cm
+    # So initial radius must be > 7cm
+    initial_target_radius = 0.10  # 10cm (targets spawn 7-10cm away)
+    max_target_radius = 0.30      # 30cm max
+    curriculum_steps = 3000
 
 
 # =============================================================================
@@ -295,19 +296,18 @@ class G1ArmReachEnv(DirectRLEnv):
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
         print("\n" + "=" * 70)
-        print("G1 FIXED-BASE ARM REACHING (Position Only)")
+        print("G1 FIXED-BASE ARM REACHING (Must Move to Reach!)")
         print("=" * 70)
         print(f"  Arm joint indices: {self.arm_joint_indices.tolist()}")
         print(f"  Palm body index: {self.palm_idx}")
-        print(f"  Observation dim: {self.cfg.num_observations}")
         print("-" * 70)
-        print("  PARAMETERS:")
-        print(f"    Position threshold: {self.cfg.pos_threshold}m")
-        print(f"    Action scale: {self.cfg.action_scale} rad")
-        print(f"    Reaching bonus: +{self.cfg.reward_reaching}")
+        print("  TASK: Targets spawn BEYOND threshold - robot must move!")
+        print(f"    Position threshold: {self.cfg.pos_threshold}m (5cm)")
+        print(f"    Min spawn distance: {self.cfg.pos_threshold + 0.02}m (7cm)")
+        print(f"    Reaching bonus: +{self.cfg.reward_reaching} (sparse)")
         print("-" * 70)
-        print("  CURRICULUM (targets around CURRENT EE):")
-        print(f"    Initial radius: {self.cfg.initial_target_radius}m (3cm)")
+        print("  CURRICULUM:")
+        print(f"    Initial radius: {self.cfg.initial_target_radius}m → targets 7-10cm away")
         print(f"    Max radius: {self.cfg.max_target_radius}m")
         print("=" * 70 + "\n")
 
@@ -325,7 +325,7 @@ class G1ArmReachEnv(DirectRLEnv):
         return ee_pos_world
 
     def _sample_target(self, env_ids: torch.Tensor):
-        """Sample random target position around CURRENT EE position."""
+        """Sample target BEYOND threshold distance - robot must move to reach it!"""
         num_samples = len(env_ids)
 
         # Get current EE position (relative to root)
@@ -333,13 +333,22 @@ class G1ArmReachEnv(DirectRLEnv):
         root_pos = self.robot.data.root_pos_w
         current_ee_rel = (ee_pos_world - root_pos)[env_ids]
 
-        # Sample target around CURRENT EE position (not fixed arm_center)
+        # Random direction
         direction = torch.randn((num_samples, 3), device=self.device)
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
 
-        distance = torch.rand((num_samples, 1), device=self.device) * self.current_target_radius
+        # Distance: MUST be beyond threshold!
+        # min_distance = threshold + small margin
+        min_dist = self.cfg.pos_threshold + 0.02  # At least 2cm beyond threshold
+        max_dist = self.current_target_radius
 
-        # Target = current EE + small offset
+        # Ensure max > min
+        max_dist = torch.clamp(torch.tensor(max_dist), min=min_dist + 0.01).item()
+
+        # Random distance between min and max
+        distance = min_dist + torch.rand((num_samples, 1), device=self.device) * (max_dist - min_dist)
+
+        # Target = current EE + offset (BEYOND threshold)
         targets = current_ee_rel + direction * distance
 
         # Clamp to reachable workspace
@@ -385,7 +394,7 @@ class G1ArmReachEnv(DirectRLEnv):
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        """Compute rewards."""
+        """Compute rewards with SPARSE reaching bonus."""
 
         ee_pos_world = self._compute_ee_pos()
         root_pos = self.robot.data.root_pos_w
@@ -396,14 +405,19 @@ class G1ArmReachEnv(DirectRLEnv):
         # Task rewards
         reward_pos = self.cfg.reward_pos_distance * pos_distance
 
+        # SPARSE reaching bonus - only once per target
         reached = pos_distance < self.cfg.pos_threshold
         reward_reach = self.cfg.reward_reaching * reached.float()
 
-        distance_improvement = self.prev_ee_distance - pos_distance
-        reward_approach = self.cfg.reward_approach * torch.clamp(distance_improvement, 0, 0.1)
+        # Sample NEW target when reached (makes it challenging!)
+        reached_envs = torch.where(reached)[0]
+        if len(reached_envs) > 0:
+            self._sample_target(reached_envs)
+            self.reach_count[reached_envs] += 1
 
-        near_target = pos_distance < (self.cfg.pos_threshold * 2)
-        reward_stay = self.cfg.reward_stay_near * near_target.float()
+        # Approach reward (getting closer)
+        distance_improvement = self.prev_ee_distance - pos_distance
+        reward_approach = self.cfg.reward_approach * torch.clamp(distance_improvement, 0, 0.05)
 
         # Smoothness penalties
         action_rate = torch.norm(self.smoothed_actions - self.prev_actions, dim=-1)
@@ -424,7 +438,6 @@ class G1ArmReachEnv(DirectRLEnv):
             reward_pos +
             reward_reach +
             reward_approach +
-            reward_stay +
             reward_action_rate +
             reward_joint_vel +
             reward_joint_limit
@@ -433,7 +446,6 @@ class G1ArmReachEnv(DirectRLEnv):
         # Update history
         self.prev_actions = self.smoothed_actions.clone()
         self.prev_ee_distance = pos_distance.clone()
-        self.reach_count += reached.float()
 
         return reward
 
