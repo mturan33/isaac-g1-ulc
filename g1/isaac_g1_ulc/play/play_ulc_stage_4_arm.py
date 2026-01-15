@@ -1,12 +1,12 @@
 """
-G1 Arm Reach - Play/Test Script (Stage 4a) - SIMPLIFIED
-=========================================================
+G1 Arm Reach - Play/Test Script (Stage 4)
+==========================================
 
 Eğitilmiş arm policy'yi test et.
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_4a_arm.py --num_envs 4 --checkpoint logs/ulc/ulc_g1_stage4a_arm_XXXX/model_5000.pt
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_4_arm.py --num_envs 4 --checkpoint logs/ulc/ulc_g1_stage4_arm_XXXX/model_5000.pt
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import sys
 # ARGUMENT PARSING
 # =============================================================================
 
-parser = argparse.ArgumentParser(description="G1 Arm Reach Play - Stage 4a (Simplified)")
+parser = argparse.ArgumentParser(description="G1 Arm Reach Play - Stage 4")
 parser.add_argument("--num_envs", type=int, default=4, help="Number of environments")
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
 parser.add_argument("--duration", type=float, default=60.0, help="Play duration in seconds")
@@ -44,7 +44,7 @@ import torch
 env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(env_dir, "envs"))
 
-from g1_arm_reach_env_v4 import G1ArmReachEnv, G1ArmReachEnvCfg
+from g1_arm_reach_env import G1ArmReachEnv, G1ArmReachEnvCfg
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
@@ -56,7 +56,7 @@ from isaaclab.utils import configclass
 
 
 # =============================================================================
-# CONFIG (same as training)
+# CONFIG
 # =============================================================================
 
 @configclass
@@ -64,7 +64,7 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 5000
     save_interval = 500
-    experiment_name = "g1_arm_reach_simple"
+    experiment_name = "g1_arm_reach"
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
@@ -98,8 +98,6 @@ def main():
     env_cfg = G1ArmReachEnvCfg()
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.episode_length_s = args.duration
-
-    # Set max target radius for testing
     env_cfg.initial_target_radius = env_cfg.max_target_radius
 
     env = G1ArmReachEnv(cfg=env_cfg)
@@ -120,10 +118,8 @@ def main():
     print("  🟠 Orange sphere = End effector (palm + 2cm)")
     print("[INFO] Press Ctrl+C to exit\n")
 
-    # Get inference policy
     policy = runner.get_inference_policy(device="cuda:0")
 
-    # Run
     obs_dict = env.get_observations()
     obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
 
@@ -142,7 +138,6 @@ def main():
             total_reward += rewards.mean().item()
             step_count += 1
 
-            # Check for reaches (reward > threshold means reaching bonus triggered)
             if rewards.max().item() > 40:
                 reach_count += 1
 

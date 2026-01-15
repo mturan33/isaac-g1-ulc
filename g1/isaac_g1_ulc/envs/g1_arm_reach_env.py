@@ -1,19 +1,11 @@
 """
-G1 Fixed-Base Arm Reaching Environment v4 (Stage 4a)
-=====================================================
+G1 Fixed-Base Arm Reaching Environment
+=======================================
 
-SIMPLIFIED VERSION - Position Only, No Orientation
-
-Stage 4a: Robot gövdesi SABİT, sadece kol joint'leri eğitiliyor.
+Stage 4: Robot gövdesi SABİT, sadece kol joint'leri eğitiliyor.
 Hedef: Palm'ın 2cm önündeki noktayı (EE) rastgele target pozisyonuna götürmek.
 
-KEY SIMPLIFICATIONS from v3:
-============================
-1. NO ORIENTATION TARGET - sadece pozisyon
-2. VERY CLOSE START - 0.05m radius (5cm)
-3. HIGHER TOLERANCE - 0.08m threshold
-4. BIGGER BONUS - +50 reaching reward
-5. REDUCED SMOOTHNESS PENALTIES - 50% of v3
+SIMPLIFIED - Position Only, No Orientation
 
 OBSERVATION SPACE (18 dim):
 - Arm joint positions (5)
@@ -124,7 +116,7 @@ class G1ArmReachSceneCfg(InteractiveSceneCfg):
             ),
             "arm_joints": ImplicitActuatorCfg(
                 joint_names_expr=["right_shoulder.*", "right_elbow.*"],
-                stiffness=150.0,  # Slightly higher for better tracking
+                stiffness=150.0,
                 damping=15.0,
             ),
         },
@@ -134,7 +126,7 @@ class G1ArmReachSceneCfg(InteractiveSceneCfg):
     target: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Target",
         spawn=sim_utils.SphereCfg(
-            radius=0.04,  # Bigger for visibility
+            radius=0.04,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0), emissive_color=(0.0, 0.5, 0.0)),
@@ -161,12 +153,11 @@ class G1ArmReachSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class G1ArmReachEnvCfg(DirectRLEnvCfg):
-    """Configuration for SIMPLIFIED fixed-base arm reaching."""
+    """Configuration for fixed-base arm reaching."""
 
     decimation = 4
-    episode_length_s = 10.0  # Shorter episodes for faster learning
+    episode_length_s = 10.0
 
-    # Simplified observation space (no orientation)
     num_actions = 5
     num_observations = 18
     num_states = 0
@@ -188,42 +179,35 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
     scene: G1ArmReachSceneCfg = G1ArmReachSceneCfg(num_envs=1024, env_spacing=2.0)
 
     # =========================================================================
-    # REWARD SCALES - SIMPLIFIED & STRONGER
+    # REWARD SCALES
     # =========================================================================
 
-    # Primary task - HIGH REWARDS
-    reward_reaching = 50.0           # +50 for reaching (was +20)
-    reward_pos_distance = -2.0       # Position tracking (slightly stronger)
-
-    # Dense shaping rewards
-    reward_approach = 5.0            # Bonus for getting closer
-    reward_stay_near = 10.0          # Bonus for staying near target
-
-    # Smoothness - REDUCED (50% of v3)
-    reward_action_rate = -0.025      # Was -0.05
-    reward_joint_vel = -0.01         # Was -0.02
-
-    # Safety
+    reward_reaching = 50.0
+    reward_pos_distance = -2.0
+    reward_approach = 5.0
+    reward_stay_near = 10.0
+    reward_action_rate = -0.025
+    reward_joint_vel = -0.01
     reward_joint_limit = -2.0
 
     # =========================================================================
-    # MOTION PARAMETERS - MORE RESPONSIVE
+    # MOTION PARAMETERS
     # =========================================================================
 
-    action_smoothing_alpha = 0.5     # Less smoothing (was 0.3)
-    action_scale = 0.08              # Bigger steps (was 0.05)
-    max_joint_vel = 2.0              # Higher velocity allowed
+    action_smoothing_alpha = 0.5
+    action_scale = 0.08
+    max_joint_vel = 2.0
 
     # =========================================================================
-    # SIMPLIFIED TASK PARAMETERS
+    # TASK PARAMETERS
     # =========================================================================
 
-    pos_threshold = 0.08             # 8cm (was 5cm)
+    pos_threshold = 0.10  # 10cm - daha toleranslı
 
-    # Curriculum - START VERY CLOSE
-    initial_target_radius = 0.05     # 5cm (was 0.15m)
-    max_target_radius = 0.25         # 25cm max (was 0.30m)
-    curriculum_steps = 3000          # Slower curriculum
+    # Curriculum - ÇOK YAKIN BAŞLA
+    initial_target_radius = 0.03  # 3cm! Neredeyse yerinde
+    max_target_radius = 0.25
+    curriculum_steps = 2000  # Daha hızlı genişle
 
 
 # =============================================================================
@@ -243,7 +227,7 @@ def rotate_vector_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
 # =============================================================================
 
 class G1ArmReachEnv(DirectRLEnv):
-    """SIMPLIFIED fixed-base arm reaching - Position Only."""
+    """Fixed-base arm reaching - Position Only."""
 
     cfg: G1ArmReachEnvCfg
 
@@ -293,7 +277,7 @@ class G1ArmReachEnv(DirectRLEnv):
         ).expand(self.num_envs, -1).clone()
         self.zero_root_vel = torch.zeros((self.num_envs, 6), device=self.device)
 
-        # Target storage (POSITION ONLY)
+        # Target storage
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device)
 
         # History buffers
@@ -309,23 +293,21 @@ class G1ArmReachEnv(DirectRLEnv):
         self.reach_count = torch.zeros(self.num_envs, device=self.device)
 
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
-        self.arm_center = RIGHT_ARM_CENTER.to(self.device)
 
         print("\n" + "=" * 70)
-        print("G1 FIXED-BASE ARM REACHING v4 (SIMPLIFIED - Position Only)")
+        print("G1 FIXED-BASE ARM REACHING (Position Only)")
         print("=" * 70)
         print(f"  Arm joint indices: {self.arm_joint_indices.tolist()}")
         print(f"  Palm body index: {self.palm_idx}")
         print(f"  Observation dim: {self.cfg.num_observations}")
         print("-" * 70)
-        print("  SIMPLIFIED PARAMETERS:")
-        print(f"    NO ORIENTATION TARGET")
+        print("  PARAMETERS:")
         print(f"    Position threshold: {self.cfg.pos_threshold}m")
         print(f"    Action scale: {self.cfg.action_scale} rad")
         print(f"    Reaching bonus: +{self.cfg.reward_reaching}")
         print("-" * 70)
-        print("  CURRICULUM:")
-        print(f"    Initial radius: {self.cfg.initial_target_radius}m")
+        print("  CURRICULUM (targets around CURRENT EE):")
+        print(f"    Initial radius: {self.cfg.initial_target_radius}m (3cm)")
         print(f"    Max radius: {self.cfg.max_target_radius}m")
         print("=" * 70 + "\n")
 
@@ -343,36 +325,39 @@ class G1ArmReachEnv(DirectRLEnv):
         return ee_pos_world
 
     def _sample_target(self, env_ids: torch.Tensor):
-        """Sample random target position within current curriculum radius."""
+        """Sample random target position around CURRENT EE position."""
         num_samples = len(env_ids)
 
-        # Random direction
+        # Get current EE position (relative to root)
+        ee_pos_world = self._compute_ee_pos()
+        root_pos = self.robot.data.root_pos_w
+        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
+
+        # Sample target around CURRENT EE position (not fixed arm_center)
         direction = torch.randn((num_samples, 3), device=self.device)
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # Random distance within curriculum radius
         distance = torch.rand((num_samples, 1), device=self.device) * self.current_target_radius
 
-        # Target relative to arm center
-        targets = self.arm_center + direction * distance
+        # Target = current EE + small offset
+        targets = current_ee_rel + direction * distance
 
         # Clamp to reachable workspace
-        targets[:, 0] = torch.clamp(targets[:, 0], -0.25, 0.30)  # X: front-back
-        targets[:, 1] = torch.clamp(targets[:, 1], -0.10, 0.45)  # Y: left-right
-        targets[:, 2] = torch.clamp(targets[:, 2], 0.05, 0.50)   # Z: up-down
+        targets[:, 0] = torch.clamp(targets[:, 0], -0.30, 0.40)
+        targets[:, 1] = torch.clamp(targets[:, 1], -0.30, 0.50)
+        targets[:, 2] = torch.clamp(targets[:, 2], -0.10, 0.60)
 
         self.target_pos[env_ids] = targets
 
-        # Update target visual
-        root_pos = self.robot.data.root_pos_w[env_ids]
-        target_world = root_pos + targets
+        root_pos_ids = self.robot.data.root_pos_w[env_ids]
+        target_world = root_pos_ids + targets
 
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num_samples, -1)
         target_pose = torch.cat([target_world, default_quat], dim=-1)
         self.target_obj.write_root_pose_to_sim(target_pose, env_ids=env_ids)
 
     def _get_observations(self) -> dict:
-        """Get observations - SIMPLIFIED (no orientation)."""
+        """Get observations."""
 
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_joint_indices]
         arm_joint_vel = self.robot.data.joint_vel[:, self.arm_joint_indices]
@@ -381,7 +366,6 @@ class G1ArmReachEnv(DirectRLEnv):
         root_pos = self.robot.data.root_pos_w
         ee_pos_rel = ee_pos_world - root_pos
 
-        # Position error (normalized for stable learning)
         pos_error = self.target_pos - ee_pos_rel
         pos_error_normalized = pos_error / (self.cfg.max_target_radius + 0.01)
 
@@ -390,72 +374,51 @@ class G1ArmReachEnv(DirectRLEnv):
         ee_marker_pose = torch.cat([ee_pos_world, palm_quat], dim=-1)
         self.ee_marker.write_root_pose_to_sim(ee_marker_pose)
 
-        # Observation: 18 dim
         obs = torch.cat([
-            arm_joint_pos,           # 5
-            arm_joint_vel * 0.1,     # 5 (scaled down)
-            self.target_pos,         # 3
-            ee_pos_rel,              # 3
-            pos_error_normalized,    # 3 (normalized)
+            arm_joint_pos,
+            arm_joint_vel * 0.1,
+            self.target_pos,
+            ee_pos_rel,
+            pos_error_normalized,
         ], dim=-1)
 
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        """Compute rewards - SIMPLIFIED with dense shaping."""
+        """Compute rewards."""
 
         ee_pos_world = self._compute_ee_pos()
         root_pos = self.robot.data.root_pos_w
         ee_pos_rel = ee_pos_world - root_pos
 
-        # Distance to target
         pos_distance = torch.norm(ee_pos_rel - self.target_pos, dim=-1)
 
-        # =====================================================================
-        # TASK REWARDS
-        # =====================================================================
-
-        # 1. Position distance penalty (main signal)
+        # Task rewards
         reward_pos = self.cfg.reward_pos_distance * pos_distance
 
-        # 2. REACHING BONUS - BIG REWARD
         reached = pos_distance < self.cfg.pos_threshold
         reward_reach = self.cfg.reward_reaching * reached.float()
 
-        # 3. Approach reward (getting closer)
         distance_improvement = self.prev_ee_distance - pos_distance
         reward_approach = self.cfg.reward_approach * torch.clamp(distance_improvement, 0, 0.1)
 
-        # 4. Stay near bonus (encourage staying at target)
         near_target = pos_distance < (self.cfg.pos_threshold * 2)
         reward_stay = self.cfg.reward_stay_near * near_target.float()
 
-        # =====================================================================
-        # SMOOTHNESS PENALTIES (REDUCED)
-        # =====================================================================
-
-        # Action rate penalty
+        # Smoothness penalties
         action_rate = torch.norm(self.smoothed_actions - self.prev_actions, dim=-1)
         reward_action_rate = self.cfg.reward_action_rate * action_rate
 
-        # Joint velocity penalty
         arm_joint_vel = self.robot.data.joint_vel[:, self.arm_joint_indices]
         vel_magnitude = torch.norm(arm_joint_vel, dim=-1)
         vel_excess = torch.clamp(vel_magnitude - self.cfg.max_joint_vel, min=0)
         reward_joint_vel = self.cfg.reward_joint_vel * vel_excess
 
-        # =====================================================================
-        # SAFETY PENALTY
-        # =====================================================================
-
+        # Safety penalty
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_joint_indices]
         lower_violation = torch.clamp(self.joint_lower - arm_joint_pos, min=0).sum(dim=-1)
         upper_violation = torch.clamp(arm_joint_pos - self.joint_upper, min=0).sum(dim=-1)
         reward_joint_limit = self.cfg.reward_joint_limit * (lower_violation + upper_violation)
-
-        # =====================================================================
-        # TOTAL REWARD
-        # =====================================================================
 
         reward = (
             reward_pos +
@@ -470,8 +433,6 @@ class G1ArmReachEnv(DirectRLEnv):
         # Update history
         self.prev_actions = self.smoothed_actions.clone()
         self.prev_ee_distance = pos_distance.clone()
-
-        # Track reaching
         self.reach_count += reached.float()
 
         return reward
@@ -487,11 +448,9 @@ class G1ArmReachEnv(DirectRLEnv):
         if len(env_ids) == 0:
             return
 
-        # Fix root
         self.robot.write_root_pose_to_sim(self.fixed_root_pose[env_ids], env_ids=env_ids)
         self.robot.write_root_velocity_to_sim(self.zero_root_vel[env_ids], env_ids=env_ids)
 
-        # Reset joints to default pose
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         joint_vel = torch.zeros_like(self.robot.data.joint_vel[env_ids])
 
@@ -501,13 +460,11 @@ class G1ArmReachEnv(DirectRLEnv):
 
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        # Sample new target
         self._sample_target(env_ids)
 
-        # Reset history
         self.smoothed_actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
-        self.prev_ee_distance[env_ids] = 0.3  # Start with reasonable distance
+        self.prev_ee_distance[env_ids] = 0.3
         self.reach_count[env_ids] = 0.0
 
     def _pre_physics_step(self, actions: torch.Tensor):
@@ -517,20 +474,16 @@ class G1ArmReachEnv(DirectRLEnv):
     def _apply_action(self):
         """Apply actions with smoothing filter."""
 
-        # Action smoothing (EMA)
         alpha = self.cfg.action_smoothing_alpha
         self.smoothed_actions = alpha * self.actions + (1 - alpha) * self.smoothed_actions
 
-        # Keep root fixed
         self.robot.write_root_pose_to_sim(self.fixed_root_pose)
         self.robot.write_root_velocity_to_sim(self.zero_root_vel)
 
-        # Apply smoothed delta
         current_arm_pos = self.robot.data.joint_pos[:, self.arm_joint_indices]
         target_arm_pos = current_arm_pos + self.smoothed_actions * self.cfg.action_scale
         target_arm_pos = torch.clamp(target_arm_pos, self.joint_lower, self.joint_upper)
 
-        # Set targets for all joints
         joint_pos_targets = self.robot.data.joint_pos.clone()
         joint_pos_targets[:, self.arm_joint_indices] = target_arm_pos
 
