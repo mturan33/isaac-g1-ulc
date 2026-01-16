@@ -18,7 +18,6 @@ import sys
 
 parser = argparse.ArgumentParser(description="G1 Dual Arm Play")
 from isaaclab.app import AppLauncher
-
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -119,8 +118,6 @@ def main():
     obs_dict, _ = env.reset()
 
     step = 0
-    right_smoothed = torch.zeros(5, device="cuda:0")
-    left_smoothed = torch.zeros(5, device="cuda:0")
 
     try:
         while simulation_app.is_running():
@@ -128,32 +125,27 @@ def main():
 
             root_pos = env.robot.data.root_pos_w[0]
 
-            # ===== RIGHT ARM OBSERVATION =====
+            # ===== RIGHT ARM OBSERVATION (MUST MATCH TRAINING ORDER!) =====
+            # Training order: joint_pos(5), joint_vel(5), target(3), ee_pos(3), error_norm(3) = 19
             right_joint_pos = env.robot.data.joint_pos[0, env.right_arm_indices]
             right_joint_vel = env.robot.data.joint_vel[0, env.right_arm_indices]
             right_ee_pos = env._compute_right_ee_pos()[0] - root_pos
             right_target = env.right_target_pos[0]
             right_error = right_target - right_ee_pos
+            right_error_norm = right_error / 0.31  # max_target_radius + 0.01
 
             right_obs = torch.cat([
-                right_target,
-                right_ee_pos,
-                right_joint_pos,
-                right_joint_vel * 0.1,
-                right_smoothed[:4]  # Prev actions
-            ]).unsqueeze(0)
-
-            # Pad to policy input size
-            if right_obs.shape[-1] < obs_dim:
-                pad = obs_dim - right_obs.shape[-1]
-                right_obs = torch.cat([right_obs, torch.zeros(1, pad, device="cuda:0")], dim=-1)
-            elif right_obs.shape[-1] > obs_dim:
-                right_obs = right_obs[:, :obs_dim]
+                right_joint_pos,        # 5
+                right_joint_vel * 0.1,  # 5
+                right_target,           # 3
+                right_ee_pos,           # 3
+                right_error_norm,       # 3
+            ]).unsqueeze(0)  # Total: 19
 
             with torch.no_grad():
                 right_actions = actor(right_obs)[0]
 
-            # ===== LEFT ARM OBSERVATION (MIRRORED) =====
+            # ===== LEFT ARM OBSERVATION (MIRRORED, SAME ORDER) =====
             left_joint_pos = env.robot.data.joint_pos[0, env.left_arm_indices]
             left_joint_vel = env.robot.data.joint_vel[0, env.left_arm_indices]
             left_ee_pos = env._compute_left_ee_pos()[0] - root_pos
@@ -166,7 +158,7 @@ def main():
             left_ee_mirrored = left_ee_pos.clone()
             left_ee_mirrored[1] = -left_ee_mirrored[1]
 
-            # Mirror joint positions (roll joints are opposite)
+            # Mirror joint positions (roll/yaw joints are opposite)
             left_joint_mirrored = left_joint_pos.clone()
             left_joint_mirrored[1] = -left_joint_mirrored[1]  # shoulder_roll
             left_joint_mirrored[2] = -left_joint_mirrored[2]  # shoulder_yaw
@@ -177,24 +169,21 @@ def main():
             left_joint_vel_mirrored[2] = -left_joint_vel_mirrored[2]
             left_joint_vel_mirrored[4] = -left_joint_vel_mirrored[4]
 
-            left_obs = torch.cat([
-                left_target_mirrored,
-                left_ee_mirrored,
-                left_joint_mirrored,
-                left_joint_vel_mirrored * 0.1,
-                left_smoothed[:4]
-            ]).unsqueeze(0)
+            left_error = left_target_mirrored - left_ee_mirrored
+            left_error_norm = left_error / 0.31
 
-            if left_obs.shape[-1] < obs_dim:
-                pad = obs_dim - left_obs.shape[-1]
-                left_obs = torch.cat([left_obs, torch.zeros(1, pad, device="cuda:0")], dim=-1)
-            elif left_obs.shape[-1] > obs_dim:
-                left_obs = left_obs[:, :obs_dim]
+            left_obs = torch.cat([
+                left_joint_mirrored,         # 5
+                left_joint_vel_mirrored * 0.1,  # 5
+                left_target_mirrored,        # 3
+                left_ee_mirrored,            # 3
+                left_error_norm,             # 3
+            ]).unsqueeze(0)  # Total: 19
 
             with torch.no_grad():
                 left_actions_raw = actor(left_obs)[0]
 
-            # Mirror actions back (roll joints opposite)
+            # Mirror actions back (roll/yaw joints opposite)
             left_actions = left_actions_raw.clone()
             left_actions[1] = -left_actions[1]  # shoulder_roll
             left_actions[2] = -left_actions[2]  # shoulder_yaw
@@ -203,17 +192,15 @@ def main():
             # ===== COMBINE ACTIONS =====
             combined_actions = torch.cat([right_actions, left_actions]).unsqueeze(0)
 
-            # Smoothing for logging
-            alpha = 0.5
-            right_smoothed = alpha * right_actions + (1 - alpha) * right_smoothed
-            left_smoothed = alpha * left_actions + (1 - alpha) * left_smoothed
-
             # Step
             obs_dict, rewards, terminated, truncated, info = env.step(combined_actions)
 
-            # Compute distances
-            right_dist = (right_ee_pos - right_target).norm().item()
-            left_dist = (left_ee_pos - left_target).norm().item()
+            # Compute distances (after step, use fresh data)
+            root_pos_new = env.robot.data.root_pos_w[0]
+            right_ee_new = env._compute_right_ee_pos()[0] - root_pos_new
+            left_ee_new = env._compute_left_ee_pos()[0] - root_pos_new
+            right_dist = (right_ee_new - env.right_target_pos[0]).norm().item()
+            left_dist = (left_ee_new - env.left_target_pos[0]).norm().item()
 
             # Log
             if step % 50 == 0:
