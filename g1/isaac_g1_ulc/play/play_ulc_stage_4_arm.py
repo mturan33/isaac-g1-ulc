@@ -1,13 +1,17 @@
 """
-G1 Arm - TRAINED POLICY PLAY
-=============================
+G1 Arm - TRAINING-COMPATIBLE PLAY
+==================================
 
-16 saat eğitilmiş policy'yi kullan!
-Sadece ulaşılabilir workspace içinde hedefler.
+Training parametreleriyle AYNI workspace kullan!
+
+Training'de:
+  - Curriculum radius: 0.1m → 0.3m
+  - Target mesafesi: 0.07m - current_radius arası
+  - Action scale: 0.08
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p play_arm_trained_policy.py
+./isaaclab.bat -p play_arm_training_compatible.py
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ import argparse
 import os
 import sys
 
-parser = argparse.ArgumentParser(description="G1 Arm Trained Policy Play")
+parser = argparse.ArgumentParser(description="G1 Arm Training-Compatible Play")
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -55,37 +59,10 @@ class SimpleActor(nn.Module):
         return self.net(x)
 
 
-def spawn_reachable_target(env, root_pos):
-    """
-    Sağ kolun ULAŞABİLECEĞİ workspace içinde hedef spawn et.
-
-    G1 Sağ Kol Workspace (root-relative):
-    - X (ileri): 0.05 to 0.35m (çok ileri ulaşamaz)
-    - Y (sağ):   0.10 to 0.35m (sol tarafa ulaşamaz!)
-    - Z (yukarı): -0.15 to 0.25m
-
-    Toplam mesafe: 0.15 - 0.35m arası
-    """
-    device = root_pos.device
-
-    while True:
-        # Random pozisyon
-        x = torch.empty(1, device=device).uniform_(0.05, 0.35)
-        y = torch.empty(1, device=device).uniform_(0.10, 0.35)  # SADECE SAĞ TARAF!
-        z = torch.empty(1, device=device).uniform_(-0.15, 0.25)
-
-        target_rel = torch.tensor([x.item(), y.item(), z.item()], device=device)
-
-        # Mesafe kontrolü (çok yakın veya çok uzak olmasın)
-        distance = target_rel.norm().item()
-        if 0.15 < distance < 0.40:
-            return target_rel
-
-
 def main():
     print("\n" + "=" * 70)
-    print("   G1 ARM - TRAINED POLICY PLAY")
-    print("   16 saat eğitilmiş policy çalışıyor!")
+    print("   G1 ARM - TRAINING-COMPATIBLE PLAY")
+    print("   Training'deki workspace ve parametreler kullanılıyor!")
     print("=" * 70)
 
     # Checkpoint bul
@@ -102,12 +79,11 @@ def main():
 
     if checkpoint_path is None:
         print("[ERROR] Checkpoint bulunamadı!")
-        print("  Beklenen: logs/ulc/ulc_g1_stage4_arm_*/model_15999.pt")
         return
 
     print(f"\n[INFO] Checkpoint: {checkpoint_path}")
 
-    # Environment
+    # Environment - TRAINING PARAMETRELERİ
     env_cfg = G1ArmReachEnvCfg()
     env_cfg.scene.num_envs = 1
     env_cfg.episode_length_s = 300.0
@@ -118,7 +94,6 @@ def main():
     checkpoint = torch.load(checkpoint_path, map_location="cuda:0", weights_only=False)
     model_state = checkpoint.get('model_state_dict', checkpoint)
 
-    # Actor boyutları
     actor_keys = [k for k in model_state.keys() if k.startswith('actor.') and 'weight' in k]
     actor_keys.sort()
 
@@ -128,40 +103,47 @@ def main():
 
     print(f"[INFO] Policy: obs={obs_dim}, act={act_dim}, hidden={hidden_dims}")
 
-    # Actor
     actor = SimpleActor(obs_dim, act_dim, hidden_dims).to("cuda:0")
     actor_state = {k.replace('actor.', 'net.'): v for k, v in model_state.items() if k.startswith('actor.')}
     actor.load_state_dict(actor_state)
     actor.eval()
 
     print("[INFO] Policy yüklendi!")
+
+    # Training parametreleri
     print("\n" + "-" * 70)
-    print("WORKSPACE (Sağ kol ulaşabilir):")
-    print("  X (ileri):  0.05 - 0.35m")
-    print("  Y (sağ):    0.10 - 0.35m  ← Sol tarafa ULAŞAMAZ!")
-    print("  Z (dikey): -0.15 - 0.25m")
+    print("TRAINING PARAMETRELERİ:")
+    print(f"  Action scale:     {env_cfg.action_scale}")
+    print(f"  Smoothing alpha:  {env_cfg.action_smoothing_alpha}")
+    print(f"  Position thresh:  {env_cfg.position_threshold}m")
+    print(f"  Min spawn dist:   {env_cfg.min_spawn_distance}m")
     print("-" * 70)
+
+    # Joint limitleri göster
+    print("\nJOINT LİMİTLERİ:")
+    for i, idx in enumerate(env.arm_joint_indices.tolist()):
+        name = env.robot.data.joint_names[idx]
+        lower = env.joint_lower[i].item()
+        upper = env.joint_upper[i].item()
+        print(f"  {name}: [{lower:.2f}, {upper:.2f}] rad = [{lower*57.3:.0f}°, {upper*57.3:.0f}°]")
+    print("-" * 70)
+
     print("\n[INFO] Ctrl+C ile çık\n")
 
-    # Reset
+    # Reset - environment kendi target'ını spawn edecek
     obs_dict, _ = env.reset()
     obs = obs_dict["policy"]
 
     root_pos = env.robot.data.root_pos_w[0]
 
-    # İlk hedef - ulaşılabilir workspace içinde
-    target_rel = spawn_reachable_target(env, root_pos)
-    env.target_pos[0] = target_rel
-
     step = 0
     reach_count = 0
-    reach_threshold = 0.05  # 5cm
-    steps_since_reach = 0
+    episode_steps = 0
 
     try:
         while simulation_app.is_running():
             step += 1
-            steps_since_reach += 1
+            episode_steps += 1
 
             # ===== POLICY'DEN ACTION AL =====
             if obs.shape[-1] < obs_dim:
@@ -171,7 +153,7 @@ def main():
             with torch.no_grad():
                 actions = actor(obs)
 
-            # ===== ENV STEP - POLICY ACTION KULLAN =====
+            # ===== ENV STEP =====
             obs_dict, rewards, terminated, truncated, info = env.step(actions)
             obs = obs_dict["policy"]
 
@@ -188,33 +170,29 @@ def main():
             ee_marker_pose = torch.cat([ee_pos_world[0], palm_quat[0]]).unsqueeze(0)
             env.ee_marker.write_root_pose_to_sim(ee_marker_pose)
 
-            # ===== MESAFE KONTROLÜ =====
+            # ===== MESAFE =====
             ee_pos_rel = ee_pos_world[0] - root_pos
             distance = (ee_pos_rel - env.target_pos[0]).norm().item()
 
-            # Hedefe ulaştı mı?
-            if distance < reach_threshold:
+            # Reach detection (sparse reward > 15)
+            if rewards[0].item() > 15:
                 reach_count += 1
-                print(f"\n  🎯 REACHED #{reach_count}! (in {steps_since_reach} steps)")
+                print(f"\n  🎯 REACHED #{reach_count}! (in {episode_steps} steps)")
+                episode_steps = 0
 
-                # Yeni hedef spawn
-                target_rel = spawn_reachable_target(env, root_pos)
-                env.target_pos[0] = target_rel
-                steps_since_reach = 0
+            # Log (her 50 step)
+            if step % 50 == 0:
+                current_joints = env.robot.data.joint_pos[0, env.arm_joint_indices]
 
-                print(f"     New target: [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
-
-            # Çok uzun sürerse yeni hedef (timeout)
-            if steps_since_reach > 500:
-                print(f"\n  ⏱️ Timeout! Spawning easier target...")
-                target_rel = spawn_reachable_target(env, root_pos)
-                env.target_pos[0] = target_rel
-                steps_since_reach = 0
-
-            # Log
-            if step % 100 == 0:
                 print(f"[Step {step:4d}] Dist: {distance:.3f}m | Reward: {rewards[0].item():+.2f} | "
                       f"Reaches: {reach_count}")
+                print(f"  Target: [{env.target_pos[0,0]:.3f}, {env.target_pos[0,1]:.3f}, {env.target_pos[0,2]:.3f}]")
+                print(f"  EE:     [{ee_pos_rel[0]:.3f}, {ee_pos_rel[1]:.3f}, {ee_pos_rel[2]:.3f}]")
+                print(f"  Joints: [{current_joints[0]:.2f}, {current_joints[1]:.2f}, {current_joints[2]:.2f}, "
+                      f"{current_joints[3]:.2f}, {current_joints[4]:.2f}]")
+                print(f"  Actions: [{actions[0,0]:.3f}, {actions[0,1]:.3f}, {actions[0,2]:.3f}, "
+                      f"{actions[0,3]:.3f}, {actions[0,4]:.3f}]")
+                print()
 
     except KeyboardInterrupt:
         print("\n\n[INFO] Durduruldu")
@@ -225,7 +203,7 @@ def main():
     print(f"  Toplam step:     {step}")
     print(f"  Toplam reach:    {reach_count}")
     if reach_count > 0:
-        print(f"  Ortalama süre:   {step // reach_count} step/reach")
+        print(f"  Reach rate:      {reach_count / (step/100):.1f} per 100 steps")
     print("=" * 70)
 
     env.close()
