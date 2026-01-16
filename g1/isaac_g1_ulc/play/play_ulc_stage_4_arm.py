@@ -115,8 +115,8 @@ def main():
     print("TRAINING PARAMETRELERİ:")
     print(f"  Action scale:     {env_cfg.action_scale}")
     print(f"  Smoothing alpha:  {env_cfg.action_smoothing_alpha}")
-    print(f"  Position thresh:  {env_cfg.position_threshold}m")
-    print(f"  Min spawn dist:   {env_cfg.min_spawn_distance}m")
+    print(f"  Position thresh:  {env_cfg.pos_threshold}m")
+    print(f"  Min spawn dist:   {env_cfg.min_spawn_dist}m")
     print("-" * 70)
 
     # Joint limitleri göster
