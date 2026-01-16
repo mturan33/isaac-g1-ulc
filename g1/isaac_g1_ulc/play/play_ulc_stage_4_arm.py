@@ -1,13 +1,12 @@
 """
-G1 Arm - DIRECT PHYSICS TEST
-=============================
+G1 Arm - VISUAL DEBUG TEST
+===========================
 
-Environment'ın _apply_action metodunu BYPASS ederek
-direkt joint kontrolü test et.
+Kol hareket ederken target ve EE sphere'leri de güncelle.
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p play_arm_physics_test.py
+./isaaclab.bat -p play_arm_visual_test.py
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ import os
 import sys
 import math
 
-parser = argparse.ArgumentParser(description="G1 Arm Direct Physics Test")
+parser = argparse.ArgumentParser(description="G1 Arm Visual Debug Test")
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -37,8 +36,8 @@ from g1_arm_reach_env import G1ArmReachEnv, G1ArmReachEnvCfg
 
 def main():
     print("\n" + "=" * 70)
-    print("   G1 ARM DIRECT PHYSICS TEST")
-    print("   Environment _apply_action BYPASS edilecek!")
+    print("   G1 ARM VISUAL DEBUG TEST")
+    print("   Target ve EE sphere'ler HER STEP güncelleniyor!")
     print("=" * 70)
 
     # Environment
@@ -51,85 +50,104 @@ def main():
     # Reset
     obs_dict, _ = env.reset()
 
-    # Joint bilgileri
-    print(f"\n[INFO] Arm joint indices: {env.arm_joint_indices.tolist()}")
-    print(f"[INFO] Joint names: {[env.robot.data.joint_names[i] for i in env.arm_joint_indices.tolist()]}")
-    print(f"[INFO] Joint lower limits: {env.joint_lower.tolist()}")
-    print(f"[INFO] Joint upper limits: {env.joint_upper.tolist()}")
+    # Test hedefleri (world koordinatlarında, robot root'a göre offset)
+    # Robot root: [0, 0, 1.0]
+    root_pos = env.robot.data.root_pos_w[0]  # [0, 0, 1]
 
-    # Test pozisyonları
-    poses = {
-        "home":    torch.tensor([-0.3, 0.0, 0.0, 0.5, 0.0], device="cuda:0"),
-        "forward": torch.tensor([1.5, 0.0, 0.0, 0.0, 0.0], device="cuda:0"),
-        "up":      torch.tensor([-1.5, 0.0, 0.0, 0.0, 0.0], device="cuda:0"),
-        "side":    torch.tensor([0.0, 1.0, 0.0, 0.5, 0.0], device="cuda:0"),
+    targets_rel = {
+        "front":  torch.tensor([0.35, 0.20, 0.05], device="cuda:0"),   # İleri-sağ
+        "right":  torch.tensor([0.10, 0.40, 0.10], device="cuda:0"),   # Sağ-yana
+        "up":     torch.tensor([0.20, 0.20, 0.40], device="cuda:0"),   # Yukarı
+        "down":   torch.tensor([0.20, 0.20, -0.20], device="cuda:0"),  # Aşağı
     }
 
-    print("\n[INFO] Test başlıyor - joint'ler sırayla hareket edecek")
+    target_sequence = ["front", "right", "up", "down"]
+
+    print(f"\n[INFO] Robot root: {root_pos.tolist()}")
+    print("[INFO] Target pozisyonları (root-relative):")
+    for name, pos in targets_rel.items():
+        world_pos = root_pos + pos
+        print(f"  {name:8s}: rel={pos.tolist()} → world={world_pos.tolist()}")
+
+    print("\n[INFO] Test başlıyor...")
+    print("[INFO] Yeşil küre = Target, Turuncu küre = End Effector")
     print("[INFO] Ctrl+C ile çık\n")
 
     step = 0
-    current_target = poses["home"].clone()
+    phase_duration = 200  # Her hedefte 200 step
+    current_target_name = "front"
 
     try:
         while simulation_app.is_running():
             step += 1
 
-            # Her 150 step'te hedef değiştir
-            phase = (step // 150) % 4
-            if phase == 0:
-                target_name = "home"
-            elif phase == 1:
-                target_name = "forward"
-            elif phase == 2:
-                target_name = "home"
-            else:
-                target_name = "side"
+            # Faz belirleme
+            phase_idx = (step // phase_duration) % len(target_sequence)
+            current_target_name = target_sequence[phase_idx]
+            target_rel = targets_rel[current_target_name]
 
-            target_joints = poses[target_name]
+            # Target'ı environment'a kaydet (root-relative)
+            env.target_pos[0] = target_rel
 
-            # ===== YÖNTEM 1: Tüm joint'lere target set et =====
+            # ===== TARGET SPHERE GÜNCELLE =====
+            target_world = root_pos + target_rel
+            default_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device="cuda:0")
+            target_pose = torch.cat([target_world, default_quat]).unsqueeze(0)
+            env.target_obj.write_root_pose_to_sim(target_pose)
+
+            # ===== EE MARKER GÜNCELLE =====
+            ee_pos_world = env._compute_ee_pos()
+            palm_quat = env.robot.data.body_quat_w[:, env.palm_idx]
+            ee_marker_pose = torch.cat([ee_pos_world[0], palm_quat[0]]).unsqueeze(0)
+            env.ee_marker.write_root_pose_to_sim(ee_marker_pose)
+
+            # ===== KOL KONTROLÜ =====
+            # EE'yi target'a götürmek için basit P kontrolü
+            ee_pos_rel = ee_pos_world[0] - root_pos
+            error = target_rel - ee_pos_rel
+
+            # Error'dan joint delta hesapla (çok basit yaklaşım)
+            # Shoulder pitch: ileri/geri (x error)
+            # Shoulder roll: yana (y error)
+            # Elbow pitch: yukarı/aşağı (z error)
+
+            current_joints = env.robot.data.joint_pos[0, env.arm_joint_indices]
+
+            # Basit P controller
+            Kp = 2.0
+            joint_delta = torch.tensor([
+                Kp * error[0],   # shoulder_pitch ← x error
+                -Kp * error[1],  # shoulder_roll ← -y error (ters)
+                0.0,              # shoulder_yaw
+                -Kp * error[2],  # elbow_pitch ← -z error
+                0.0,              # elbow_roll
+            ], device="cuda:0")
+
+            # Yeni hedef joint pozisyonları
+            target_joints = current_joints + joint_delta * 0.02  # Küçük adımlar
+            target_joints = torch.clamp(target_joints, env.joint_lower, env.joint_upper)
+
+            # Joint target'ları set et
             all_joint_targets = env.robot.data.joint_pos.clone()
-
-            # Sadece arm joint'lerini güncelle
-            for i, idx in enumerate(env.arm_joint_indices):
-                all_joint_targets[0, idx] = target_joints[i]
-
-            # Joint target'ı set et
+            all_joint_targets[0, env.arm_joint_indices] = target_joints
             env.robot.set_joint_position_target(all_joint_targets)
 
-            # ===== YÖNTEM 2: Write joint state (daha agresif) =====
-            # Bu yöntem joint'i ANINDA hedefe taşır (teleport gibi)
-            # if step % 150 == 1:  # Sadece faz değişiminde
-            #     joint_pos = env.robot.data.joint_pos.clone()
-            #     joint_vel = torch.zeros_like(env.robot.data.joint_vel)
-            #     for i, idx in enumerate(env.arm_joint_indices):
-            #         joint_pos[0, idx] = target_joints[i]
-            #     env.robot.write_joint_state_to_sim(joint_pos, joint_vel)
-
-            # ===== Simülasyonu ilerlet (env.step KULLANMADAN!) =====
-            # env.step() yerine direkt scene.write_data_to_sim ve simulate
+            # ===== SİMÜLASYON =====
             env.scene.write_data_to_sim()
             env.sim.step(render=True)
             env.scene.update(env.sim.get_physics_dt())
 
-            # Log (her 30 step)
-            if step % 30 == 0:
-                current_joints = env.robot.data.joint_pos[0, env.arm_joint_indices]
-                ee_pos = env._compute_ee_pos()[0]
+            # Log
+            if step % 50 == 0:
+                distance = error.norm().item()
+                reached = "✓ REACHED!" if distance < 0.05 else ""
 
-                print(f"[Step {step:4d}] Phase: {target_name:10s}")
-                print(f"  Target:  [{target_joints[0]:.2f}, {target_joints[1]:.2f}, "
-                      f"{target_joints[2]:.2f}, {target_joints[3]:.2f}, {target_joints[4]:.2f}]")
-                print(f"  Current: [{current_joints[0]:.2f}, {current_joints[1]:.2f}, "
+                print(f"[Step {step:4d}] Target: {current_target_name:8s}")
+                print(f"  Target (rel): [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
+                print(f"  EE pos (rel): [{ee_pos_rel[0]:.3f}, {ee_pos_rel[1]:.3f}, {ee_pos_rel[2]:.3f}]")
+                print(f"  Distance:     {distance:.3f}m {reached}")
+                print(f"  Joints: [{current_joints[0]:.2f}, {current_joints[1]:.2f}, "
                       f"{current_joints[2]:.2f}, {current_joints[3]:.2f}, {current_joints[4]:.2f}]")
-                print(f"  EE pos:  [{ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f}]")
-
-                diff = (target_joints - current_joints).abs().max().item()
-                if diff > 0.1:
-                    print(f"  ⚠️  Max diff: {diff:.2f} rad")
-                else:
-                    print(f"  ✓  OK (diff: {diff:.3f})")
                 print()
 
     except KeyboardInterrupt:
