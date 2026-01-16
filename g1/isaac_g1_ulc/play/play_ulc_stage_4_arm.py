@@ -216,19 +216,23 @@ def main():
             left_obs_joint_vel[2] = -left_obs_joint_vel[2]
             left_obs_joint_vel[4] = -left_obs_joint_vel[4]
 
-            # Sol kol observation
+            # Sol kol observation (policy 19 dim bekliyor)
+            # Orijinal obs: target(3) + ee(3) + joint_pos(5) + joint_vel(5) + prev_act(5) = 21
+            # Ama policy 19 dim ile eğitildi, son 2'yi atlayalım
             left_obs = torch.cat([
-                left_obs_target,
-                left_obs_ee,
-                left_obs_joint_pos,
-                left_obs_joint_vel,
-                left_smoothed_actions
+                left_obs_target,           # 3
+                left_obs_ee,               # 3
+                left_obs_joint_pos,        # 5
+                left_obs_joint_vel,        # 5
+                left_smoothed_actions[:3]  # 3 (sadece ilk 3 action)
             ]).unsqueeze(0)
 
-            # Padding
+            # Policy 19 dim bekliyor - tam 19 olacak şekilde ayarla
             if left_obs.shape[-1] < obs_dim:
                 pad = obs_dim - left_obs.shape[-1]
                 left_obs = torch.cat([left_obs, torch.zeros(1, pad, device="cuda:0")], dim=-1)
+            elif left_obs.shape[-1] > obs_dim:
+                left_obs = left_obs[:, :obs_dim]
 
             with torch.no_grad():
                 left_actions_raw = actor(left_obs)
