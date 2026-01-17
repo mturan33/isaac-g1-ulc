@@ -2,15 +2,21 @@
 G1 Dual Arm Environment (Play Only)
 ====================================
 
-Stage 4 Dual Arm: Her iki kol da aktif, 6 visual marker.
+ÇALIŞAN VERSİYON - 330+ reach
+
+KOORDİNAT SİSTEMİ:
+- X- = İleri (önde)
+- Y+ = Sağ taraf
+- Y- = Sol taraf
+- Z+ = Yukarı
 
 VISUAL MARKERS:
-- Yeşil küre     = Sağ kol target
-- Mavi küre      = Sol kol target
-- Turuncu küre   = Sağ el (EE)
-- Mor küre       = Sol el (EE)
-- Yeşil kutu     = Sağ kol workspace (saydam)
-- Mavi kutu      = Sol kol workspace (saydam)
+- 🟢 Yeşil küre  = Sağ kol target
+- 🔵 Mavi küre   = Sol kol target
+- 🟠 Turuncu    = Sağ el (EE)
+- 🟣 Mor        = Sol el (EE)
+- 🟩 Yeşil kutu = Sağ workspace
+- 🟦 Mavi kutu  = Sol workspace
 """
 
 from __future__ import annotations
@@ -73,21 +79,34 @@ DEFAULT_ARM_POSE = {
 }
 
 # =============================================================================
-# WORKSPACE PARAMETERS (target sampling aralıkları)
+# TRAINING WORKSPACE PARAMETRELERİ (g1_arm_reach_env.py'den)
 # =============================================================================
-# Sağ kol: X: -0.35 ile -0.20, Y: -0.05 ile 0.15, Z: 0.15 ile 0.35
-# Sol kol: X: -0.35 ile -0.20, Y: -0.15 ile 0.05, Z: 0.15 ile 0.35
+# Training'deki _sample_target clamp değerleri:
+# X: -0.30 to 0.40, Y: -0.30 to 0.50, Z: -0.10 to 0.60
 
-# Kutu boyutları (aralık farkları)
-WS_SIZE_X = 0.15  # 0.35 - 0.20
-WS_SIZE_Y = 0.20  # 0.15 - (-0.05)
-WS_SIZE_Z = 0.20  # 0.35 - 0.15
+# Sağ kol workspace (training clamp değerleri, root'a göre relatif)
+RIGHT_WS_X_MIN, RIGHT_WS_X_MAX = -0.30, 0.40
+RIGHT_WS_Y_MIN, RIGHT_WS_Y_MAX = -0.30, 0.50
+RIGHT_WS_Z_MIN, RIGHT_WS_Z_MAX = -0.10, 0.60
 
-# Kutu merkez pozisyonları (root'a göre, root z=1.0'da)
-# Sağ: X ortası = -0.275, Y ortası = 0.05, Z ortası = 0.25
-# Sol: X ortası = -0.275, Y ortası = -0.05, Z ortası = 0.25
-WS_RIGHT_CENTER = (-0.275, 0.05, 1.25)   # root z=1.0 + offset z=0.25
-WS_LEFT_CENTER = (-0.275, -0.05, 1.25)
+# Sol kol workspace (Y ekseni mirrored)
+LEFT_WS_X_MIN, LEFT_WS_X_MAX = -0.30, 0.40
+LEFT_WS_Y_MIN, LEFT_WS_Y_MAX = -0.50, 0.30   # Y mirrored for left arm
+LEFT_WS_Z_MIN, LEFT_WS_Z_MAX = -0.10, 0.60
+
+# Kutu boyutları (görselleştirme için)
+WS_SIZE_X = RIGHT_WS_X_MAX - RIGHT_WS_X_MIN  # 0.70
+WS_SIZE_Y = RIGHT_WS_Y_MAX - RIGHT_WS_Y_MIN  # 0.80
+WS_SIZE_Z = RIGHT_WS_Z_MAX - RIGHT_WS_Z_MIN  # 0.70
+
+# Kutu merkezleri (world koordinatları, root z=1.0)
+WS_RIGHT_CENTER_X = (RIGHT_WS_X_MIN + RIGHT_WS_X_MAX) / 2  # 0.05
+WS_RIGHT_CENTER_Y = (RIGHT_WS_Y_MIN + RIGHT_WS_Y_MAX) / 2  # 0.10
+WS_RIGHT_CENTER_Z = 1.0 + (RIGHT_WS_Z_MIN + RIGHT_WS_Z_MAX) / 2  # 1.25
+
+WS_LEFT_CENTER_X = (LEFT_WS_X_MIN + LEFT_WS_X_MAX) / 2  # 0.05
+WS_LEFT_CENTER_Y = (LEFT_WS_Y_MIN + LEFT_WS_Y_MAX) / 2  # -0.10
+WS_LEFT_CENTER_Z = 1.0 + (LEFT_WS_Z_MIN + LEFT_WS_Z_MAX) / 2  # 1.25
 
 
 @configclass
@@ -200,13 +219,7 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, 0.2, 1.0)),
     )
 
-    # =========================================================================
-    # WORKSPACE VISUALIZATION - SAYDAM KUTULAR
-    # =========================================================================
-
-    # Scene config'deki workspace tanımlarını şu şekilde değiştir:
-
-    # Yeşil saydam kutu - SAĞ KOL workspace
+    # Yeşil kutu - SAĞ KOL workspace (opacity yok, emissive ile parlak)
     right_workspace: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/RightWorkspace",
         spawn=sim_utils.CuboidCfg(
@@ -220,10 +233,12 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
                 roughness=1.0,
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=WS_RIGHT_CENTER),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(WS_RIGHT_CENTER_X, WS_RIGHT_CENTER_Y, WS_RIGHT_CENTER_Z)
+        ),
     )
 
-    # Mavi saydam kutu - SOL KOL workspace
+    # Mavi kutu - SOL KOL workspace
     left_workspace: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/LeftWorkspace",
         spawn=sim_utils.CuboidCfg(
@@ -237,7 +252,9 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
                 roughness=1.0,
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=WS_LEFT_CENTER),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(WS_LEFT_CENTER_X, WS_LEFT_CENTER_Y, WS_LEFT_CENTER_Z)
+        ),
     )
 
 
@@ -293,8 +310,8 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_target_obj = self.scene["left_target"]
         self.right_ee_marker = self.scene["right_ee_marker"]
         self.left_ee_marker = self.scene["left_ee_marker"]
-        self.right_workspace_obj = self.scene["right_workspace"]
-        self.left_workspace_obj = self.scene["left_workspace"]
+        self.right_workspace = self.scene["right_workspace"]
+        self.left_workspace = self.scene["left_workspace"]
 
         joint_names = self.robot.data.joint_names
         body_names = self.robot.data.body_names
@@ -350,27 +367,25 @@ class G1DualArmEnv(DirectRLEnv):
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
         print("\n" + "=" * 70)
-        print("G1 DUAL ARM ENVIRONMENT - WORKSPACE VİZUALİZASYON")
+        print("G1 DUAL ARM ENVIRONMENT - ÇALIŞAN VERSİYON + WORKSPACE VIS")
         print("=" * 70)
         print(f"  Right arm: {self.right_arm_indices.tolist()}")
         print(f"  Left arm:  {self.left_arm_indices.tolist()}")
         print("-" * 70)
-        print("  SAĞ KOL WORKSPACE:")
-        print("    X: -0.35 ile -0.20 (önde)")
-        print("    Y: -0.05 ile 0.15 (sağ taraf)")
-        print("    Z: 0.15 ile 0.35 (göğüs hizası)")
-        print("  SOL KOL WORKSPACE:")
-        print("    X: -0.35 ile -0.20 (önde)")
-        print("    Y: -0.15 ile 0.05 (sol taraf)")
-        print("    Z: 0.15 ile 0.35 (göğüs hizası)")
+        print("  KOORDİNAT SİSTEMİ:")
+        print("    X- = İleri (önde)")
+        print("    Y+ = Sağ taraf")
+        print("    Y- = Sol taraf")
+        print("    Z+ = Yukarı")
         print("-" * 70)
-        print("  MARKERS:")
-        print("    🟢 Yeşil küre  = Sağ target")
-        print("    🔵 Mavi küre   = Sol target")
-        print("    🟠 Turuncu     = Sağ EE")
-        print("    🟣 Mor         = Sol EE")
-        print("    🟩 Yeşil kutu  = Sağ workspace")
-        print("    🟦 Mavi kutu   = Sol workspace")
+        print("  SAĞ KOL WORKSPACE (yeşil kutu):")
+        print(f"    X: {RIGHT_WS_X_MIN} to {RIGHT_WS_X_MAX} (önde)")
+        print(f"    Y: {RIGHT_WS_Y_MIN} to {RIGHT_WS_Y_MAX} (sağ)")
+        print(f"    Z: {RIGHT_WS_Z_MIN} to {RIGHT_WS_Z_MAX} (göğüs)")
+        print("  SOL KOL WORKSPACE (mavi kutu):")
+        print(f"    X: {LEFT_WS_X_MIN} to {LEFT_WS_X_MAX} (önde)")
+        print(f"    Y: {LEFT_WS_Y_MIN} to {LEFT_WS_Y_MAX} (sol)")
+        print(f"    Z: {LEFT_WS_Z_MIN} to {LEFT_WS_Z_MAX} (göğüs)")
         print("=" * 70 + "\n")
 
     def _setup_scene(self):
@@ -379,8 +394,8 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_target_obj = self.scene["left_target"]
         self.right_ee_marker = self.scene["right_ee_marker"]
         self.left_ee_marker = self.scene["left_ee_marker"]
-        self.right_workspace_obj = self.scene["right_workspace"]
-        self.left_workspace_obj = self.scene["left_workspace"]
+        self.right_workspace = self.scene["right_workspace"]
+        self.left_workspace = self.scene["left_workspace"]
 
     def _compute_right_ee_pos(self) -> torch.Tensor:
         palm_pos = self.robot.data.body_pos_w[:, self.right_palm_idx]
@@ -395,13 +410,14 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """SAĞ KOL - Box workspace."""
+        """SAĞ KOL - ÇALIŞAN PARAMETRELER."""
         num = len(env_ids)
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.35, -0.20)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(0.15, 0.35)
+        # X- = ileri, Y+ = sağ, Z+ = yukarı
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(RIGHT_WS_X_MIN, RIGHT_WS_X_MAX)
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(RIGHT_WS_Y_MIN, RIGHT_WS_Y_MAX)
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(RIGHT_WS_Z_MIN, RIGHT_WS_Z_MAX)
 
         self.right_target_pos[env_ids] = targets
 
@@ -412,13 +428,14 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """SOL KOL - Box workspace."""
+        """SOL KOL - ÇALIŞAN PARAMETRELER."""
         num = len(env_ids)
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.35, -0.20)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.15, 0.05)
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(0.15, 0.35)
+        # X- = ileri, Y- = sol, Z+ = yukarı
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(LEFT_WS_X_MIN, LEFT_WS_X_MAX)
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(LEFT_WS_Y_MIN, LEFT_WS_Y_MAX)
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(LEFT_WS_Z_MIN, LEFT_WS_Z_MAX)
 
         self.left_target_pos[env_ids] = targets
 
