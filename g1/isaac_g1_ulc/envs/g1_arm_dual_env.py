@@ -389,76 +389,39 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """Sample right arm target - TRAINING ENV İLE AYNI SİSTEM."""
-        num_samples = len(env_ids)
+        """SAĞ KOL - SABİT WORKSPACE, rastgele yön YOK."""
+        num = len(env_ids)
 
-        # Mevcut EE pozisyonunu al (training env'deki gibi)
-        ee_pos_world = self._compute_right_ee_pos()
-        root_pos = self.robot.data.root_pos_w
-        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
-
-        # Rastgele yön (training env'deki gibi)
-        direction = torch.randn((num_samples, 3), device=self.device)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-
-        # Mesafe hesapla (training env'deki gibi)
-        min_dist = self.cfg.pos_threshold + 0.02
-        max_dist = self.current_target_radius
-        max_dist = max(max_dist, min_dist + 0.01)
-        distance = min_dist + torch.rand((num_samples, 1), device=self.device) * (max_dist - min_dist)
-
-        # Hedef = mevcut EE + offset
-        targets = current_ee_rel + direction * distance
-
-        # SAĞ KOL WORKSPACE - Training env'den farklı olarak ÖNDE olmasını garanti et
-        targets[:, 0] = torch.clamp(targets[:, 0], 0.15, 0.40)   # X: KESİNLİKLE ÖNDE!
-        targets[:, 1] = torch.clamp(targets[:, 1], -0.35, 0.00)  # Y: sağ taraf (negatif veya 0)
-        targets[:, 2] = torch.clamp(targets[:, 2], -0.15, 0.35)  # Z: el seviyesi
+        # Root'a göre SABİT koordinatlar - EE'ye bağlı DEĞİL
+        targets = torch.zeros((num, 3), device=self.device)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.30, 0.45)  # X: ÖNDE
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.20, 0.00)  # Y: SAĞ taraf
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: göğüs hizası
 
         self.right_target_pos[env_ids] = targets
 
-        # Marker güncelle
         root_pos_ids = self.robot.data.root_pos_w[env_ids]
         target_world = root_pos_ids + targets
-        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num_samples, -1)
-        target_pose = torch.cat([target_world, default_quat], dim=-1)
-        self.right_target_obj.write_root_pose_to_sim(target_pose, env_ids=env_ids)
+        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
+        pose = torch.cat([target_world, default_quat], dim=-1)
+        self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """Sample left arm target - TRAINING ENV İLE AYNI SİSTEM."""
-        num_samples = len(env_ids)
+        """SOL KOL - SABİT WORKSPACE, rastgele yön YOK."""
+        num = len(env_ids)
 
-        # Mevcut EE pozisyonunu al
-        ee_pos_world = self._compute_left_ee_pos()
-        root_pos = self.robot.data.root_pos_w
-        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
-
-        # Rastgele yön
-        direction = torch.randn((num_samples, 3), device=self.device)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-
-        # Mesafe hesapla
-        min_dist = self.cfg.pos_threshold + 0.02
-        max_dist = self.current_target_radius
-        max_dist = max(max_dist, min_dist + 0.01)
-        distance = min_dist + torch.rand((num_samples, 1), device=self.device) * (max_dist - min_dist)
-
-        # Hedef = mevcut EE + offset
-        targets = current_ee_rel + direction * distance
-
-        # SOL KOL WORKSPACE - ÖNDE olmasını garanti et
-        targets[:, 0] = torch.clamp(targets[:, 0], 0.15, 0.40)   # X: KESİNLİKLE ÖNDE!
-        targets[:, 1] = torch.clamp(targets[:, 1], 0.00, 0.35)   # Y: sol taraf (pozitif veya 0)
-        targets[:, 2] = torch.clamp(targets[:, 2], -0.15, 0.35)  # Z: el seviyesi
+        targets = torch.zeros((num, 3), device=self.device)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.30, 0.45)  # X: ÖNDE
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.00, 0.20)  # Y: SOL taraf
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: göğüs hizası
 
         self.left_target_pos[env_ids] = targets
 
-        # Marker güncelle
         root_pos_ids = self.robot.data.root_pos_w[env_ids]
         target_world = root_pos_ids + targets
-        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num_samples, -1)
-        target_pose = torch.cat([target_world, default_quat], dim=-1)
-        self.left_target_obj.write_root_pose_to_sim(target_pose, env_ids=env_ids)
+        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
+        pose = torch.cat([target_world, default_quat], dim=-1)
+        self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _get_observations(self) -> dict:
         """Get observations for both arms."""
