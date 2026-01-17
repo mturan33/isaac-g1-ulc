@@ -410,37 +410,75 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """SAĞ KOL - ÇALIŞAN PARAMETRELER."""
+        """SAĞ KOL - TRAINING MANTIĞI: EE etrafında spawn."""
         num = len(env_ids)
 
-        targets = torch.zeros((num, 3), device=self.device)
-        # X- = ileri, Y+ = sağ, Z+ = yukarı
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(RIGHT_WS_X_MIN, RIGHT_WS_X_MAX)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(RIGHT_WS_Y_MIN, RIGHT_WS_Y_MAX)
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(RIGHT_WS_Z_MIN, RIGHT_WS_Z_MAX)
+        # Training parametreleri
+        pos_threshold = 0.05  # 5cm
+        min_dist = pos_threshold + 0.02  # 7cm minimum
+        max_dist = 0.15  # 15cm maximum (curriculum başlangıcı)
+
+        # Mevcut EE pozisyonu (root'a göre relatif)
+        ee_pos_world = self._compute_right_ee_pos()
+        root_pos = self.robot.data.root_pos_w
+        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
+
+        # Random yön
+        direction = torch.randn((num, 3), device=self.device)
+        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+
+        # Random mesafe (threshold'un ötesinde)
+        distance = min_dist + torch.rand((num, 1), device=self.device) * (max_dist - min_dist)
+
+        # Target = current EE + offset
+        targets = current_ee_rel + direction * distance
+
+        # Training workspace'e clamp
+        targets[:, 0] = torch.clamp(targets[:, 0], RIGHT_WS_X_MIN, RIGHT_WS_X_MAX)
+        targets[:, 1] = torch.clamp(targets[:, 1], RIGHT_WS_Y_MIN, RIGHT_WS_Y_MAX)
+        targets[:, 2] = torch.clamp(targets[:, 2], RIGHT_WS_Z_MIN, RIGHT_WS_Z_MAX)
 
         self.right_target_pos[env_ids] = targets
 
-        root_pos = self.robot.data.root_pos_w[env_ids]
-        target_world = root_pos + targets
+        root_pos_ids = self.robot.data.root_pos_w[env_ids]
+        target_world = root_pos_ids + targets
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
         pose = torch.cat([target_world, default_quat], dim=-1)
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """SOL KOL - ÇALIŞAN PARAMETRELER."""
+        """SOL KOL - TRAINING MANTIĞI: EE etrafında spawn."""
         num = len(env_ids)
 
-        targets = torch.zeros((num, 3), device=self.device)
-        # X- = ileri, Y- = sol, Z+ = yukarı
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(LEFT_WS_X_MIN, LEFT_WS_X_MAX)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(LEFT_WS_Y_MIN, LEFT_WS_Y_MAX)
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(LEFT_WS_Z_MIN, LEFT_WS_Z_MAX)
+        # Training parametreleri
+        pos_threshold = 0.05  # 5cm
+        min_dist = pos_threshold + 0.02  # 7cm minimum
+        max_dist = 0.15  # 15cm maximum (curriculum başlangıcı)
+
+        # Mevcut EE pozisyonu (root'a göre relatif)
+        ee_pos_world = self._compute_left_ee_pos()
+        root_pos = self.robot.data.root_pos_w
+        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
+
+        # Random yön
+        direction = torch.randn((num, 3), device=self.device)
+        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+
+        # Random mesafe (threshold'un ötesinde)
+        distance = min_dist + torch.rand((num, 1), device=self.device) * (max_dist - min_dist)
+
+        # Target = current EE + offset
+        targets = current_ee_rel + direction * distance
+
+        # Training workspace'e clamp (sol kol için Y mirrored)
+        targets[:, 0] = torch.clamp(targets[:, 0], LEFT_WS_X_MIN, LEFT_WS_X_MAX)
+        targets[:, 1] = torch.clamp(targets[:, 1], LEFT_WS_Y_MIN, LEFT_WS_Y_MAX)
+        targets[:, 2] = torch.clamp(targets[:, 2], LEFT_WS_Z_MIN, LEFT_WS_Z_MAX)
 
         self.left_target_pos[env_ids] = targets
 
-        root_pos = self.robot.data.root_pos_w[env_ids]
-        target_world = root_pos + targets
+        root_pos_ids = self.robot.data.root_pos_w[env_ids]
+        target_world = root_pos_ids + targets
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
         pose = torch.cat([target_world, default_quat], dim=-1)
         self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
