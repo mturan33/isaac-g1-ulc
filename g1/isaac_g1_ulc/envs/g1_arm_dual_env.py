@@ -402,33 +402,17 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """Sample right arm target - Training env ile AYNI mantık."""
+        """Sample right arm target - SABİT WORKSPACE."""
         num = len(env_ids)
 
-        # Mevcut EE pozisyonundan başla (training gibi)
-        ee_pos_world = self._compute_right_ee_pos()
-        root_pos = self.robot.data.root_pos_w
-        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
-
-        # Rastgele yön
-        direction = torch.randn((num, 3), device=self.device)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-
-        # Mesafe: 7-15cm arası (training parametreleri)
-        min_dist = 0.07
-        max_dist = 0.15
-        distance = min_dist + torch.rand((num, 1), device=self.device) * (max_dist - min_dist)
-
-        targets = current_ee_rel + direction * distance
-
-        # SAĞ KOL workspace - Y NEGATİF (sağ taraf)
-        targets[:, 0] = torch.clamp(targets[:, 0], 0.10, 0.40)  # X: önde
-        targets[:, 1] = torch.clamp(targets[:, 1], -0.35, -0.05)  # Y: sağ taraf (NEGATİF!)
-        targets[:, 2] = torch.clamp(targets[:, 2], -0.20, 0.30)  # Z: el seviyesi
+        # Doğrudan workspace içinde sample (root'a göre)
+        targets = torch.zeros((num, 3), device=self.device)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.25, 0.45)  # X: KESİNLİKLE ÖNDE
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.10, 0.30)  # Y: sağ taraf
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: göğüs/karın hizası
 
         self.right_target_pos[env_ids] = targets
 
-        # Marker güncelle
         root_pos_ids = self.robot.data.root_pos_w[env_ids]
         target_world = root_pos_ids + targets
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
@@ -436,26 +420,13 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """Sample left arm target - Training env ile AYNI mantık."""
+        """Sample left arm target - SABİT WORKSPACE."""
         num = len(env_ids)
 
-        ee_pos_world = self._compute_left_ee_pos()
-        root_pos = self.robot.data.root_pos_w
-        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
-
-        direction = torch.randn((num, 3), device=self.device)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-
-        min_dist = 0.07
-        max_dist = 0.15
-        distance = min_dist + torch.rand((num, 1), device=self.device) * (max_dist - min_dist)
-
-        targets = current_ee_rel + direction * distance
-
-        # SOL KOL workspace - Y POZİTİF (sol taraf)
-        targets[:, 0] = torch.clamp(targets[:, 0], 0.10, 0.40)  # X: önde
-        targets[:, 1] = torch.clamp(targets[:, 1], 0.05, 0.35)  # Y: sol taraf (POZİTİF!)
-        targets[:, 2] = torch.clamp(targets[:, 2], -0.20, 0.30)  # Z: el seviyesi
+        targets = torch.zeros((num, 3), device=self.device)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.25, 0.45)  # X: KESİNLİKLE ÖNDE
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.30, -0.10)  # Y: sol taraf (ters)
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: göğüs/karın hizası
 
         self.left_target_pos[env_ids] = targets
 
