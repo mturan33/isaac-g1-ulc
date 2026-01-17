@@ -346,33 +346,16 @@ class G1DualArmEnv(DirectRLEnv):
                 return torch.tensor([[0.0, 0.17, 0.35]], device=self.device).expand(len(env_ids), -1)
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """SAĞ KOL - Omuz merkezli yarım küre (X negatif = önde)."""
+        """SAĞ KOL - Dikdörtgen box, 30cm max."""
         num = len(env_ids)
 
-        # Omuz pozisyonunu al (root-relative)
-        shoulder_rel = self._get_shoulder_pos(env_ids, is_right=True)
-
-        # Rastgele yön (küre üzerinde uniform)
-        direction = torch.randn((num, 3), device=self.device)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-
-        # X'i NEGATİF yap → ÖN yarım küre
-        direction[:, 0] = -torch.abs(direction[:, 0])
-
-        # Sağ kol için Y: pozitif tarafta kalmasını tercih et (ama küre olduğu için her yöne gidebilir)
-        # Sadece X negatif zorunlu, Y ve Z serbest
-
-        # Yarıçap: 10-30cm arası
-        radius = torch.empty(num, device=self.device).uniform_(
-            self.workspace_radius_min, self.workspace_radius_max
-        )
-
-        # Hedef = omuz + direction * radius (root-relative)
-        targets = shoulder_rel + direction * radius.unsqueeze(-1)
+        targets = torch.zeros((num, 3), device=self.device)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.40, -0.20)  # X: önde
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.25, -0.05)  # Y: sağ tarafta
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.10, 0.10)  # Z: göğüs hizası
 
         self.right_target_pos[env_ids] = targets
 
-        # World frame'e çevir ve marker güncelle
         root_pos = self.robot.data.root_pos_w[env_ids]
         target_world = root_pos + targets
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
@@ -380,36 +363,21 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """SOL KOL - Omuz merkezli yarım küre (X negatif = önde)."""
+        """SOL KOL - Dikdörtgen box, 30cm max."""
         num = len(env_ids)
 
-        # Omuz pozisyonunu al (root-relative)
-        shoulder_rel = self._get_shoulder_pos(env_ids, is_right=False)
-
-        # Rastgele yön (küre üzerinde uniform)
-        direction = torch.randn((num, 3), device=self.device)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-
-        # X'i NEGATİF yap → ÖN yarım küre
-        direction[:, 0] = -torch.abs(direction[:, 0])
-
-        # Yarıçap: 10-30cm arası
-        radius = torch.empty(num, device=self.device).uniform_(
-            self.workspace_radius_min, self.workspace_radius_max
-        )
-
-        # Hedef = omuz + direction * radius (root-relative)
-        targets = shoulder_rel + direction * radius.unsqueeze(-1)
+        targets = torch.zeros((num, 3), device=self.device)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.40, -0.20)  # X: önde
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.05, 0.25)  # Y: sol tarafta (ters)
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.10, 0.10)  # Z: göğüs hizası
 
         self.left_target_pos[env_ids] = targets
 
-        # World frame'e çevir ve marker güncelle
         root_pos = self.robot.data.root_pos_w[env_ids]
         target_world = root_pos + targets
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
         pose = torch.cat([target_world, default_quat], dim=-1)
         self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
-
     def _get_observations(self) -> dict:
         root_pos = self.robot.data.root_pos_w
 
