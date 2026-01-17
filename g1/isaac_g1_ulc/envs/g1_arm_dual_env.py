@@ -346,13 +346,12 @@ class G1DualArmEnv(DirectRLEnv):
                 return torch.tensor([[0.0, 0.17, 0.35]], device=self.device).expand(len(env_ids), -1)
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """SAĞ KOL - ÇALIŞAN KOD!"""
         num = len(env_ids)
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.45, -0.30)  # X: önde
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.00, 0.20)  # Y: sağ taraf (POZİTİF DEĞİL!)
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: göğüs hizası
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.35, -0.20)  # X: önde
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Y: sağ taraf
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(0.15, 0.35)  # Z: YÜKSELT! göğüs/omuz hizası
 
         self.right_target_pos[env_ids] = targets
 
@@ -363,13 +362,12 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """SOL KOL - ÇALIŞAN KOD!"""
         num = len(env_ids)
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.45, -0.30)  # X: önde
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.20, 0.00)  # Y: sol taraf (NEGATİF!)
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: göğüs hizası
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.35, -0.20)  # X: önde
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.15, 0.05)  # Y: sol taraf
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(0.15, 0.35)  # Z: YÜKSELT!
 
         self.left_target_pos[env_ids] = targets
 
@@ -378,7 +376,7 @@ class G1DualArmEnv(DirectRLEnv):
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
         pose = torch.cat([target_world, default_quat], dim=-1)
         self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
-        
+
     def _get_observations(self) -> dict:
         root_pos = self.robot.data.root_pos_w
 
