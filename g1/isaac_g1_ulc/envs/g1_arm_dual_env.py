@@ -204,6 +204,8 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
     # WORKSPACE VISUALIZATION - SAYDAM KUTULAR
     # =========================================================================
 
+    # Scene config'deki workspace tanımlarını şu şekilde değiştir:
+
     # Yeşil saydam kutu - SAĞ KOL workspace
     right_workspace: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/RightWorkspace",
@@ -212,8 +214,10 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.0, 1.0, 0.0),
-                opacity=0.15,
+                diffuse_color=(0.0, 0.3, 0.0),
+                emissive_color=(0.0, 0.5, 0.0),
+                metallic=0.0,
+                roughness=1.0,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=WS_RIGHT_CENTER),
@@ -227,8 +231,10 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.0, 0.5, 1.0),
-                opacity=0.15,
+                diffuse_color=(0.0, 0.0, 0.3),
+                emissive_color=(0.0, 0.3, 0.5),
+                metallic=0.0,
+                roughness=1.0,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=WS_LEFT_CENTER),
