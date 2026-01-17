@@ -389,14 +389,13 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """SAĞ KOL - SABİT WORKSPACE, rastgele yön YOK."""
+        """SAĞ KOL - X TERSİ!"""
         num = len(env_ids)
 
-        # Root'a göre SABİT koordinatlar - EE'ye bağlı DEĞİL
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.30, 0.45)  # X: ÖNDE
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.20, 0.00)  # Y: SAĞ taraf
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: göğüs hizası
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.45, -0.30)  # X: NEGATİF = ÖNDE!
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.00, 0.20)  # Y: TERSİ
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: aynı
 
         self.right_target_pos[env_ids] = targets
 
@@ -407,13 +406,13 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """SOL KOL - SABİT WORKSPACE, rastgele yön YOK."""
+        """SOL KOL - X TERSİ!"""
         num = len(env_ids)
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.30, 0.45)  # X: ÖNDE
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.00, 0.20)  # Y: SOL taraf
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: göğüs hizası
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(-0.45, -0.30)  # X: NEGATİF = ÖNDE!
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.20, 0.00)  # Y: TERSİ
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.05, 0.15)  # Z: aynı
 
         self.left_target_pos[env_ids] = targets
 
