@@ -434,7 +434,7 @@ class G1DualArmEnv(DirectRLEnv):
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
         pose = torch.cat([target_world, default_quat], dim=-1)
         self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
-        
+
     def _get_observations(self) -> dict:
         """Get observations for both arms."""
         root_pos = self.robot.data.root_pos_w
