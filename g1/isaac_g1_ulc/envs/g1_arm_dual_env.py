@@ -274,6 +274,7 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_ee_marker = self.scene["left_ee_marker"]
 
         joint_names = self.robot.data.joint_names
+        body_names = self.robot.data.body_names
 
         # Right arm joint indices
         self.right_arm_indices = []
@@ -297,29 +298,30 @@ class G1DualArmEnv(DirectRLEnv):
             self.left_arm_indices, device=self.device, dtype=torch.long
         )
 
-        # Omuz body index'lerini bul
-        body_names = self.robot.data.body_names
+        # Palm indices - ÖNCE TANIMLA
+        self.right_palm_idx = None
+        self.left_palm_idx = None
+        for i, name in enumerate(body_names):
+            if "right" in name.lower() and "palm" in name.lower():
+                self.right_palm_idx = i
+            if "left" in name.lower() and "palm" in name.lower():
+                self.left_palm_idx = i
+
+        if self.right_palm_idx is None or self.left_palm_idx is None:
+            raise ValueError("Could not find palm bodies!")
+
+        # Shoulder indices - runtime hesaplama için
         self.right_shoulder_idx = None
         self.left_shoulder_idx = None
         for i, name in enumerate(body_names):
-            if "right_shoulder_pitch_link" in name.lower():
+            if "right_shoulder_pitch_link" in name:
                 self.right_shoulder_idx = i
-            if "left_shoulder_pitch_link" in name.lower():
+            if "left_shoulder_pitch_link" in name:
                 self.left_shoulder_idx = i
 
-        # Eğer bulunamazsa sabit değer kullan
-        if self.right_shoulder_idx is None:
-            print("[WARN] Right shoulder not found, using fixed offset")
-        if self.left_shoulder_idx is None:
-            print("[WARN] Left shoulder not found, using fixed offset")
-
-        # Workspace parametreleri
-        self.workspace_radius = 0.45  # 45cm yarıçap
-        self.min_reach_radius = 0.15  # Minimum mesafe (çok yakın olmasın)
-
-        # Sabit omuz offset'leri (eğer body bulunamazsa)
-        self.right_shoulder_offset = torch.tensor([[0.0, -0.17, 0.35]], device=self.device)
-        self.left_shoulder_offset = torch.tensor([[0.0, 0.17, 0.35]], device=self.device)
+        # Workspace parametreleri - YARIM KÜRE
+        self.workspace_radius_min = 0.10  # İç küre - hedef YOK
+        self.workspace_radius_max = 0.45  # Dış küre - 45cm
 
         # Joint limits - RIGHT
         self.right_joint_lower = torch.zeros(5, device=self.device)
@@ -358,9 +360,6 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_reach_count = torch.zeros(self.num_envs, device=self.device)
         self.left_reach_count = torch.zeros(self.num_envs, device=self.device)
 
-        # Curriculum (training env'den)
-        self.current_target_radius = self.cfg.initial_target_radius
-
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
         print("\n" + "=" * 70)
@@ -370,6 +369,12 @@ class G1DualArmEnv(DirectRLEnv):
         print(f"  Left arm indices:  {self.left_arm_indices.tolist()}")
         print(f"  Right palm idx:    {self.right_palm_idx}")
         print(f"  Left palm idx:     {self.left_palm_idx}")
+        print(f"  Right shoulder idx: {self.right_shoulder_idx}")
+        print(f"  Left shoulder idx:  {self.left_shoulder_idx}")
+        print("-" * 70)
+        print("  WORKSPACE: Yarım küre (omuz merkezli)")
+        print(f"    İç küre (hedef yok): {self.workspace_radius_min}m")
+        print(f"    Dış küre (max):      {self.workspace_radius_max}m")
         print("-" * 70)
         print("  VISUAL MARKERS:")
         print("    🟢 Yeşil   = Sağ kol target")
@@ -400,40 +405,43 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _get_shoulder_pos(self, env_ids: torch.Tensor, is_right: bool) -> torch.Tensor:
-        """Omuz pozisyonunu al (world frame)."""
+        """Omuz pozisyonunu runtime'da hesapla (world frame)."""
         if is_right and self.right_shoulder_idx is not None:
             return self.robot.data.body_pos_w[env_ids, self.right_shoulder_idx]
         elif not is_right and self.left_shoulder_idx is not None:
             return self.robot.data.body_pos_w[env_ids, self.left_shoulder_idx]
         else:
-            # Sabit offset kullan
+            # Fallback: Root'tan sabit offset
             root_pos = self.robot.data.root_pos_w[env_ids]
-            offset = self.right_shoulder_offset if is_right else self.left_shoulder_offset
+            if is_right:
+                offset = torch.tensor([[0.0, -0.17, 0.35]], device=self.device)
+            else:
+                offset = torch.tensor([[0.0, 0.17, 0.35]], device=self.device)
             return root_pos + offset.expand(len(env_ids), -1)
 
     def _sample_right_target(self, env_ids: torch.Tensor):
         """SAĞ KOL - Omuz merkezli yarım küre workspace."""
         num = len(env_ids)
 
-        # Omuz pozisyonunu al
+        # Omuz pozisyonunu runtime'da al
         shoulder_pos = self._get_shoulder_pos(env_ids, is_right=True)
 
-        # Rastgele birim vektör (küre üzerinde uniform dağılım)
+        # Rastgele birim vektör (küre üzerinde uniform)
         direction = torch.randn((num, 3), device=self.device)
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # X'i NEGATİF yap → sadece ÖN yarım küre (X negatif = önde)
+        # X'i NEGATİF yap → sadece ÖN yarım küre
         direction[:, 0] = -torch.abs(direction[:, 0])
 
-        # Yarıçap: min_reach ile workspace_radius arasında
+        # Yarıçap: min ile max arasında (iç küre boş)
         radius = torch.empty(num, device=self.device).uniform_(
-            self.min_reach_radius, self.workspace_radius
+            self.workspace_radius_min, self.workspace_radius_max
         )
 
         # Hedef = omuz + direction * radius (WORLD FRAME)
         target_world = shoulder_pos + direction * radius.unsqueeze(-1)
 
-        # Root-relative pozisyon kaydet (observation için)
+        # Root-relative pozisyon kaydet
         root_pos = self.robot.data.root_pos_w[env_ids]
         self.right_target_pos[env_ids] = target_world - root_pos
 
@@ -446,22 +454,22 @@ class G1DualArmEnv(DirectRLEnv):
         """SOL KOL - Omuz merkezli yarım küre workspace."""
         num = len(env_ids)
 
-        # Omuz pozisyonunu al
+        # Omuz pozisyonunu runtime'da al
         shoulder_pos = self._get_shoulder_pos(env_ids, is_right=False)
 
-        # Rastgele birim vektör (küre üzerinde uniform dağılım)
+        # Rastgele birim vektör
         direction = torch.randn((num, 3), device=self.device)
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # X'i NEGATİF yap → sadece ÖN yarım küre (X negatif = önde)
+        # X'i NEGATİF yap → sadece ÖN yarım küre
         direction[:, 0] = -torch.abs(direction[:, 0])
 
-        # Yarıçap: min_reach ile workspace_radius arasında
+        # Yarıçap: min ile max arasında
         radius = torch.empty(num, device=self.device).uniform_(
-            self.min_reach_radius, self.workspace_radius
+            self.workspace_radius_min, self.workspace_radius_max
         )
 
-        # Hedef = omuz + direction * radius (WORLD FRAME)
+        # Hedef = omuz + direction * radius
         target_world = shoulder_pos + direction * radius.unsqueeze(-1)
 
         # Root-relative pozisyon kaydet
@@ -472,7 +480,7 @@ class G1DualArmEnv(DirectRLEnv):
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
         pose = torch.cat([target_world, default_quat], dim=-1)
         self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
-
+        
     def _get_observations(self) -> dict:
         """Get observations for both arms."""
         root_pos = self.robot.data.root_pos_w
