@@ -79,34 +79,9 @@ DEFAULT_ARM_POSE = {
 }
 
 # =============================================================================
-# TRAINING WORKSPACE PARAMETRELERİ (g1_arm_reach_env.py'den)
+# TRAINING WORKSPACE PARAMETRELERİ - CLAMP DEĞERLERİ
 # =============================================================================
-# Training'deki _sample_target clamp değerleri:
-# X: -0.30 to 0.40, Y: -0.30 to 0.50, Z: -0.10 to 0.60
-
-# Sağ kol workspace (training clamp değerleri, root'a göre relatif)
-RIGHT_WS_X_MIN, RIGHT_WS_X_MAX = -0.30, 0.40
-RIGHT_WS_Y_MIN, RIGHT_WS_Y_MAX = -0.30, 0.50
-RIGHT_WS_Z_MIN, RIGHT_WS_Z_MAX = -0.10, 0.60
-
-# Sol kol workspace (Y ekseni mirrored)
-LEFT_WS_X_MIN, LEFT_WS_X_MAX = -0.30, 0.40
-LEFT_WS_Y_MIN, LEFT_WS_Y_MAX = -0.50, 0.30   # Y mirrored for left arm
-LEFT_WS_Z_MIN, LEFT_WS_Z_MAX = -0.10, 0.60
-
-# Kutu boyutları (görselleştirme için)
-WS_SIZE_X = RIGHT_WS_X_MAX - RIGHT_WS_X_MIN  # 0.70
-WS_SIZE_Y = RIGHT_WS_Y_MAX - RIGHT_WS_Y_MIN  # 0.80
-WS_SIZE_Z = RIGHT_WS_Z_MAX - RIGHT_WS_Z_MIN  # 0.70
-
-# Kutu merkezleri (world koordinatları, root z=1.0)
-WS_RIGHT_CENTER_X = (RIGHT_WS_X_MIN + RIGHT_WS_X_MAX) / 2  # 0.05
-WS_RIGHT_CENTER_Y = (RIGHT_WS_Y_MIN + RIGHT_WS_Y_MAX) / 2  # 0.10
-WS_RIGHT_CENTER_Z = 1.0 + (RIGHT_WS_Z_MIN + RIGHT_WS_Z_MAX) / 2  # 1.25
-
-WS_LEFT_CENTER_X = (LEFT_WS_X_MIN + LEFT_WS_X_MAX) / 2  # 0.05
-WS_LEFT_CENTER_Y = (LEFT_WS_Y_MIN + LEFT_WS_Y_MAX) / 2  # -0.10
-WS_LEFT_CENTER_Z = 1.0 + (LEFT_WS_Z_MIN + LEFT_WS_Z_MAX) / 2  # 1.25
+# Training'deki _sample_target clamp değerleri - sıkı clamp ile kullanılıyor
 
 
 @configclass
@@ -219,43 +194,7 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, 0.2, 1.0)),
     )
 
-    # Yeşil kutu - SAĞ KOL workspace (opacity yok, emissive ile parlak)
-    right_workspace: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/RightWorkspace",
-        spawn=sim_utils.CuboidCfg(
-            size=(WS_SIZE_X, WS_SIZE_Y, WS_SIZE_Z),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.0, 0.3, 0.0),
-                emissive_color=(0.0, 0.5, 0.0),
-                metallic=0.0,
-                roughness=1.0,
-            ),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(WS_RIGHT_CENTER_X, WS_RIGHT_CENTER_Y, WS_RIGHT_CENTER_Z)
-        ),
-    )
-
-    # Mavi kutu - SOL KOL workspace
-    left_workspace: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/LeftWorkspace",
-        spawn=sim_utils.CuboidCfg(
-            size=(WS_SIZE_X, WS_SIZE_Y, WS_SIZE_Z),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.0, 0.0, 0.3),
-                emissive_color=(0.0, 0.3, 0.5),
-                metallic=0.0,
-                roughness=1.0,
-            ),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(WS_LEFT_CENTER_X, WS_LEFT_CENTER_Y, WS_LEFT_CENTER_Z)
-        ),
-    )
+    # Workspace kutuları kaldırıldı - görüş engellemiyorlar
 
 
 @configclass
@@ -364,13 +303,19 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_reach_count = torch.zeros(self.num_envs, device=self.device)
         self.left_reach_count = torch.zeros(self.num_envs, device=self.device)
 
+        # Timeout timer'lar (5 saniye = 150 step @ 30Hz, decimation=4 ile ~120Hz/4=30Hz)
+        self.timeout_steps = 150
+        self.right_target_timer = torch.zeros(self.num_envs, device=self.device)
+        self.left_target_timer = torch.zeros(self.num_envs, device=self.device)
+
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
         print("\n" + "=" * 70)
-        print("G1 DUAL ARM ENVIRONMENT - ÇALIŞAN VERSİYON + WORKSPACE VIS")
+        print("G1 DUAL ARM ENVIRONMENT - TIMEOUT EKLENDİ")
         print("=" * 70)
         print(f"  Right arm: {self.right_arm_indices.tolist()}")
         print(f"  Left arm:  {self.left_arm_indices.tolist()}")
+        print(f"  Timeout: {self.timeout_steps} steps (~5 saniye)")
         print("-" * 70)
         print("  KOORDİNAT SİSTEMİ:")
         print("    X- = İleri (önde)")
@@ -378,14 +323,8 @@ class G1DualArmEnv(DirectRLEnv):
         print("    Y- = Sol taraf")
         print("    Z+ = Yukarı")
         print("-" * 70)
-        print("  SAĞ KOL WORKSPACE (yeşil kutu):")
-        print(f"    X: {RIGHT_WS_X_MIN} to {RIGHT_WS_X_MAX} (önde)")
-        print(f"    Y: {RIGHT_WS_Y_MIN} to {RIGHT_WS_Y_MAX} (sağ)")
-        print(f"    Z: {RIGHT_WS_Z_MIN} to {RIGHT_WS_Z_MAX} (göğüs)")
-        print("  SOL KOL WORKSPACE (mavi kutu):")
-        print(f"    X: {LEFT_WS_X_MIN} to {LEFT_WS_X_MAX} (önde)")
-        print(f"    Y: {LEFT_WS_Y_MIN} to {LEFT_WS_Y_MAX} (sol)")
-        print(f"    Z: {LEFT_WS_Z_MIN} to {LEFT_WS_Z_MAX} (göğüs)")
+        print("  TARGET SPAWN: EE etrafında 7-10cm, sıkı clamp")
+        print("  TIMEOUT: Hedefe 5sn içinde ulaşamazsa yeni hedef")
         print("=" * 70 + "\n")
 
     def _setup_scene(self):
@@ -394,8 +333,7 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_target_obj = self.scene["left_target"]
         self.right_ee_marker = self.scene["right_ee_marker"]
         self.left_ee_marker = self.scene["left_ee_marker"]
-        self.right_workspace = self.scene["right_workspace"]
-        self.left_workspace = self.scene["left_workspace"]
+        # Workspace kutuları kaldırıldı - görüşü engelliyordu
 
     def _compute_right_ee_pos(self) -> torch.Tensor:
         palm_pos = self.robot.data.body_pos_w[:, self.right_palm_idx]
@@ -518,6 +456,11 @@ class G1DualArmEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         root_pos = self.robot.data.root_pos_w
 
+        # Timer'ları artır
+        self.right_target_timer += 1
+        self.left_target_timer += 1
+
+        # Sağ kol
         r_ee = self._compute_right_ee_pos() - root_pos
         r_dist = (r_ee - self.right_target_pos).norm(dim=-1)
         r_reached = r_dist < self.cfg.pos_threshold
@@ -525,7 +468,15 @@ class G1DualArmEnv(DirectRLEnv):
         if len(reached_r) > 0:
             self._sample_right_target(reached_r)
             self.right_reach_count[reached_r] += 1
+            self.right_target_timer[reached_r] = 0  # Timer reset
 
+        # Sağ kol timeout - hedefe ulaşamadıysa yeni hedef
+        r_timeout = torch.where(self.right_target_timer >= self.timeout_steps)[0]
+        if len(r_timeout) > 0:
+            self._sample_right_target(r_timeout)
+            self.right_target_timer[r_timeout] = 0
+
+        # Sol kol
         l_ee = self._compute_left_ee_pos() - root_pos
         l_dist = (l_ee - self.left_target_pos).norm(dim=-1)
         l_reached = l_dist < self.cfg.pos_threshold
@@ -533,6 +484,13 @@ class G1DualArmEnv(DirectRLEnv):
         if len(reached_l) > 0:
             self._sample_left_target(reached_l)
             self.left_reach_count[reached_l] += 1
+            self.left_target_timer[reached_l] = 0  # Timer reset
+
+        # Sol kol timeout - hedefe ulaşamadıysa yeni hedef
+        l_timeout = torch.where(self.left_target_timer >= self.timeout_steps)[0]
+        if len(l_timeout) > 0:
+            self._sample_left_target(l_timeout)
+            self.left_target_timer[l_timeout] = 0
 
         return self.cfg.reward_reaching * (r_reached.float() + l_reached.float()) - r_dist - l_dist
 
@@ -565,6 +523,8 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_smoothed_actions[env_ids] = 0.0
         self.right_reach_count[env_ids] = 0.0
         self.left_reach_count[env_ids] = 0.0
+        self.right_target_timer[env_ids] = 0.0
+        self.left_target_timer[env_ids] = 0.0
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self.actions = actions
