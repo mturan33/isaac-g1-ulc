@@ -3,15 +3,7 @@ G1 Dual Arm Environment (Play Only)
 ====================================
 
 Stage 4 Dual Arm: Her iki kol da aktif, 4 visual marker.
-
-Bu environment SADECE PLAY için kullanılır.
-Training için orijinal g1_arm_reach_env.py kullanılır.
-
-VISUAL MARKERS:
-- Yeşil küre  = Sağ kol target
-- Mavi küre   = Sol kol target  
-- Turuncu    = Sağ el (EE)
-- Mor        = Sol el (EE)
+Training env'deki spawn sistemi kullanılıyor.
 """
 
 from __future__ import annotations
@@ -29,7 +21,7 @@ from isaaclab.actuators import ImplicitActuatorCfg
 
 
 # =============================================================================
-# WORKSPACE PARAMETERS
+# WORKSPACE PARAMETERS (Training env'den)
 # =============================================================================
 
 EE_OFFSET = 0.02
@@ -63,7 +55,7 @@ ARM_JOINT_LIMITS = {
     "right_elbow_pitch_joint": (-0.23, 3.42),
     "right_elbow_roll_joint": (-2.09, 2.09),
     "left_shoulder_pitch_joint": (-2.97, 2.79),
-    "left_shoulder_roll_joint": (-1.59, 2.25),  # Mirror of right
+    "left_shoulder_roll_joint": (-1.59, 2.25),
     "left_shoulder_yaw_joint": (-2.62, 2.62),
     "left_elbow_pitch_joint": (-0.23, 3.42),
     "left_elbow_roll_joint": (-2.09, 2.09),
@@ -84,12 +76,12 @@ DEFAULT_ARM_POSE = {
 
 
 # =============================================================================
-# SCENE CONFIGURATION - DUAL ARM WITH 4 MARKERS
+# SCENE CONFIGURATION
 # =============================================================================
 
 @configclass
 class G1DualArmSceneCfg(InteractiveSceneCfg):
-    """Scene configuration for dual arm with 4 visual markers."""
+    """Scene configuration for dual arm."""
 
     ground = AssetBaseCfg(
         prim_path="/World/ground",
@@ -129,9 +121,6 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
                 stiffness=1000.0,
                 damping=100.0,
             ),
-            # ========================================
-            # BOTH ARMS ACTUATED!
-            # ========================================
             "arm_joints": ImplicitActuatorCfg(
                 joint_names_expr=[
                     "right_shoulder.*", "right_elbow.*",
@@ -143,10 +132,6 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
         },
     )
 
-    # =========================================================================
-    # 4 VISUAL MARKERS
-    # =========================================================================
-
     # Green sphere - RIGHT arm target
     right_target: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/RightTarget",
@@ -155,11 +140,11 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.0, 1.0, 0.0),  # GREEN
+                diffuse_color=(0.0, 1.0, 0.0),
                 emissive_color=(0.0, 0.5, 0.0)
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, -0.2, 1.3)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, -0.2, 1.0)),
     )
 
     # Blue sphere - LEFT arm target
@@ -170,11 +155,11 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.0, 0.5, 1.0),  # BLUE
+                diffuse_color=(0.0, 0.5, 1.0),
                 emissive_color=(0.0, 0.25, 0.5)
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, 0.2, 1.3)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, 0.2, 1.0)),
     )
 
     # Orange sphere - RIGHT arm EE marker
@@ -185,14 +170,14 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(1.0, 0.5, 0.0),  # ORANGE
+                diffuse_color=(1.0, 0.5, 0.0),
                 emissive_color=(0.5, 0.25, 0.0)
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.2)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
     )
 
-    # Purple/Magenta sphere - LEFT arm EE marker
+    # Purple sphere - LEFT arm EE marker
     left_ee_marker: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/LeftEE",
         spawn=sim_utils.SphereCfg(
@@ -200,11 +185,11 @@ class G1DualArmSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.8, 0.0, 0.8),  # PURPLE/MAGENTA
+                diffuse_color=(0.8, 0.0, 0.8),
                 emissive_color=(0.4, 0.0, 0.4)
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, 0.2, 1.2)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, 0.2, 1.0)),
     )
 
 
@@ -217,11 +202,10 @@ class G1DualArmEnvCfg(DirectRLEnvCfg):
     """Configuration for dual arm play environment."""
 
     decimation = 4
-    episode_length_s = 300.0  # Long episodes for play
+    episode_length_s = 300.0
 
-    # Dual arm: 10 actions (5 per arm)
     num_actions = 10
-    num_observations = 36  # 18 per arm
+    num_observations = 36
     num_states = 0
 
     action_space = 10
@@ -240,7 +224,7 @@ class G1DualArmEnvCfg(DirectRLEnvCfg):
 
     scene: G1DualArmSceneCfg = G1DualArmSceneCfg(num_envs=1, env_spacing=2.0)
 
-    # Reward scales
+    # Reward scales (training env'den)
     reward_reaching = 20.0
     reward_pos_distance = -1.0
     reward_approach = 2.0
@@ -248,14 +232,14 @@ class G1DualArmEnvCfg(DirectRLEnvCfg):
     reward_joint_vel = -0.01
     reward_joint_limit = -2.0
 
-    # Motion parameters
+    # Motion parameters (training env'den)
     action_smoothing_alpha = 0.5
     action_scale = 0.08
     max_joint_vel = 2.0
 
-    # Task parameters
+    # Task parameters (training env'den)
     pos_threshold = 0.05
-    initial_target_radius = 0.15
+    initial_target_radius = 0.10
     max_target_radius = 0.30
 
 
@@ -276,7 +260,7 @@ def rotate_vector_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
 # =============================================================================
 
 class G1DualArmEnv(DirectRLEnv):
-    """Dual arm environment for play - both arms actuated."""
+    """Dual arm environment for play."""
 
     cfg: G1DualArmEnvCfg
 
@@ -291,7 +275,7 @@ class G1DualArmEnv(DirectRLEnv):
 
         joint_names = self.robot.data.joint_names
 
-        # Find RIGHT arm joint indices
+        # Right arm joint indices
         self.right_arm_indices = []
         for joint_name in G1_RIGHT_ARM_JOINTS:
             for i, name in enumerate(joint_names):
@@ -302,7 +286,7 @@ class G1DualArmEnv(DirectRLEnv):
             self.right_arm_indices, device=self.device, dtype=torch.long
         )
 
-        # Find LEFT arm joint indices
+        # Left arm joint indices
         self.left_arm_indices = []
         for joint_name in G1_LEFT_ARM_JOINTS:
             for i, name in enumerate(joint_names):
@@ -313,7 +297,7 @@ class G1DualArmEnv(DirectRLEnv):
             self.left_arm_indices, device=self.device, dtype=torch.long
         )
 
-        # Find palm indices
+        # Palm indices
         body_names = self.robot.data.body_names
         self.right_palm_idx = None
         self.left_palm_idx = None
@@ -349,7 +333,7 @@ class G1DualArmEnv(DirectRLEnv):
         ).expand(self.num_envs, -1).clone()
         self.zero_root_vel = torch.zeros((self.num_envs, 6), device=self.device)
 
-        # Target storage - both arms
+        # Target storage
         self.right_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.left_target_pos = torch.zeros((self.num_envs, 3), device=self.device)
 
@@ -362,6 +346,9 @@ class G1DualArmEnv(DirectRLEnv):
         # Reach counters
         self.right_reach_count = torch.zeros(self.num_envs, device=self.device)
         self.left_reach_count = torch.zeros(self.num_envs, device=self.device)
+
+        # Curriculum (training env'den)
+        self.current_target_radius = self.cfg.initial_target_radius
 
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
@@ -388,65 +375,103 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_ee_marker = self.scene["left_ee_marker"]
 
     def _compute_right_ee_pos(self) -> torch.Tensor:
-        """Compute right end effector position."""
+        """Compute right end effector position (2cm in front of palm)."""
         palm_pos = self.robot.data.body_pos_w[:, self.right_palm_idx]
         palm_quat = self.robot.data.body_quat_w[:, self.right_palm_idx]
         forward = rotate_vector_by_quat(self.local_forward, palm_quat)
         return palm_pos + EE_OFFSET * forward
 
     def _compute_left_ee_pos(self) -> torch.Tensor:
-        """Compute left end effector position."""
+        """Compute left end effector position (2cm in front of palm)."""
         palm_pos = self.robot.data.body_pos_w[:, self.left_palm_idx]
         palm_quat = self.robot.data.body_quat_w[:, self.left_palm_idx]
         forward = rotate_vector_by_quat(self.local_forward, palm_quat)
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """SAĞ KOL - KESİNLİKLE ÖNDE!"""
-        num = len(env_ids)
+        """Sample right arm target - TRAINING ENV İLE AYNI SİSTEM."""
+        num_samples = len(env_ids)
 
-        targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.20, 0.40)  # X: ÖNDE (pozitif!)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.25, 0.00)  # Y: sağ taraf
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: el seviyesi
+        # Mevcut EE pozisyonunu al (training env'deki gibi)
+        ee_pos_world = self._compute_right_ee_pos()
+        root_pos = self.robot.data.root_pos_w
+        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
+
+        # Rastgele yön (training env'deki gibi)
+        direction = torch.randn((num_samples, 3), device=self.device)
+        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+
+        # Mesafe hesapla (training env'deki gibi)
+        min_dist = self.cfg.pos_threshold + 0.02
+        max_dist = self.current_target_radius
+        max_dist = max(max_dist, min_dist + 0.01)
+        distance = min_dist + torch.rand((num_samples, 1), device=self.device) * (max_dist - min_dist)
+
+        # Hedef = mevcut EE + offset
+        targets = current_ee_rel + direction * distance
+
+        # SAĞ KOL WORKSPACE - Training env'den farklı olarak ÖNDE olmasını garanti et
+        targets[:, 0] = torch.clamp(targets[:, 0], 0.15, 0.40)   # X: KESİNLİKLE ÖNDE!
+        targets[:, 1] = torch.clamp(targets[:, 1], -0.35, 0.00)  # Y: sağ taraf (negatif veya 0)
+        targets[:, 2] = torch.clamp(targets[:, 2], -0.15, 0.35)  # Z: el seviyesi
 
         self.right_target_pos[env_ids] = targets
 
+        # Marker güncelle
         root_pos_ids = self.robot.data.root_pos_w[env_ids]
         target_world = root_pos_ids + targets
-        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
-        pose = torch.cat([target_world, default_quat], dim=-1)
-        self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
+        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num_samples, -1)
+        target_pose = torch.cat([target_world, default_quat], dim=-1)
+        self.right_target_obj.write_root_pose_to_sim(target_pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """SOL KOL - KESİNLİKLE ÖNDE!"""
-        num = len(env_ids)
+        """Sample left arm target - TRAINING ENV İLE AYNI SİSTEM."""
+        num_samples = len(env_ids)
 
-        targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.20, 0.40)  # X: ÖNDE (pozitif!)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.00, 0.25)  # Y: sol taraf
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: el seviyesi
+        # Mevcut EE pozisyonunu al
+        ee_pos_world = self._compute_left_ee_pos()
+        root_pos = self.robot.data.root_pos_w
+        current_ee_rel = (ee_pos_world - root_pos)[env_ids]
+
+        # Rastgele yön
+        direction = torch.randn((num_samples, 3), device=self.device)
+        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+
+        # Mesafe hesapla
+        min_dist = self.cfg.pos_threshold + 0.02
+        max_dist = self.current_target_radius
+        max_dist = max(max_dist, min_dist + 0.01)
+        distance = min_dist + torch.rand((num_samples, 1), device=self.device) * (max_dist - min_dist)
+
+        # Hedef = mevcut EE + offset
+        targets = current_ee_rel + direction * distance
+
+        # SOL KOL WORKSPACE - ÖNDE olmasını garanti et
+        targets[:, 0] = torch.clamp(targets[:, 0], 0.15, 0.40)   # X: KESİNLİKLE ÖNDE!
+        targets[:, 1] = torch.clamp(targets[:, 1], 0.00, 0.35)   # Y: sol taraf (pozitif veya 0)
+        targets[:, 2] = torch.clamp(targets[:, 2], -0.15, 0.35)  # Z: el seviyesi
 
         self.left_target_pos[env_ids] = targets
 
+        # Marker güncelle
         root_pos_ids = self.robot.data.root_pos_w[env_ids]
         target_world = root_pos_ids + targets
-        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
-        pose = torch.cat([target_world, default_quat], dim=-1)
-        self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
+        default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num_samples, -1)
+        target_pose = torch.cat([target_world, default_quat], dim=-1)
+        self.left_target_obj.write_root_pose_to_sim(target_pose, env_ids=env_ids)
 
     def _get_observations(self) -> dict:
         """Get observations for both arms."""
         root_pos = self.robot.data.root_pos_w
 
-        # Right arm obs
+        # Right arm
         right_joint_pos = self.robot.data.joint_pos[:, self.right_arm_indices]
         right_joint_vel = self.robot.data.joint_vel[:, self.right_arm_indices]
         right_ee_pos = self._compute_right_ee_pos()
         right_ee_rel = right_ee_pos - root_pos
         right_error = self.right_target_pos - right_ee_rel
 
-        # Left arm obs
+        # Left arm
         left_joint_pos = self.robot.data.joint_pos[:, self.left_arm_indices]
         left_joint_vel = self.robot.data.joint_vel[:, self.left_arm_indices]
         left_ee_pos = self._compute_left_ee_pos()
