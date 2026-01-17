@@ -402,14 +402,14 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """Sample right arm target in RIGHT workspace (positive Y)."""
+        """Sample right arm target - ÖNDE ve EL SEVİYESİNDE."""
         num = len(env_ids)
         root_pos = self.robot.data.root_pos_w[env_ids]
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.05, 0.30)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.10, 0.35)  # RIGHT side
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.25)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.25, 0.45)  # X: DAHA ÖNDE
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.30, -0.10)  # Y: SAĞ taraf (negatif!)
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.35, -0.10)  # Z: EL seviyesi (aşağıda)
 
         self.right_target_pos[env_ids] = targets
 
@@ -419,14 +419,14 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """Sample left arm target in LEFT workspace (negative Y)."""
+        """Sample left arm target - ÖNDE ve EL SEVİYESİNDE."""
         num = len(env_ids)
         root_pos = self.robot.data.root_pos_w[env_ids]
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.05, 0.30)
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.35, -0.10)  # LEFT side
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.25)
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.25, 0.45)  # X: DAHA ÖNDE
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.10, 0.30)  # Y: SOL taraf (pozitif!)
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.35, -0.10)  # Z: EL seviyesi
 
         self.left_target_pos[env_ids] = targets
 
