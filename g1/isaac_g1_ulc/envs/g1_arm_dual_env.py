@@ -3,13 +3,18 @@ G1 Dual Arm Environment (Play Only)
 ====================================
 
 Stage 4 Dual Arm: Her iki kol da aktif, 4 visual marker.
-Training env'deki spawn sistemi kullanılıyor.
+Workspace: Omuz merkezli yarım küre (10-45cm yarıçap)
+
+VISUAL MARKERS:
+- Yeşil küre  = Sağ kol target
+- Mavi küre   = Sol kol target
+- Turuncu    = Sağ el (EE)
+- Mor        = Sol el (EE)
 """
 
 from __future__ import annotations
 
 import torch
-import math
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
@@ -21,7 +26,7 @@ from isaaclab.actuators import ImplicitActuatorCfg
 
 
 # =============================================================================
-# WORKSPACE PARAMETERS (Training env'den)
+# WORKSPACE PARAMETERS
 # =============================================================================
 
 EE_OFFSET = 0.02
@@ -224,7 +229,7 @@ class G1DualArmEnvCfg(DirectRLEnvCfg):
 
     scene: G1DualArmSceneCfg = G1DualArmSceneCfg(num_envs=1, env_spacing=2.0)
 
-    # Reward scales (training env'den)
+    # Reward scales
     reward_reaching = 20.0
     reward_pos_distance = -1.0
     reward_approach = 2.0
@@ -232,15 +237,17 @@ class G1DualArmEnvCfg(DirectRLEnvCfg):
     reward_joint_vel = -0.01
     reward_joint_limit = -2.0
 
-    # Motion parameters (training env'den)
+    # Motion parameters
     action_smoothing_alpha = 0.5
     action_scale = 0.08
     max_joint_vel = 2.0
 
-    # Task parameters (training env'den)
+    # Task parameters
     pos_threshold = 0.05
-    initial_target_radius = 0.10
-    max_target_radius = 0.30
+
+    # Workspace: Yarım küre parametreleri
+    workspace_radius_min = 0.10  # İç küre - hedef YOK
+    workspace_radius_max = 0.45  # Dış küre - 45cm
 
 
 # =============================================================================
@@ -267,6 +274,7 @@ class G1DualArmEnv(DirectRLEnv):
     def __init__(self, cfg: G1DualArmEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        # Scene objects
         self.robot = self.scene["robot"]
         self.right_target_obj = self.scene["right_target"]
         self.left_target_obj = self.scene["left_target"]
@@ -298,7 +306,7 @@ class G1DualArmEnv(DirectRLEnv):
             self.left_arm_indices, device=self.device, dtype=torch.long
         )
 
-        # Palm indices - ÖNCE TANIMLA
+        # Palm indices
         self.right_palm_idx = None
         self.left_palm_idx = None
         for i, name in enumerate(body_names):
@@ -319,9 +327,9 @@ class G1DualArmEnv(DirectRLEnv):
             if "left_shoulder_pitch_link" in name:
                 self.left_shoulder_idx = i
 
-        # Workspace parametreleri - YARIM KÜRE
-        self.workspace_radius_min = 0.10  # İç küre - hedef YOK
-        self.workspace_radius_max = 0.45  # Dış küre - 45cm
+        # Workspace parametreleri
+        self.workspace_radius_min = self.cfg.workspace_radius_min
+        self.workspace_radius_max = self.cfg.workspace_radius_max
 
         # Joint limits - RIGHT
         self.right_joint_lower = torch.zeros(5, device=self.device)
@@ -339,7 +347,7 @@ class G1DualArmEnv(DirectRLEnv):
             self.left_joint_lower[i] = low
             self.left_joint_upper[i] = high
 
-        # Fixed root
+        # Fixed root pose
         self.fixed_root_pose = torch.tensor(
             [[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]],
             device=self.device
@@ -360,8 +368,10 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_reach_count = torch.zeros(self.num_envs, device=self.device)
         self.left_reach_count = torch.zeros(self.num_envs, device=self.device)
 
+        # Forward vector for EE computation
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
+        # Print info
         print("\n" + "=" * 70)
         print("G1 DUAL ARM ENVIRONMENT (Play Only)")
         print("=" * 70)
@@ -384,6 +394,7 @@ class G1DualArmEnv(DirectRLEnv):
         print("=" * 70 + "\n")
 
     def _setup_scene(self):
+        """Setup scene objects."""
         self.robot = self.scene["robot"]
         self.right_target_obj = self.scene["right_target"]
         self.left_target_obj = self.scene["left_target"]
@@ -430,7 +441,7 @@ class G1DualArmEnv(DirectRLEnv):
         direction = torch.randn((num, 3), device=self.device)
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # X'i NEGATİF yap → sadece ÖN yarım küre
+        # X'i NEGATİF yap → sadece ÖN yarım küre (X negatif = robotun önü)
         direction[:, 0] = -torch.abs(direction[:, 0])
 
         # Yarıçap: min ile max arasında (iç küre boş)
@@ -441,7 +452,7 @@ class G1DualArmEnv(DirectRLEnv):
         # Hedef = omuz + direction * radius (WORLD FRAME)
         target_world = shoulder_pos + direction * radius.unsqueeze(-1)
 
-        # Root-relative pozisyon kaydet
+        # Root-relative pozisyon kaydet (observation için)
         root_pos = self.robot.data.root_pos_w[env_ids]
         self.right_target_pos[env_ids] = target_world - root_pos
 
@@ -482,7 +493,7 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _get_observations(self) -> dict:
-        """Get observations for both arms."""
+        """Get observations for both arms (36 dim total)."""
         root_pos = self.robot.data.root_pos_w
 
         # Right arm
@@ -508,9 +519,20 @@ class G1DualArmEnv(DirectRLEnv):
         left_marker_pose = torch.cat([left_ee_pos, left_quat], dim=-1)
         self.left_ee_marker.write_root_pose_to_sim(left_marker_pose)
 
+        # Concatenate: Right (18 dim) + Left (18 dim) = 36 dim
         obs = torch.cat([
-            right_joint_pos, right_joint_vel * 0.1, self.right_target_pos, right_ee_rel, right_error,
-            left_joint_pos, left_joint_vel * 0.1, self.left_target_pos, left_ee_rel, left_error,
+            # Right arm (18 dim)
+            right_joint_pos,          # 5
+            right_joint_vel * 0.1,    # 5
+            self.right_target_pos,    # 3
+            right_ee_rel,             # 3
+            right_error,              # 2 (sadece xy veya xyz'nin ilk 2'si)
+            # Left arm (18 dim)
+            left_joint_pos,           # 5
+            left_joint_vel * 0.1,     # 5
+            self.left_target_pos,     # 3
+            left_ee_rel,              # 3
+            left_error,               # 2
         ], dim=-1)
 
         return {"policy": obs}
@@ -519,20 +541,22 @@ class G1DualArmEnv(DirectRLEnv):
         """Compute rewards for both arms."""
         root_pos = self.robot.data.root_pos_w
 
-        # Right arm
+        # Right arm distance
         right_ee_rel = self._compute_right_ee_pos() - root_pos
         right_dist = (right_ee_rel - self.right_target_pos).norm(dim=-1)
 
+        # Check if right reached
         right_reached = right_dist < self.cfg.pos_threshold
         reached_right_envs = torch.where(right_reached)[0]
         if len(reached_right_envs) > 0:
             self._sample_right_target(reached_right_envs)
             self.right_reach_count[reached_right_envs] += 1
 
-        # Left arm
+        # Left arm distance
         left_ee_rel = self._compute_left_ee_pos() - root_pos
         left_dist = (left_ee_rel - self.left_target_pos).norm(dim=-1)
 
+        # Check if left reached
         left_reached = left_dist < self.cfg.pos_threshold
         reached_left_envs = torch.where(left_reached)[0]
         if len(reached_left_envs) > 0:
@@ -543,25 +567,30 @@ class G1DualArmEnv(DirectRLEnv):
         reward_right = self.cfg.reward_reaching * right_reached.float() - right_dist
         reward_left = self.cfg.reward_reaching * left_reached.float() - left_dist
 
+        # Update history
         self.prev_right_distance = right_dist
         self.prev_left_distance = left_dist
 
         return reward_right + reward_left
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Check termination conditions."""
         time_out = self.episode_length_buf >= self.max_episode_length
         terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         return terminated, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor):
+        """Reset environments."""
         super()._reset_idx(env_ids)
 
         if len(env_ids) == 0:
             return
 
+        # Reset root pose
         self.robot.write_root_pose_to_sim(self.fixed_root_pose[env_ids], env_ids=env_ids)
         self.robot.write_root_velocity_to_sim(self.zero_root_vel[env_ids], env_ids=env_ids)
 
+        # Reset joint states
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         joint_vel = torch.zeros_like(self.robot.data.joint_vel[env_ids])
 
@@ -576,46 +605,52 @@ class G1DualArmEnv(DirectRLEnv):
 
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
+        # Sample new targets
         self._sample_right_target(env_ids)
         self._sample_left_target(env_ids)
 
+        # Reset history
         self.right_smoothed_actions[env_ids] = 0.0
         self.left_smoothed_actions[env_ids] = 0.0
         self.right_reach_count[env_ids] = 0.0
         self.left_reach_count[env_ids] = 0.0
+        self.prev_right_distance[env_ids] = 0.3
+        self.prev_left_distance[env_ids] = 0.3
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        """Store actions (10 dim: 5 right + 5 left)."""
+        """Store actions before physics step."""
         self.actions = actions
 
     def _apply_action(self):
-        """Apply actions to both arms."""
+        """Apply actions to both arms with smoothing."""
         alpha = self.cfg.action_smoothing_alpha
 
-        # Split actions
+        # Split actions: first 5 for right, last 5 for left
         right_actions = self.actions[:, :5]
         left_actions = self.actions[:, 5:]
 
+        # Smooth actions
         self.right_smoothed_actions = alpha * right_actions + (1 - alpha) * self.right_smoothed_actions
         self.left_smoothed_actions = alpha * left_actions + (1 - alpha) * self.left_smoothed_actions
 
-        # Fix root
+        # Fix root position
         self.robot.write_root_pose_to_sim(self.fixed_root_pose)
         self.robot.write_root_velocity_to_sim(self.zero_root_vel)
 
-        # Right arm
+        # Right arm target positions
         right_current = self.robot.data.joint_pos[:, self.right_arm_indices]
         right_target = right_current + self.right_smoothed_actions * self.cfg.action_scale
         right_target = torch.clamp(right_target, self.right_joint_lower, self.right_joint_upper)
 
-        # Left arm
+        # Left arm target positions
         left_current = self.robot.data.joint_pos[:, self.left_arm_indices]
         left_target = left_current + self.left_smoothed_actions * self.cfg.action_scale
         left_target = torch.clamp(left_target, self.left_joint_lower, self.left_joint_upper)
 
-        # Combine
+        # Combine into full joint targets
         joint_targets = self.robot.data.joint_pos.clone()
         joint_targets[:, self.right_arm_indices] = right_target
         joint_targets[:, self.left_arm_indices] = left_target
 
+        # Apply
         self.robot.set_joint_position_target(joint_targets)
