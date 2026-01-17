@@ -1,9 +1,9 @@
 """
-G1 DUAL ARM PLAY - 2 Bağımsız Policy
-=====================================
+G1 DUAL ARM PLAY - Using G1DualArmEnv
+======================================
 
-Her kol için ayrı policy instance kullanır.
-Sol kol için sağ kol policy'si mirror edilir.
+Sağ kol policy'sini sol kola mirror olarak uygular.
+4 visual marker ile çalışır.
 
 KULLANIM:
 cd C:\IsaacLab
@@ -27,10 +27,12 @@ simulation_app = app_launcher.app
 import torch
 import torch.nn as nn
 
+# Add env path
 env_path = "source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/envs"
 if os.path.exists(env_path):
     sys.path.insert(0, env_path)
 
+# Import dual arm env
 from g1_arm_dual_env import G1DualArmEnv, G1DualArmEnvCfg
 
 
@@ -39,113 +41,25 @@ class SimpleActor(nn.Module):
 
     def __init__(self, obs_dim: int, act_dim: int, hidden_dims: list = [256, 128, 64]):
         super().__init__()
+
         layers = []
         prev_dim = obs_dim
-        for hd in hidden_dims:
-            layers.append(nn.Linear(prev_dim, hd))
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
             layers.append(nn.ELU())
-            prev_dim = hd
+            prev_dim = hidden_dim
         layers.append(nn.Linear(prev_dim, act_dim))
+
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)
 
 
-def load_policy(checkpoint_path: str, device: str = "cuda:0"):
-    """Load policy from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model_state = checkpoint.get('model_state_dict', checkpoint)
-
-    actor_keys = sorted([k for k in model_state.keys() if k.startswith('actor.') and 'weight' in k])
-
-    obs_dim = model_state[actor_keys[0]].shape[1]
-    act_dim = model_state[actor_keys[-1]].shape[0]
-    hidden_dims = [model_state[k].shape[0] for k in actor_keys[:-1]]
-
-    actor = SimpleActor(obs_dim, act_dim, hidden_dims).to(device)
-    actor_state = {k.replace('actor.', 'net.'): v for k, v in model_state.items() if k.startswith('actor.')}
-    actor.load_state_dict(actor_state)
-    actor.eval()
-
-    return actor, obs_dim, act_dim, hidden_dims
-
-
-def build_right_obs(env, idx: int = 0) -> torch.Tensor:
-    """Build observation for RIGHT arm (matches training format)."""
-    root_pos = env.robot.data.root_pos_w[idx]
-
-    joint_pos = env.robot.data.joint_pos[idx, env.right_arm_indices]
-    joint_vel = env.robot.data.joint_vel[idx, env.right_arm_indices]
-    ee_pos = env._compute_right_ee_pos()[idx] - root_pos
-    target = env.right_target_pos[idx]
-    error = target - ee_pos
-    error_norm = error / 0.31
-
-    obs = torch.cat([
-        joint_pos,          # 5
-        joint_vel * 0.1,    # 5
-        target,             # 3
-        ee_pos,             # 3
-        error_norm,         # 3
-    ])  # Total: 19
-
-    return obs.unsqueeze(0)
-
-
-def build_left_obs_mirrored(env, idx: int = 0) -> torch.Tensor:
-    """Build MIRRORED observation for LEFT arm (so right policy can control it)."""
-    root_pos = env.robot.data.root_pos_w[idx]
-
-    joint_pos = env.robot.data.joint_pos[idx, env.left_arm_indices]
-    joint_vel = env.robot.data.joint_vel[idx, env.left_arm_indices]
-    ee_pos = env._compute_left_ee_pos()[idx] - root_pos
-    target = env.left_target_pos[idx]
-
-    # Mirror joints: roll ve yaw ters (index 1, 2, 4)
-    joint_pos_m = joint_pos.clone()
-    joint_pos_m[1] = -joint_pos_m[1]  # shoulder_roll
-    joint_pos_m[2] = -joint_pos_m[2]  # shoulder_yaw
-    joint_pos_m[4] = -joint_pos_m[4]  # elbow_roll
-
-    joint_vel_m = joint_vel.clone()
-    joint_vel_m[1] = -joint_vel_m[1]
-    joint_vel_m[2] = -joint_vel_m[2]
-    joint_vel_m[4] = -joint_vel_m[4]
-
-    # Mirror positions: Y ters
-    ee_pos_m = ee_pos.clone()
-    ee_pos_m[1] = -ee_pos_m[1]
-
-    target_m = target.clone()
-    target_m[1] = -target_m[1]
-
-    error = target_m - ee_pos_m
-    error_norm = error / 0.31
-
-    obs = torch.cat([
-        joint_pos_m,        # 5
-        joint_vel_m * 0.1,  # 5
-        target_m,           # 3
-        ee_pos_m,           # 3
-        error_norm,         # 3
-    ])  # Total: 19
-
-    return obs.unsqueeze(0)
-
-
-def mirror_actions(actions: torch.Tensor) -> torch.Tensor:
-    """Mirror actions from right to left (roll ve yaw ters)."""
-    actions_m = actions.clone()
-    actions_m[1] = -actions_m[1]  # shoulder_roll
-    actions_m[2] = -actions_m[2]  # shoulder_yaw
-    actions_m[4] = -actions_m[4]  # elbow_roll
-    return actions_m
-
-
 def main():
     print("\n" + "=" * 70)
-    print("   G1 DUAL ARM PLAY - 2 Bağımsız Policy")
+    print("   G1 DUAL ARM PLAY - Yarım Küre Workspace")
+    print("   Sağ kol policy'si → Sol kola mirror")
     print("=" * 70)
 
     # Find checkpoint
@@ -164,78 +78,152 @@ def main():
         print("[ERROR] Checkpoint bulunamadı!")
         return
 
-    print(f"[INFO] Checkpoint: {checkpoint_path}")
+    print(f"\n[INFO] Checkpoint: {checkpoint_path}")
 
-    # Load 2 policy instances (same weights, independent inference)
-    right_policy, obs_dim, act_dim, hidden = load_policy(checkpoint_path)
-    left_policy, _, _, _ = load_policy(checkpoint_path)
-
-    print(f"[INFO] Policy: obs={obs_dim}, act={act_dim}, hidden={hidden}")
-    print("[INFO] 2 bağımsız policy yüklendi (sağ ve sol kol için)")
-
-    # Create environment
+    # Create dual arm environment
     env_cfg = G1DualArmEnvCfg()
     env_cfg.scene.num_envs = 1
+    env_cfg.episode_length_s = 300.0
+
     env = G1DualArmEnv(cfg=env_cfg)
 
+    # Load policy
+    checkpoint = torch.load(checkpoint_path, map_location="cuda:0", weights_only=False)
+    model_state = checkpoint.get('model_state_dict', checkpoint)
+
+    actor_keys = [k for k in model_state.keys() if k.startswith('actor.') and 'weight' in k]
+    actor_keys.sort()
+
+    obs_dim = model_state[actor_keys[0]].shape[1]
+    act_dim = model_state[actor_keys[-1]].shape[0]
+    hidden_dims = [model_state[k].shape[0] for k in actor_keys[:-1]]
+
+    print(f"[INFO] Policy: obs={obs_dim}, act={act_dim}, hidden={hidden_dims}")
+
+    actor = SimpleActor(obs_dim, act_dim, hidden_dims).to("cuda:0")
+    actor_state = {k.replace('actor.', 'net.'): v for k, v in model_state.items() if k.startswith('actor.')}
+    actor.load_state_dict(actor_state)
+    actor.eval()
+
     print("\n" + "-" * 70)
-    print("MARKERS: 🟢Yeşil=Sağ target | 🔵Mavi=Sol target")
-    print("         🟠Turuncu=Sağ EE   | 🟣Mor=Sol EE")
+    print("VISUAL MARKERS:")
+    print("  🟢 Yeşil   = Sağ kol target")
+    print("  🔵 Mavi    = Sol kol target")
+    print("  🟠 Turuncu = Sağ el (EE)")
+    print("  🟣 Mor     = Sol el (EE)")
     print("-" * 70)
     print("[INFO] Ctrl+C ile çık\n")
 
     # Reset
     obs_dict, _ = env.reset()
+
     step = 0
 
     try:
         while simulation_app.is_running():
             step += 1
 
-            # ===== RIGHT ARM =====
-            right_obs = build_right_obs(env)
+            root_pos = env.robot.data.root_pos_w[0]
+
+            # ===== RIGHT ARM OBSERVATION (MUST MATCH TRAINING ORDER!) =====
+            # Training order: joint_pos(5), joint_vel(5), target(3), ee_pos(3), error_norm(3) = 19
+            right_joint_pos = env.robot.data.joint_pos[0, env.right_arm_indices]
+            right_joint_vel = env.robot.data.joint_vel[0, env.right_arm_indices]
+            right_ee_pos = env._compute_right_ee_pos()[0] - root_pos
+            right_target = env.right_target_pos[0]
+            right_error = right_target - right_ee_pos
+            right_error_norm = right_error / 0.31  # max_target_radius + 0.01
+
+            right_obs = torch.cat([
+                right_joint_pos,        # 5
+                right_joint_vel * 0.1,  # 5
+                right_target,           # 3
+                right_ee_pos,           # 3
+                right_error_norm,       # 3
+            ]).unsqueeze(0)  # Total: 19
+
             with torch.no_grad():
-                right_actions = right_policy(right_obs)[0]
+                right_actions = actor(right_obs)[0]
 
-            # ===== LEFT ARM (mirrored) =====
-            left_obs = build_left_obs_mirrored(env)
+            # ===== LEFT ARM OBSERVATION (MIRRORED, SAME ORDER) =====
+            left_joint_pos = env.robot.data.joint_pos[0, env.left_arm_indices]
+            left_joint_vel = env.robot.data.joint_vel[0, env.left_arm_indices]
+            left_ee_pos = env._compute_left_ee_pos()[0] - root_pos
+            left_target = env.left_target_pos[0]
+
+            # Mirror Y coordinates for policy input
+            left_target_mirrored = left_target.clone()
+            left_target_mirrored[1] = -left_target_mirrored[1]
+
+            left_ee_mirrored = left_ee_pos.clone()
+            left_ee_mirrored[1] = -left_ee_mirrored[1]
+
+            # Mirror joint positions (roll/yaw joints are opposite)
+            left_joint_mirrored = left_joint_pos.clone()
+            left_joint_mirrored[1] = -left_joint_mirrored[1]  # shoulder_roll
+            left_joint_mirrored[2] = -left_joint_mirrored[2]  # shoulder_yaw
+            left_joint_mirrored[4] = -left_joint_mirrored[4]  # elbow_roll
+
+            left_joint_vel_mirrored = left_joint_vel.clone()
+            left_joint_vel_mirrored[1] = -left_joint_vel_mirrored[1]
+            left_joint_vel_mirrored[2] = -left_joint_vel_mirrored[2]
+            left_joint_vel_mirrored[4] = -left_joint_vel_mirrored[4]
+
+            left_error = left_target_mirrored - left_ee_mirrored
+            left_error_norm = left_error / 0.31
+
+            left_obs = torch.cat([
+                left_joint_mirrored,         # 5
+                left_joint_vel_mirrored * 0.1,  # 5
+                left_target_mirrored,        # 3
+                left_ee_mirrored,            # 3
+                left_error_norm,             # 3
+            ]).unsqueeze(0)  # Total: 19
+
             with torch.no_grad():
-                left_actions_raw = left_policy(left_obs)[0]
+                left_actions_raw = actor(left_obs)[0]
 
-            # Mirror actions back
-            left_actions = mirror_actions(left_actions_raw)
+            # Mirror actions back (roll/yaw joints opposite)
+            left_actions = left_actions_raw.clone()
+            left_actions[1] = -left_actions[1]  # shoulder_roll
+            left_actions[2] = -left_actions[2]  # shoulder_yaw
+            left_actions[4] = -left_actions[4]  # elbow_roll
 
-            # ===== COMBINE & STEP =====
-            combined = torch.cat([right_actions, left_actions]).unsqueeze(0)
-            obs_dict, rewards, terminated, truncated, info = env.step(combined)
+            # ===== COMBINE ACTIONS =====
+            combined_actions = torch.cat([right_actions, left_actions]).unsqueeze(0)
 
-            # ===== DEBUG: Print actions every 100 steps =====
-            if step % 100 == 0:
-                root_pos = env.robot.data.root_pos_w[0]
-                r_ee = env._compute_right_ee_pos()[0] - root_pos
-                l_ee = env._compute_left_ee_pos()[0] - root_pos
-                r_dist = (r_ee - env.right_target_pos[0]).norm().item()
-                l_dist = (l_ee - env.left_target_pos[0]).norm().item()
+            # Step
+            obs_dict, rewards, terminated, truncated, info = env.step(combined_actions)
 
+            # Compute distances (after step, use fresh data)
+            root_pos_new = env.robot.data.root_pos_w[0]
+            right_ee_new = env._compute_right_ee_pos()[0] - root_pos_new
+            left_ee_new = env._compute_left_ee_pos()[0] - root_pos_new
+            right_dist = (right_ee_new - env.right_target_pos[0]).norm().item()
+            left_dist = (left_ee_new - env.left_target_pos[0]).norm().item()
+
+            # Log
+            if step % 50 == 0:
                 print(f"[Step {step:4d}]")
-                print(f"  SAĞ:  Dist={r_dist:.3f}m | Reaches={int(env.right_reach_count[0].item())}")
-                print(f"  SOL:  Dist={l_dist:.3f}m | Reaches={int(env.left_reach_count[0].item())}")
-                print(f"  Actions R: [{right_actions[0]:.2f}, {right_actions[1]:.2f}, {right_actions[2]:.2f}, {right_actions[3]:.2f}, {right_actions[4]:.2f}]")
-                print(f"  Actions L: [{left_actions[0]:.2f}, {left_actions[1]:.2f}, {left_actions[2]:.2f}, {left_actions[3]:.2f}, {left_actions[4]:.2f}]")
+                print(f"  SAĞ KOL:  Dist={right_dist:.3f}m | Reaches={int(env.right_reach_count[0].item())}")
+                print(f"  SOL KOL:  Dist={left_dist:.3f}m | Reaches={int(env.left_reach_count[0].item())}")
+                print(f"  R_act: [{right_actions[0]:.2f}, {right_actions[1]:.2f}, {right_actions[2]:.2f}, {right_actions[3]:.2f}, {right_actions[4]:.2f}]")
+                print(f"  L_act: [{left_actions[0]:.2f}, {left_actions[1]:.2f}, {left_actions[2]:.2f}, {left_actions[3]:.2f}, {left_actions[4]:.2f}]")
                 total = int(env.right_reach_count[0].item() + env.left_reach_count[0].item())
-                print(f"  TOPLAM: {total} reaches\n")
+                print(f"  TOPLAM:   {total} reaches")
+                print()
 
     except KeyboardInterrupt:
-        print("\n[INFO] Durduruldu")
+        print("\n\n[INFO] Durduruldu")
 
     print("\n" + "=" * 70)
-    print("SONUÇLAR")
+    print("DUAL ARM SONUÇLAR")
     print("=" * 70)
-    print(f"  Toplam step:  {step}")
-    print(f"  Sağ reaches:  {int(env.right_reach_count[0].item())}")
-    print(f"  Sol reaches:  {int(env.left_reach_count[0].item())}")
+    print(f"  Toplam step:      {step}")
+    print(f"  Sağ kol reaches:  {int(env.right_reach_count[0].item())}")
+    print(f"  Sol kol reaches:  {int(env.left_reach_count[0].item())}")
     total = int(env.right_reach_count[0].item() + env.left_reach_count[0].item())
-    print(f"  TOPLAM:       {total}")
+    print(f"  TOPLAM reaches:   {total}")
     print("=" * 70)
 
     env.close()
