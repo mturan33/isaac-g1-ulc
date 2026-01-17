@@ -402,14 +402,13 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """Sample right arm target - SABİT WORKSPACE."""
+        """SAĞ KOL - KESİNLİKLE ÖNDE!"""
         num = len(env_ids)
 
-        # Doğrudan workspace içinde sample (root'a göre)
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.25, 0.45)  # X: KESİNLİKLE ÖNDE
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.10, 0.30)  # Y: sağ taraf
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: göğüs/karın hizası
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.20, 0.40)  # X: ÖNDE (pozitif!)
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.25, 0.00)  # Y: sağ taraf
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: el seviyesi
 
         self.right_target_pos[env_ids] = targets
 
@@ -420,13 +419,13 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """Sample left arm target - SABİT WORKSPACE."""
+        """SOL KOL - KESİNLİKLE ÖNDE!"""
         num = len(env_ids)
 
         targets = torch.zeros((num, 3), device=self.device)
-        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.25, 0.45)  # X: KESİNLİKLE ÖNDE
-        targets[:, 1] = torch.empty(num, device=self.device).uniform_(-0.30, -0.10)  # Y: sol taraf (ters)
-        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: göğüs/karın hizası
+        targets[:, 0] = torch.empty(num, device=self.device).uniform_(0.20, 0.40)  # X: ÖNDE (pozitif!)
+        targets[:, 1] = torch.empty(num, device=self.device).uniform_(0.00, 0.25)  # Y: sol taraf
+        targets[:, 2] = torch.empty(num, device=self.device).uniform_(-0.15, 0.15)  # Z: el seviyesi
 
         self.left_target_pos[env_ids] = targets
 
@@ -435,6 +434,7 @@ class G1DualArmEnv(DirectRLEnv):
         default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(num, -1)
         pose = torch.cat([target_world, default_quat], dim=-1)
         self.left_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
+        
     def _get_observations(self) -> dict:
         """Get observations for both arms."""
         root_pos = self.robot.data.root_pos_w
