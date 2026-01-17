@@ -410,13 +410,13 @@ class G1DualArmEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def _sample_right_target(self, env_ids: torch.Tensor):
-        """SAĞ KOL - TRAINING MANTIĞI: EE etrafında spawn."""
+        """SAĞ KOL - TRAINING MANTIĞI: EE etrafında spawn, sıkı clamp."""
         num = len(env_ids)
 
-        # Training parametreleri
+        # Training parametreleri - INITIAL radius kullan (curriculum yok play'de)
         pos_threshold = 0.05  # 5cm
         min_dist = pos_threshold + 0.02  # 7cm minimum
-        max_dist = 0.15  # 15cm maximum (curriculum başlangıcı)
+        max_dist = 0.10  # 10cm maximum (training initial_target_radius)
 
         # Mevcut EE pozisyonu (root'a göre relatif)
         ee_pos_world = self._compute_right_ee_pos()
@@ -433,10 +433,13 @@ class G1DualArmEnv(DirectRLEnv):
         # Target = current EE + offset
         targets = current_ee_rel + direction * distance
 
-        # Training workspace'e clamp
-        targets[:, 0] = torch.clamp(targets[:, 0], RIGHT_WS_X_MIN, RIGHT_WS_X_MAX)
-        targets[:, 1] = torch.clamp(targets[:, 1], RIGHT_WS_Y_MIN, RIGHT_WS_Y_MAX)
-        targets[:, 2] = torch.clamp(targets[:, 2], RIGHT_WS_Z_MIN, RIGHT_WS_Z_MAX)
+        # SAĞ KOL İÇİN SIKI CLAMP - kolun erişebileceği alan
+        # X: önde (negatif veya hafif pozitif)
+        # Y: sağda (pozitif)
+        # Z: göğüs-omuz arası
+        targets[:, 0] = torch.clamp(targets[:, 0], -0.15, 0.30)   # Önde
+        targets[:, 1] = torch.clamp(targets[:, 1], 0.00, 0.35)    # Sağda
+        targets[:, 2] = torch.clamp(targets[:, 2], 0.05, 0.45)    # Göğüs-omuz
 
         self.right_target_pos[env_ids] = targets
 
@@ -447,13 +450,13 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_target_obj.write_root_pose_to_sim(pose, env_ids=env_ids)
 
     def _sample_left_target(self, env_ids: torch.Tensor):
-        """SOL KOL - TRAINING MANTIĞI: EE etrafında spawn."""
+        """SOL KOL - TRAINING MANTIĞI: EE etrafında spawn, sıkı clamp."""
         num = len(env_ids)
 
-        # Training parametreleri
+        # Training parametreleri - INITIAL radius kullan (curriculum yok play'de)
         pos_threshold = 0.05  # 5cm
         min_dist = pos_threshold + 0.02  # 7cm minimum
-        max_dist = 0.15  # 15cm maximum (curriculum başlangıcı)
+        max_dist = 0.10  # 10cm maximum (training initial_target_radius)
 
         # Mevcut EE pozisyonu (root'a göre relatif)
         ee_pos_world = self._compute_left_ee_pos()
@@ -470,10 +473,13 @@ class G1DualArmEnv(DirectRLEnv):
         # Target = current EE + offset
         targets = current_ee_rel + direction * distance
 
-        # Training workspace'e clamp (sol kol için Y mirrored)
-        targets[:, 0] = torch.clamp(targets[:, 0], LEFT_WS_X_MIN, LEFT_WS_X_MAX)
-        targets[:, 1] = torch.clamp(targets[:, 1], LEFT_WS_Y_MIN, LEFT_WS_Y_MAX)
-        targets[:, 2] = torch.clamp(targets[:, 2], LEFT_WS_Z_MIN, LEFT_WS_Z_MAX)
+        # SOL KOL İÇİN SIKI CLAMP - Y mirrored
+        # X: önde (negatif veya hafif pozitif)
+        # Y: solda (negatif)
+        # Z: göğüs-omuz arası
+        targets[:, 0] = torch.clamp(targets[:, 0], -0.15, 0.30)   # Önde
+        targets[:, 1] = torch.clamp(targets[:, 1], -0.35, 0.00)   # Solda (mirrored)
+        targets[:, 2] = torch.clamp(targets[:, 2], 0.05, 0.45)    # Göğüs-omuz
 
         self.left_target_pos[env_ids] = targets
 
