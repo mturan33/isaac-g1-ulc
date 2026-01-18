@@ -227,7 +227,7 @@ class G1DualArmEnvCfg(DirectRLEnvCfg):
     reward_pos_distance = -1.0
     action_smoothing_alpha = 0.5
     action_scale = 0.08
-    pos_threshold = 0.05
+    pos_threshold = 0.07  # 5cm -> 7cm (daha toleranslı)
 
 
 def rotate_vector_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
@@ -302,28 +302,25 @@ class G1DualArmEnv(DirectRLEnv):
         self.right_reach_count = torch.zeros(self.num_envs, device=self.device)
         self.left_reach_count = torch.zeros(self.num_envs, device=self.device)
 
-        # Timeout timer'lar (5 saniye = 150 step @ 30Hz, decimation=4 ile ~120Hz/4=30Hz)
-        self.timeout_steps = 150
+        # Timeout timer'lar (3 saniye = 90 step @ 30Hz, decimation=4 ile ~120Hz/4=30Hz)
+        self.timeout_steps = 90
         self.right_target_timer = torch.zeros(self.num_envs, device=self.device)
         self.left_target_timer = torch.zeros(self.num_envs, device=self.device)
 
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
         print("\n" + "=" * 70)
-        print("G1 DUAL ARM ENVIRONMENT - TIMEOUT EKLENDİ")
+        print("G1 DUAL ARM ENVIRONMENT - MIRROR + TIMEOUT")
         print("=" * 70)
         print(f"  Right arm: {self.right_arm_indices.tolist()}")
         print(f"  Left arm:  {self.left_arm_indices.tolist()}")
-        print(f"  Timeout: {self.timeout_steps} steps (~5 saniye)")
+        print(f"  Timeout: {self.timeout_steps} steps (~3 saniye)")
+        print(f"  Threshold: {self.cfg.pos_threshold}m")
         print("-" * 70)
-        print("  KOORDİNAT SİSTEMİ:")
-        print("    X- = İleri (önde)")
-        print("    Y+ = Sağ taraf")
-        print("    Y- = Sol taraf")
-        print("    Z+ = Yukarı")
-        print("-" * 70)
-        print("  TARGET SPAWN: EE etrafında 7-10cm, sıkı clamp")
-        print("  TIMEOUT: Hedefe 5sn içinde ulaşamazsa yeni hedef")
+        print("  SOL KOL MİRROR:")
+        print("    - Joint mirror: shoulder_roll, shoulder_yaw, elbow_roll ters")
+        print("    - Position mirror: Y koordinatı ters")
+        print("    - Action mirror: roll/yaw joint'ler ters")
         print("=" * 70 + "\n")
 
     def _setup_scene(self):
@@ -429,15 +426,38 @@ class G1DualArmEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         root_pos = self.robot.data.root_pos_w
 
+        # === SAĞ KOL (değişiklik yok) ===
         r_jp = self.robot.data.joint_pos[:, self.right_arm_indices]
         r_jv = self.robot.data.joint_vel[:, self.right_arm_indices]
         r_ee = self._compute_right_ee_pos() - root_pos
         r_err = self.right_target_pos - r_ee
 
-        l_jp = self.robot.data.joint_pos[:, self.left_arm_indices]
-        l_jv = self.robot.data.joint_vel[:, self.left_arm_indices]
-        l_ee = self._compute_left_ee_pos() - root_pos
-        l_err = self.left_target_pos - l_ee
+        # === SOL KOL (mirror - sağ kol gibi görünsün) ===
+        l_jp_raw = self.robot.data.joint_pos[:, self.left_arm_indices]
+        l_jv_raw = self.robot.data.joint_vel[:, self.left_arm_indices]
+        l_ee_raw = self._compute_left_ee_pos() - root_pos
+        l_err_raw = self.left_target_pos - l_ee_raw
+
+        # Joint mirror: shoulder_roll(1), shoulder_yaw(2), elbow_roll(4) ters
+        l_jp = l_jp_raw.clone()
+        l_jp[:, 1] = -l_jp[:, 1]  # shoulder_roll
+        l_jp[:, 2] = -l_jp[:, 2]  # shoulder_yaw
+        l_jp[:, 4] = -l_jp[:, 4]  # elbow_roll
+
+        l_jv = l_jv_raw.clone()
+        l_jv[:, 1] = -l_jv[:, 1]
+        l_jv[:, 2] = -l_jv[:, 2]
+        l_jv[:, 4] = -l_jv[:, 4]
+
+        # Position mirror: Y koordinatı ters
+        l_target_mirrored = self.left_target_pos.clone()
+        l_target_mirrored[:, 1] = -l_target_mirrored[:, 1]
+
+        l_ee = l_ee_raw.clone()
+        l_ee[:, 1] = -l_ee[:, 1]
+
+        l_err = l_err_raw.clone()
+        l_err[:, 1] = -l_err[:, 1]
 
         # EE marker güncelle
         r_quat = self.robot.data.body_quat_w[:, self.right_palm_idx]
@@ -447,7 +467,7 @@ class G1DualArmEnv(DirectRLEnv):
 
         obs = torch.cat([
             r_jp, r_jv * 0.1, self.right_target_pos, r_ee, r_err,
-            l_jp, l_jv * 0.1, self.left_target_pos, l_ee, l_err,
+            l_jp, l_jv * 0.1, l_target_mirrored, l_ee, l_err,
         ], dim=-1)
 
         return {"policy": obs}
@@ -532,7 +552,13 @@ class G1DualArmEnv(DirectRLEnv):
         alpha = self.cfg.action_smoothing_alpha
 
         r_act = self.actions[:, :5]
-        l_act = self.actions[:, 5:]
+        l_act = self.actions[:, 5:].clone()
+
+        # Sol kol için mirror: shoulder_roll(1), shoulder_yaw(2), elbow_roll(4) ters işaret
+        # Sağ kol policy'si kullanıldığında sol kol simetrik çalışsın
+        l_act[:, 1] = -l_act[:, 1]  # shoulder_roll
+        l_act[:, 2] = -l_act[:, 2]  # shoulder_yaw
+        l_act[:, 4] = -l_act[:, 4]  # elbow_roll
 
         self.right_smoothed_actions = alpha * r_act + (1 - alpha) * self.right_smoothed_actions
         self.left_smoothed_actions = alpha * l_act + (1 - alpha) * self.left_smoothed_actions
