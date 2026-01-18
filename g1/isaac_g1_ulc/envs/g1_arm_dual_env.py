@@ -346,7 +346,7 @@ class G1DualArmEnv(DirectRLEnv):
         num = len(env_ids)
 
         # Training parametreleri - INITIAL radius kullan (curriculum yok play'de)
-        pos_threshold = 0.05  # 5cm
+        pos_threshold = 0.10  # 5cm
         min_dist = pos_threshold + 0.02  # 7cm minimum
         max_dist = 0.10  # 10cm maximum (training initial_target_radius)
 
