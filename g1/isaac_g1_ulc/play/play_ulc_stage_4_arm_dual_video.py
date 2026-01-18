@@ -320,7 +320,6 @@ def main():
 
     if video_path:
         print(f"\n🎬 VIDEO HAZIR: {video_path}")
-        print("\nX POST İÇİN:")
         print("-" * 50)
 
     env.close()
