@@ -249,8 +249,7 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_target_obj = self.scene["left_target"]
         self.right_ee_marker = self.scene["right_ee_marker"]
         self.left_ee_marker = self.scene["left_ee_marker"]
-        self.right_workspace = self.scene["right_workspace"]
-        self.left_workspace = self.scene["left_workspace"]
+        # Workspace kutuları kaldırıldı
 
         joint_names = self.robot.data.joint_names
         body_names = self.robot.data.body_names
