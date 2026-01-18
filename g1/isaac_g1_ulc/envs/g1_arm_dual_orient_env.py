@@ -196,13 +196,13 @@ class G1ArmOrientEnvCfg(DirectRLEnvCfg):
 
     # Rewards
     reward_reaching = 50.0          # Bonus for reaching (pos + ori)
-    reward_pos_distance = -1.5      # Position distance penalty
-    reward_ori_distance = -0.5      # Orientation distance penalty
+    reward_pos_distance = -2.0      # Position distance penalty (artırıldı)
+    reward_ori_distance = -0.5      # Orientation distance penalty (curriculum ile aktif olur)
     reward_action_rate = -0.01      # Action smoothness
 
     # Thresholds
     pos_threshold = 0.07            # 7cm position threshold
-    ori_threshold = 0.26            # ~15 degrees orientation threshold (in radians)
+    ori_threshold = 0.35            # ~20 degrees orientation threshold (daha toleranslı)
 
     # Action
     action_smoothing_alpha = 0.5
@@ -211,13 +211,15 @@ class G1ArmOrientEnvCfg(DirectRLEnvCfg):
     # Workspace - Omuz merkezi etrafında yarım küre
     shoulder_center_offset = [0.0, 0.174, 0.259]  # Root'a göre sağ omuz
     min_target_radius = 0.10      # İç exclusion zone - çok yakın hedef yok
-    max_target_radius = 0.45      # Dış sınır - kolun max erişimi (45cm)
+    max_target_radius = 0.40      # Dış sınır - kolun max erişimi
 
-    # Curriculum - 8 aşama, yavaş yavaş genişle
-    initial_workspace_radius = 0.15   # Başlangıç: 15cm (Level 1)
-    final_workspace_radius = 0.45     # Son: 45cm (Level 8)
-    curriculum_stages = 8
-    curriculum_steps = 8000           # Toplam 8000 iteration (her stage ~1000)
+    # Curriculum - 2 PHASE
+    # Phase 1 (0-4000): Sadece position, küçük workspace
+    # Phase 2 (4000-8000): Position + orientation, büyük workspace
+    initial_workspace_radius = 0.12   # Başlangıç: 12cm (çok kolay)
+    final_workspace_radius = 0.40     # Son: 40cm
+    phase1_steps = 4000               # İlk 4000: sadece position
+    total_curriculum_steps = 8000     # Toplam
 
 
 class G1ArmOrientEnv(DirectRLEnv):
@@ -282,10 +284,11 @@ class G1ArmOrientEnv(DirectRLEnv):
             self.cfg.shoulder_center_offset, device=self.device
         ).unsqueeze(0).expand(self.num_envs, -1).clone()
 
-        # Curriculum
+        # Curriculum - 2 Phase
         self.current_workspace_radius = self.cfg.initial_workspace_radius
-        self.curriculum_stage = 0
+        self.curriculum_phase = 1  # 1 = sadece position, 2 = position + orientation
         self.curriculum_progress = 0.0
+        self.orientation_weight = 0.0  # Phase 1'de 0, Phase 2'de 1'e çıkar
 
         # Timeout
         self.timeout_steps = 90  # 3 seconds
@@ -295,25 +298,18 @@ class G1ArmOrientEnv(DirectRLEnv):
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
         print("\n" + "=" * 70)
-        print("G1 ARM ORIENT ENVIRONMENT - STAGE 5 (GLOBAL WORKSPACE)")
+        print("G1 ARM ORIENT ENVIRONMENT - STAGE 5 (2-PHASE CURRICULUM)")
         print("=" * 70)
         print(f"  Arm joints: {self.arm_indices.tolist()}")
         print(f"  Palm idx: {self.palm_idx}")
         print("-" * 70)
-        print("  HEDEF: Position + Orientation (Palm Down)")
-        print(f"    Pos threshold: {self.cfg.pos_threshold}m")
+        print("  PHASE 1 (0-4000): Sadece POSITION")
+        print(f"    Workspace: {self.cfg.initial_workspace_radius}m -> {self.cfg.final_workspace_radius}m")
+        print("  PHASE 2 (4000-8000): Position + ORIENTATION")
         print(f"    Ori threshold: {self.cfg.ori_threshold:.2f} rad (~{math.degrees(self.cfg.ori_threshold):.0f}°)")
-        print(f"    Reaching bonus: +{self.cfg.reward_reaching}")
         print("-" * 70)
-        print("  WORKSPACE (Omuz Merkezi Etrafında Yarım Küre):")
-        print(f"    Shoulder center: {self.cfg.shoulder_center_offset}")
-        print(f"    Min radius (exclusion): {self.cfg.min_target_radius}m")
-        print(f"    Max radius: {self.cfg.max_target_radius}m")
-        print("-" * 70)
-        print("  CURRICULUM (8 Aşama):")
-        print(f"    Başlangıç: {self.cfg.initial_workspace_radius}m")
-        print(f"    Son: {self.cfg.final_workspace_radius}m")
-        print(f"    Toplam steps: {self.cfg.curriculum_steps}")
+        print(f"  Pos threshold: {self.cfg.pos_threshold}m")
+        print(f"  Reaching bonus: +{self.cfg.reward_reaching}")
         print("=" * 70 + "\n")
 
     def _setup_scene(self):
@@ -334,42 +330,56 @@ class G1ArmOrientEnv(DirectRLEnv):
 
     def _sample_target(self, env_ids: torch.Tensor):
         """
-        Sample target in GLOBAL WORKSPACE - omuz merkezi etrafında yarım küre.
+        Sample target - PHASE'e göre farklı strateji.
 
-        Workspace:
-        - Merkez: sağ omuz (root + shoulder_center_offset)
-        - İç yarıçap: min_target_radius (exclusion zone - çok yakın hedef yok)
-        - Dış yarıçap: current_workspace_radius (curriculum ile genişler)
-        - Yarım küre: sadece robotun önünde (X <= 0, yani ileri yönde)
+        Phase 1: EE etrafında küçük hedefler (Stage 4 gibi, kolay)
+        Phase 2: Global workspace (omuz merkezi etrafında yarım küre)
         """
         num = len(env_ids)
         root_pos = self.robot.data.root_pos_w[env_ids]
 
-        # Omuz merkezi (root'a göre relatif)
-        shoulder_rel = self.shoulder_center[env_ids]  # (num, 3)
+        if self.curriculum_phase == 1:
+            # PHASE 1: EE-relative spawn (kolay başlangıç)
+            ee_pos_world = self._compute_ee_pos()
+            current_ee_rel = (ee_pos_world - self.robot.data.root_pos_w)[env_ids]
 
-        # Random yön - yarım küre için (robotun önünde)
-        # X <= 0 (ileri), Y ve Z serbest
-        direction = torch.randn((num, 3), device=self.device)
-        direction[:, 0] = -torch.abs(direction[:, 0])  # X her zaman negatif (ileri)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+            # Random yön
+            direction = torch.randn((num, 3), device=self.device)
+            direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
 
-        # Random mesafe - exclusion zone ve mevcut workspace radius arasında
-        min_dist = self.cfg.min_target_radius
-        max_dist = self.current_workspace_radius
+            # Mesafe: threshold+2cm ile current_workspace_radius arası
+            min_dist = self.cfg.pos_threshold + 0.02
+            max_dist = max(self.current_workspace_radius, min_dist + 0.02)
+            distance = min_dist + torch.rand((num, 1), device=self.device) * (max_dist - min_dist)
 
-        # Uniform sampling in spherical shell
-        # r^3 uniform -> r uniform in volume
-        r_min3 = min_dist ** 3
-        r_max3 = max_dist ** 3
-        r3 = r_min3 + torch.rand((num, 1), device=self.device) * (r_max3 - r_min3)
-        distance = r3 ** (1/3)
+            # Target = current EE + offset
+            targets = current_ee_rel + direction * distance
 
-        # Target pozisyonu (omuz merkezi + yön * mesafe)
-        targets = shoulder_rel + direction * distance
+            # Clamp to reachable area
+            targets[:, 0] = torch.clamp(targets[:, 0], -0.30, 0.20)  # Forward
+            targets[:, 1] = torch.clamp(targets[:, 1], -0.10, 0.40)  # Right side
+            targets[:, 2] = torch.clamp(targets[:, 2], 0.00, 0.50)   # Height
 
-        # Z sınırlaması - yerden en az 5cm yukarıda, göğüs yüksekliğinin üstünde
-        targets[:, 2] = torch.clamp(targets[:, 2], 0.05, 0.55)
+        else:
+            # PHASE 2: Global workspace (omuz merkezi etrafında)
+            shoulder_rel = self.shoulder_center[env_ids]
+
+            # Random yön - yarım küre (robotun önünde)
+            direction = torch.randn((num, 3), device=self.device)
+            direction[:, 0] = -torch.abs(direction[:, 0])  # X negatif (ileri)
+            direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+
+            # Mesafe - spherical shell sampling
+            min_dist = self.cfg.min_target_radius
+            max_dist = self.current_workspace_radius
+            r_min3 = min_dist ** 3
+            r_max3 = max_dist ** 3
+            r3 = r_min3 + torch.rand((num, 1), device=self.device) * (r_max3 - r_min3)
+            distance = r3 ** (1/3)
+
+            # Target = shoulder + direction * distance
+            targets = shoulder_rel + direction * distance
+            targets[:, 2] = torch.clamp(targets[:, 2], 0.05, 0.55)
 
         self.target_pos[env_ids] = targets
 
@@ -382,23 +392,41 @@ class G1ArmOrientEnv(DirectRLEnv):
         self.target_timer[env_ids] = 0
 
     def update_curriculum(self, iteration: int):
-        """Update curriculum based on iteration - 8 aşama."""
-        # Her stage için step sayısı
-        steps_per_stage = self.cfg.curriculum_steps / self.cfg.curriculum_stages
+        """
+        Update curriculum - 2 PHASE system.
 
-        # Hangi stage'deyiz?
-        self.curriculum_stage = min(
-            int(iteration / steps_per_stage),
-            self.cfg.curriculum_stages - 1
-        )
+        Phase 1 (0 - phase1_steps): Sadece POSITION öğren
+            - Workspace küçükten büyüğe
+            - Orientation reward = 0
 
-        # Progress (0 -> 1)
-        self.curriculum_progress = min(1.0, iteration / self.cfg.curriculum_steps)
+        Phase 2 (phase1_steps - total): Position + ORIENTATION
+            - Workspace sabit (max)
+            - Orientation reward yavaş yavaş artar
+        """
+        phase1_end = self.cfg.phase1_steps
+        total_steps = self.cfg.total_curriculum_steps
 
-        # Workspace radius - lineer artış
-        radius_range = self.cfg.final_workspace_radius - self.cfg.initial_workspace_radius
-        self.current_workspace_radius = self.cfg.initial_workspace_radius + \
-            self.curriculum_progress * radius_range
+        if iteration < phase1_end:
+            # PHASE 1: Sadece position
+            self.curriculum_phase = 1
+            self.orientation_weight = 0.0
+
+            # Workspace radius - lineer artış
+            phase1_progress = iteration / phase1_end
+            radius_range = self.cfg.final_workspace_radius - self.cfg.initial_workspace_radius
+            self.current_workspace_radius = self.cfg.initial_workspace_radius + \
+                phase1_progress * radius_range
+        else:
+            # PHASE 2: Position + Orientation
+            self.curriculum_phase = 2
+            self.current_workspace_radius = self.cfg.final_workspace_radius
+
+            # Orientation weight - yavaş yavaş 0 -> 1
+            phase2_progress = (iteration - phase1_end) / (total_steps - phase1_end)
+            self.orientation_weight = min(1.0, phase2_progress * 2)  # İlk yarıda 1'e ulaş
+
+        # Genel progress
+        self.curriculum_progress = min(1.0, iteration / total_steps)
 
     def _get_observations(self) -> dict:
         root_pos = self.robot.data.root_pos_w
@@ -447,10 +475,16 @@ class G1ArmOrientEnv(DirectRLEnv):
         ee_quat = self._compute_ee_quat()
         ori_dist = quat_diff_rad(ee_quat, self.target_quat)
 
-        # Check reaching (both position AND orientation)
+        # Check reaching - PHASE'e göre farklı
         pos_reached = pos_dist < self.cfg.pos_threshold
         ori_reached = ori_dist < self.cfg.ori_threshold
-        fully_reached = pos_reached & ori_reached
+
+        if self.curriculum_phase == 1:
+            # Phase 1: Sadece POSITION yeterli
+            fully_reached = pos_reached
+        else:
+            # Phase 2: Position + Orientation gerekli
+            fully_reached = pos_reached & ori_reached
 
         reached_ids = torch.where(fully_reached)[0]
         if len(reached_ids) > 0:
@@ -465,11 +499,11 @@ class G1ArmOrientEnv(DirectRLEnv):
         # Action rate penalty
         action_rate = (self.smoothed_actions - self.prev_actions).norm(dim=-1)
 
-        # Reward
+        # Reward - orientation reward phase'e göre ağırlıklı
         reward = (
             self.cfg.reward_reaching * fully_reached.float() +
             self.cfg.reward_pos_distance * pos_dist +
-            self.cfg.reward_ori_distance * ori_dist +
+            self.cfg.reward_ori_distance * ori_dist * self.orientation_weight +
             self.cfg.reward_action_rate * action_rate
         )
 
