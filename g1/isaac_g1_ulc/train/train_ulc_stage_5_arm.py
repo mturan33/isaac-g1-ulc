@@ -47,8 +47,10 @@ import torch
 import torch.nn as nn
 from datetime import datetime
 
+# Environment import - relative path
 env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(env_dir, "envs"))
+envs_dir = os.path.join(env_dir, "envs")
+sys.path.insert(0, envs_dir)
 
 from g1_arm_orient_env import G1ArmOrientEnv, G1ArmOrientEnvCfg
 from isaaclab_rl.rsl_rl import (
