@@ -136,8 +136,13 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                         self._iteration
                     )
                     self._writer.add_scalar(
-                        'Curriculum/stage',
-                        self._unwrapped.curriculum_stage,
+                        'Curriculum/phase',
+                        self._unwrapped.curriculum_phase,
+                        self._iteration
+                    )
+                    self._writer.add_scalar(
+                        'Curriculum/orientation_weight',
+                        self._unwrapped.orientation_weight,
                         self._iteration
                     )
                     self._writer.add_scalar(
@@ -156,11 +161,13 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
 
                 if self._iteration % 200 == 0:
                     reach_rate = self._unwrapped.reach_count.mean().item()
-                    stage = self._unwrapped.curriculum_stage + 1
+                    phase = self._unwrapped.curriculum_phase
                     radius = self._unwrapped.current_workspace_radius
+                    ori_w = self._unwrapped.orientation_weight
                     print(f"[Curriculum] Iter {self._iteration} | "
-                          f"Stage {stage}/8 | "
+                          f"Phase {phase} | "
                           f"Radius={radius:.2f}m | "
+                          f"OriWeight={ori_w:.2f} | "
                           f"Reaches={reach_rate:.1f}")
 
         return super().step(actions)
@@ -258,24 +265,21 @@ def main():
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("    G1 ARM ORIENT TRAINING - STAGE 5 (Global Workspace + Palm Down)")
+    print("    G1 ARM ORIENT TRAINING - STAGE 5 (2-PHASE CURRICULUM)")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  TASK: Reach ANY target in workspace with PALM DOWN!")
-    print(f"    Position threshold: {env_cfg.pos_threshold}m")
-    print(f"    Orientation threshold: {env_cfg.ori_threshold:.2f} rad (~15°)")
-    print(f"    Reaching bonus: +{env_cfg.reward_reaching}")
+    print("  PHASE 1 (0-4000): Sadece POSITION")
+    print(f"    - EE etrafında küçük hedefler")
+    print(f"    - Workspace: 12cm -> 40cm")
+    print("  PHASE 2 (4000-8000): Position + ORIENTATION")
+    print(f"    - Global workspace (omuz merkezi)")
+    print(f"    - Orientation weight: 0 -> 1")
     print("-" * 70)
-    print("  WORKSPACE (Omuz Merkezi Etrafında Yarım Küre):")
-    print(f"    Inner radius (exclusion): {env_cfg.min_target_radius}m")
-    print(f"    Max radius: {env_cfg.max_target_radius}m")
-    print("-" * 70)
-    print("  CURRICULUM (8 Seviye):")
-    print(f"    L1: 15cm → L8: 45cm")
-    print(f"    Total steps: {env_cfg.curriculum_steps}")
+    print(f"  Pos threshold: {env_cfg.pos_threshold}m")
+    print(f"  Ori threshold: {env_cfg.ori_threshold:.2f} rad (~20°)")
     if args.stage4_checkpoint:
         print(f"  Stage 4 init: {args.stage4_checkpoint}")
     if args.resume:
