@@ -29,7 +29,6 @@ parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint
 parser.add_argument("--stage4_checkpoint", type=str, default=None, help="Stage 4 checkpoint to initialize from")
 
 from isaaclab.app import AppLauncher
-
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -87,10 +86,10 @@ class G1ArmOrientPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,  # Biraz daha exploration
+        entropy_coef=0.005,           # Biraz daha exploration
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=3e-4,  # Stage 4'ten biraz yüksek
+        learning_rate=3e-4,           # Stage 4'ten biraz yüksek
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
@@ -130,8 +129,13 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                 # Log to TensorBoard
                 if self._writer is not None:
                     self._writer.add_scalar(
-                        'Curriculum/target_radius',
-                        self._unwrapped.current_target_radius,
+                        'Curriculum/workspace_radius',
+                        self._unwrapped.current_workspace_radius,
+                        self._iteration
+                    )
+                    self._writer.add_scalar(
+                        'Curriculum/stage',
+                        self._unwrapped.curriculum_stage,
                         self._iteration
                     )
                     self._writer.add_scalar(
@@ -150,10 +154,12 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
 
                 if self._iteration % 200 == 0:
                     reach_rate = self._unwrapped.reach_count.mean().item()
-                    print(f"[Curriculum] Iter {self._iteration}: "
-                          f"radius={self._unwrapped.current_target_radius:.3f}m, "
-                          f"progress={self._unwrapped.curriculum_progress:.1%}, "
-                          f"avg_reaches={reach_rate:.1f}")
+                    stage = self._unwrapped.curriculum_stage + 1
+                    radius = self._unwrapped.current_workspace_radius
+                    print(f"[Curriculum] Iter {self._iteration} | "
+                          f"Stage {stage}/8 | "
+                          f"Radius={radius:.2f}m | "
+                          f"Reaches={reach_rate:.1f}")
 
         return super().step(actions)
 
@@ -250,21 +256,24 @@ def main():
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("    G1 ARM ORIENT TRAINING - STAGE 5 (Position + Palm Down)")
+    print("    G1 ARM ORIENT TRAINING - STAGE 5 (Global Workspace + Palm Down)")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  TASK: Reach target with PALM DOWN orientation!")
+    print("  TASK: Reach ANY target in workspace with PALM DOWN!")
     print(f"    Position threshold: {env_cfg.pos_threshold}m")
-    print(f"    Orientation threshold: {env_cfg.ori_threshold:.2f} rad")
+    print(f"    Orientation threshold: {env_cfg.ori_threshold:.2f} rad (~15°)")
     print(f"    Reaching bonus: +{env_cfg.reward_reaching}")
     print("-" * 70)
-    print("  CURRICULUM:")
-    print(f"    Initial radius: {env_cfg.initial_target_radius}m")
+    print("  WORKSPACE (Omuz Merkezi Etrafında Yarım Küre):")
+    print(f"    Inner radius (exclusion): {env_cfg.min_target_radius}m")
     print(f"    Max radius: {env_cfg.max_target_radius}m")
-    print(f"    Steps: {env_cfg.curriculum_steps}")
+    print("-" * 70)
+    print("  CURRICULUM (8 Seviye):")
+    print(f"    L1: 15cm → L8: 45cm")
+    print(f"    Total steps: {env_cfg.curriculum_steps}")
     if args.stage4_checkpoint:
         print(f"  Stage 4 init: {args.stage4_checkpoint}")
     if args.resume:

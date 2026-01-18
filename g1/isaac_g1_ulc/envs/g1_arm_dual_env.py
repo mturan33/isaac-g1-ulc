@@ -303,7 +303,7 @@ class G1DualArmEnv(DirectRLEnv):
         self.left_reach_count = torch.zeros(self.num_envs, device=self.device)
 
         # Timeout timer'lar (3 saniye = 90 step @ 30Hz, decimation=4 ile ~120Hz/4=30Hz)
-        self.timeout_steps = 40
+        self.timeout_steps = 90
         self.right_target_timer = torch.zeros(self.num_envs, device=self.device)
         self.left_target_timer = torch.zeros(self.num_envs, device=self.device)
 
@@ -346,7 +346,7 @@ class G1DualArmEnv(DirectRLEnv):
         num = len(env_ids)
 
         # Training parametreleri - INITIAL radius kullan (curriculum yok play'de)
-        pos_threshold = 0.10  # 5cm
+        pos_threshold = 0.05  # 5cm
         min_dist = pos_threshold + 0.02  # 7cm minimum
         max_dist = 0.10  # 10cm maximum (training initial_target_radius)
 
