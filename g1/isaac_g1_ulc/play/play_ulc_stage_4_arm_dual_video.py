@@ -1,13 +1,17 @@
 """
-G1 DUAL ARM PLAY - VIDEO RECORDING VERSION
-============================================
+G1 DUAL ARM - GENERAL REACHING POLICY (VIDEO RECORDING)
+=========================================================
 
-Kamera robotun önünde, robota bakacak şekilde konumlandırılmış.
-X paylaşımı için video çekimi uygun.
+"General Reaching Policy" - Aynı observation structure her iki kol için kullanılıyor,
+böylece policy genel bir reaching davranışı öğrenmiş oluyor.
+
+Isaac Sim'in viewport capture özelliği ile sessiz MP4 kaydı.
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_4_arm_dual_video.py
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_dual_arm_video_record.py
+
+Video kaydedilecek yer: C:\IsaacLab\recordings\
 """
 
 from __future__ import annotations
@@ -15,10 +19,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime
 
-parser = argparse.ArgumentParser(description="G1 Dual Arm Play - Video")
+parser = argparse.ArgumentParser(description="G1 Dual Arm - Video Recording")
+parser.add_argument("--record_duration", type=float, default=20.0, help="Video süresi (saniye)")
+parser.add_argument("--fps", type=int, default=30, help="Video FPS")
 from isaaclab.app import AppLauncher
-
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -27,16 +33,17 @@ simulation_app = app_launcher.app
 
 import torch
 import torch.nn as nn
+import numpy as np
 
-# Import camera view utility
+# Import camera view and capture utilities
 import isaaclab.sim as sim_utils
+import omni.kit.app
 
 # Add env path
 env_path = "source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/envs"
 if os.path.exists(env_path):
     sys.path.insert(0, env_path)
 
-# Import dual arm env
 from g1_arm_dual_env import G1DualArmEnv, G1DualArmEnvCfg
 
 
@@ -60,33 +67,69 @@ class SimpleActor(nn.Module):
         return self.net(x)
 
 
+class FrameRecorder:
+    """Viewport frame'lerini kaydeder, sonra ffmpeg ile MP4'e çevirir."""
+
+    def __init__(self, output_dir: str, fps: int = 30):
+        self.output_dir = output_dir
+        self.fps = fps
+        self.frame_dir = os.path.join(output_dir, "frames")
+        os.makedirs(self.frame_dir, exist_ok=True)
+        self.frame_count = 0
+
+        # Viewport API
+        from omni.kit.viewport.utility import get_active_viewport
+        self.viewport = get_active_viewport()
+
+    def capture_frame(self):
+        """Mevcut frame'i PNG olarak kaydet."""
+        from omni.kit.viewport.utility import capture_viewport_to_file
+        frame_path = os.path.join(self.frame_dir, f"frame_{self.frame_count:06d}.png")
+        capture_viewport_to_file(self.viewport, frame_path)
+        self.frame_count += 1
+
+    def finalize_video(self, output_name: str = "dual_arm_reaching.mp4"):
+        """Frame'leri ffmpeg ile MP4'e çevir."""
+        import subprocess
+
+        output_path = os.path.join(self.output_dir, output_name)
+        frame_pattern = os.path.join(self.frame_dir, "frame_%06d.png")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", str(self.fps),
+            "-i", frame_pattern,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "18",  # Yüksek kalite
+            output_path
+        ]
+
+        print(f"\n[VIDEO] Converting {self.frame_count} frames to MP4...")
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            print(f"[VIDEO] ✓ Saved: {output_path}")
+
+            # Frame'leri temizle
+            import shutil
+            shutil.rmtree(self.frame_dir)
+            print(f"[VIDEO] ✓ Cleaned up frames")
+
+            return output_path
+        except subprocess.CalledProcessError as e:
+            print(f"[VIDEO] ✗ ffmpeg error: {e}")
+            print(f"[VIDEO] Frames saved in: {self.frame_dir}")
+            return None
+        except FileNotFoundError:
+            print(f"[VIDEO] ✗ ffmpeg not found! Install ffmpeg or use frames in: {self.frame_dir}")
+            return None
+
+
 def setup_camera_for_video():
-    """
-    Kamerayı robotun önüne konumlandır.
-    Robot pozisyonu: (0, 0, 1.0)
-
-    Koordinat sistemi:
-    - X- = İleri (robotun baktığı yön)
-    - Y+ = Sağ
-    - Z+ = Yukarı
-    """
-    # === KAMERA AÇISI SEÇENEKLERİ ===
-
-    # SEÇENEK 1: 3/4 diagonal view (ÖNERİLEN - kollar net görünür)
+    """Kamerayı robotun önüne konumlandır - 3/4 diagonal view."""
+    # 3/4 diagonal view - kolların hareketi net görünür
     eye = (-1.4, 0.8, 1.4)  # Önde-sağda, hafif yukarıda
-    target = (0.0, 0.0, 1.0)
-
-    # SEÇENEK 2: Düz önden bakış
-    # eye = (-1.6, 0.0, 1.35)
-    # target = (0.0, 0.0, 1.05)
-
-    # SEÇENEK 3: Daha yakın, dramatik açı
-    # eye = (-1.0, 0.5, 1.2)
-    # target = (0.0, 0.0, 1.0)
-
-    # SEÇENEK 4: Üstten bakış (kuş bakışı)
-    # eye = (-0.8, 0.0, 2.0)
-    # target = (0.0, 0.0, 1.0)
+    target = (0.0, 0.0, 1.0)  # Robot gövdesi
 
     sim_utils.set_camera_view(eye=eye, target=target)
     print(f"[CAMERA] Eye: {eye}, Target: {target}")
@@ -94,8 +137,11 @@ def setup_camera_for_video():
 
 def main():
     print("\n" + "=" * 70)
-    print("   G1 DUAL ARM PLAY - VIDEO RECORDING VERSION")
-    print("   Kamera robotun önünde konumlandırılmış")
+    print("   G1 DUAL ARM - GENERAL REACHING POLICY")
+    print("   Video Recording Mode")
+    print("=" * 70)
+    print(f"   Kayıt süresi: {args.record_duration} saniye")
+    print(f"   FPS: {args.fps}")
     print("=" * 70)
 
     # Find checkpoint
@@ -119,12 +165,19 @@ def main():
     # Create dual arm environment
     env_cfg = G1DualArmEnvCfg()
     env_cfg.scene.num_envs = 1
-    env_cfg.episode_length_s = 300.0
+    env_cfg.episode_length_s = args.record_duration + 10.0
 
     env = G1DualArmEnv(cfg=env_cfg)
 
-    # === KAMERAYI AYARLA ===
+    # Setup camera
     setup_camera_for_video()
+
+    # Setup video recorder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    record_dir = os.path.join(os.getcwd(), "recordings", timestamp)
+    os.makedirs(record_dir, exist_ok=True)
+
+    recorder = FrameRecorder(record_dir, fps=args.fps)
 
     # Load policy
     checkpoint = torch.load(checkpoint_path, map_location="cuda:0", weights_only=False)
@@ -145,34 +198,32 @@ def main():
     actor.eval()
 
     print("\n" + "-" * 70)
-    print("VIDEO ÇEKIMI İÇİN HAZIR!")
+    print("GENERAL REACHING POLICY:")
+    print("  → Aynı observation structure her iki kol için")
+    print("  → Policy kol-agnostik reaching öğrenmiş")
+    print("  → Sol kol: koordinatlar mirror edilip aynı policy kullanılıyor")
     print("-" * 70)
-    print("VISUAL MARKERS:")
-    print("  🟢 Yeşil   = Sağ kol target")
-    print("  🔵 Mavi    = Sol kol target")
-    print("  🟠 Turuncu = Sağ el (EE)")
-    print("  🟣 Mor     = Sol el (EE)")
-    print("-" * 70)
-    print("  📹 Screen recording başlat (Win+G veya OBS)")
-    print("  ⏱️  20-30 saniye kaydet")
-    print("  🛑 Ctrl+C ile çık")
+    print(f"[RECORDING] {args.record_duration} saniye kayıt başlıyor...")
     print("-" * 70 + "\n")
 
     # Reset
     obs_dict, _ = env.reset()
-
-    # Reset sonrası kamerayı tekrar ayarla (bazı env'ler resetliyor)
-    setup_camera_for_video()
+    setup_camera_for_video()  # Reset sonrası tekrar ayarla
 
     step = 0
+    physics_dt = 1.0 / 30.0  # ~30 Hz (decimation=4, dt=1/120)
+    record_interval = int(1.0 / (physics_dt * args.fps))  # Her kaç step'te bir frame kaydet
+    max_steps = int(args.record_duration / physics_dt)
+
+    frame_step = 0
 
     try:
-        while simulation_app.is_running():
+        while simulation_app.is_running() and step < max_steps:
             step += 1
 
             root_pos = env.robot.data.root_pos_w[0]
 
-            # ===== RIGHT ARM OBSERVATION (MUST MATCH TRAINING ORDER!) =====
+            # ===== RIGHT ARM OBSERVATION =====
             right_joint_pos = env.robot.data.joint_pos[0, env.right_arm_indices]
             right_joint_vel = env.robot.data.joint_vel[0, env.right_arm_indices]
             right_ee_pos = env._compute_right_ee_pos()[0] - root_pos
@@ -191,18 +242,20 @@ def main():
             with torch.no_grad():
                 right_actions = actor(right_obs)[0]
 
-            # ===== LEFT ARM OBSERVATION (MIRRORED) =====
+            # ===== LEFT ARM OBSERVATION (MIRRORED - SAME POLICY!) =====
             left_joint_pos = env.robot.data.joint_pos[0, env.left_arm_indices]
             left_joint_vel = env.robot.data.joint_vel[0, env.left_arm_indices]
             left_ee_pos = env._compute_left_ee_pos()[0] - root_pos
             left_target = env.left_target_pos[0]
 
+            # Mirror Y coordinates
             left_target_mirrored = left_target.clone()
             left_target_mirrored[1] = -left_target_mirrored[1]
 
             left_ee_mirrored = left_ee_pos.clone()
             left_ee_mirrored[1] = -left_ee_mirrored[1]
 
+            # Mirror joint positions
             left_joint_mirrored = left_joint_pos.clone()
             left_joint_mirrored[1] = -left_joint_mirrored[1]
             left_joint_mirrored[2] = -left_joint_mirrored[2]
@@ -216,6 +269,7 @@ def main():
             left_error = left_target_mirrored - left_ee_mirrored
             left_error_norm = left_error / 0.31
 
+            # AYNI POLICY - mirror edilmiş observation ile
             left_obs = torch.cat([
                 left_joint_mirrored,
                 left_joint_vel_mirrored * 0.1,
@@ -227,42 +281,56 @@ def main():
             with torch.no_grad():
                 left_actions_raw = actor(left_obs)[0]
 
+            # Mirror actions back
             left_actions = left_actions_raw.clone()
             left_actions[1] = -left_actions[1]
             left_actions[2] = -left_actions[2]
             left_actions[4] = -left_actions[4]
 
-            # ===== COMBINE ACTIONS =====
+            # Combine and step
             combined_actions = torch.cat([right_actions, left_actions]).unsqueeze(0)
-
-            # Step
             obs_dict, rewards, terminated, truncated, info = env.step(combined_actions)
 
-            # Compute distances
-            root_pos_new = env.robot.data.root_pos_w[0]
-            right_ee_new = env._compute_right_ee_pos()[0] - root_pos_new
-            left_ee_new = env._compute_left_ee_pos()[0] - root_pos_new
-            right_dist = (right_ee_new - env.right_target_pos[0]).norm().item()
-            left_dist = (left_ee_new - env.left_target_pos[0]).norm().item()
+            # Record frame
+            if step % max(1, record_interval) == 0:
+                recorder.capture_frame()
+                frame_step += 1
 
-            # Log (daha az sıklıkta - video için temiz konsol)
+            # Progress log
             if step % 100 == 0:
                 total = int(env.right_reach_count[0].item() + env.left_reach_count[0].item())
-                print(
-                    f"[Step {step:4d}] Right: {int(env.right_reach_count[0].item())} | Left: {int(env.left_reach_count[0].item())} | Total: {total} reaches")
+                progress = (step / max_steps) * 100
+                print(f"[{progress:5.1f}%] Step {step}/{max_steps} | Reaches: {total} | Frames: {frame_step}")
 
     except KeyboardInterrupt:
-        print("\n\n[INFO] Video kaydı durduruldu")
+        print("\n[INFO] Kayıt durduruldu")
 
+    # Finalize video
     print("\n" + "=" * 70)
-    print("DUAL ARM SONUÇLAR")
+    print("KAYIT TAMAMLANDI")
     print("=" * 70)
-    print(f"  Toplam step:      {step}")
-    print(f"  Sağ kol reaches:  {int(env.right_reach_count[0].item())}")
-    print(f"  Sol kol reaches:  {int(env.left_reach_count[0].item())}")
-    total = int(env.right_reach_count[0].item() + env.left_reach_count[0].item())
-    print(f"  TOPLAM reaches:   {total}")
+    print(f"  Toplam step: {step}")
+    print(f"  Toplam frame: {frame_step}")
+    total_reaches = int(env.right_reach_count[0].item() + env.left_reach_count[0].item())
+    print(f"  Toplam reaches: {total_reaches}")
     print("=" * 70)
+
+    # Convert to MP4
+    video_path = recorder.finalize_video(f"g1_general_reaching_{timestamp}.mp4")
+
+    if video_path:
+        print(f"\n🎬 VIDEO HAZIR: {video_path}")
+        print("\nX POST İÇİN:")
+        print("-" * 50)
+        print("trained a single-arm reaching policy, then applied")
+        print("it to both arms using the same observation structure")
+        print("")
+        print("→ general reaching policy that works for either arm")
+        print("→ mirror coordinates at inference, same network")
+        print("")
+        print("curious what others think about this approach vs")
+        print("training both arms jointly from scratch")
+        print("-" * 50)
 
     env.close()
     simulation_app.close()
