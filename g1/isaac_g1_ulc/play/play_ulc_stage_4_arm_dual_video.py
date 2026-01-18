@@ -35,8 +35,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-# Import camera view and capture utilities
-import isaaclab.sim as sim_utils
+# Import camera view utility - doğru import
+from isaacsim.core.utils.viewports import set_camera_view
 import omni.kit.app
 
 # Add env path
@@ -131,7 +131,7 @@ def setup_camera_for_video():
     eye = (-1.4, 0.8, 1.4)  # Önde-sağda, hafif yukarıda
     target = (0.0, 0.0, 1.0)  # Robot gövdesi
 
-    sim_utils.set_camera_view(eye=eye, target=target)
+    set_camera_view(eye=eye, target=target)
     print(f"[CAMERA] Eye: {eye}, Target: {target}")
 
 
@@ -320,7 +320,6 @@ def main():
 
     if video_path:
         print(f"\n🎬 VIDEO HAZIR: {video_path}")
-        print("-" * 50)
 
     env.close()
     simulation_app.close()
