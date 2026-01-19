@@ -34,7 +34,8 @@ from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG, GREEN_ARROW_X_MARKE
 EE_OFFSET = 0.02
 
 # Sağ omuz merkezi (root'a göre relatif) - workspace'in merkezi
-RIGHT_SHOULDER_CENTER = torch.tensor([0.0, 0.174, 0.259])
+# Y negatif çünkü sağ taraf (Isaac Sim: X forward, Y left, Z up)
+RIGHT_SHOULDER_CENTER = torch.tensor([0.0, -0.174, 0.259])
 
 G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
 
@@ -167,7 +168,7 @@ class G1ArmOrientSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
     )
 
-    # 🔵 Mavi küre - Outer workspace sınırı (40cm, yarı saydam)
+    # 🔵 Mavi küre - Outer workspace sınırı (40cm)
     outer_workspace: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/OuterWorkspace",
         spawn=sim_utils.SphereCfg(
@@ -175,14 +176,15 @@ class G1ArmOrientSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.2, 0.4, 1.0),
-                opacity=0.15,  # Yarı saydam
+                diffuse_color=(0.1, 0.2, 0.8),
+                emissive_color=(0.0, 0.05, 0.2),
+                opacity=0.06,  # Çok hafif
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Omuz merkezi
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Sağ omuz (Y NEGATİF)
     )
 
-    # 🔴 Kırmızı küre - Inner exclusion zone (10cm, yarı saydam)
+    # 🔴 Kırmızı küre - Inner exclusion zone (10cm)
     inner_exclusion: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/InnerExclusion",
         spawn=sim_utils.SphereCfg(
@@ -190,26 +192,43 @@ class G1ArmOrientSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(1.0, 0.2, 0.2),
-                opacity=0.25,  # Yarı saydam
+                diffuse_color=(0.8, 0.1, 0.1),
+                emissive_color=(0.2, 0.0, 0.0),
+                opacity=0.12,
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Omuz merkezi
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Sağ omuz (Y NEGATİF)
     )
 
-    # 🟡 Sarı küre - Curriculum spawn radius (dinamik, EE etrafında)
+    # 🟡 Sarı küre - Curriculum spawn radius (EE etrafında)
     curriculum_sphere: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/CurriculumSphere",
         spawn=sim_utils.SphereCfg(
-            radius=0.05,  # Başlangıç 5cm, dinamik güncellenecek
+            radius=0.05,  # Başlangıç 5cm
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(1.0, 1.0, 0.0),
-                opacity=0.20,  # Yarı saydam
+                diffuse_color=(0.9, 0.9, 0.0),
+                emissive_color=(0.2, 0.2, 0.0),
+                opacity=0.1,
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
+    )
+
+    # ⚪ Beyaz küre - Omuz merkezi işaretçisi (solid)
+    shoulder_marker: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/ShoulderMarker",
+        spawn=sim_utils.SphereCfg(
+            radius=0.025,  # 2.5cm
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 1.0, 1.0),
+                emissive_color=(0.5, 0.5, 0.5),
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Sağ omuz
     )
 
 
@@ -256,7 +275,7 @@ class G1ArmOrientEnvCfg(DirectRLEnvCfg):
     action_scale = 0.08
 
     # Workspace - Final hedef (omuz merkezi etrafında yarım küre)
-    shoulder_center_offset = [0.0, 0.174, 0.259]  # Root'a göre sağ omuz
+    shoulder_center_offset = [0.0, -0.174, 0.259]  # Root'a göre SAĞ omuz (Y NEGATİF!)
     final_workspace_radius = 0.40     # Son hedef: 40cm yarıçap
 
     # Curriculum - 20 aşama, 5cm'den 100cm'e
@@ -286,6 +305,7 @@ class G1ArmOrientEnv(DirectRLEnv):
         self.outer_workspace = self.scene["outer_workspace"]
         self.inner_exclusion = self.scene["inner_exclusion"]
         self.curriculum_sphere = self.scene["curriculum_sphere"]
+        self.shoulder_marker = self.scene["shoulder_marker"]
 
         joint_names = self.robot.data.joint_names
         body_names = self.robot.data.body_names
@@ -655,6 +675,7 @@ class G1ArmOrientEnv(DirectRLEnv):
         🔵 Mavi = 40cm outer workspace (omuz merkezi etrafında)
         🔴 Kırmızı = 10cm inner exclusion zone (omuz merkezi etrafında)
         🟡 Sarı = Mevcut curriculum spawn radius (EE etrafında)
+        ⚪ Beyaz = Omuz merkezi marker
         """
         root_pos = self.robot.data.root_pos_w
 
@@ -671,6 +692,10 @@ class G1ArmOrientEnv(DirectRLEnv):
         # Inner exclusion sphere (omuz merkezinde, sabit)
         inner_pose = torch.cat([shoulder_world, identity_quat], dim=-1)
         self.inner_exclusion.write_root_pose_to_sim(inner_pose)
+
+        # Shoulder marker (omuz merkezinde)
+        shoulder_pose = torch.cat([shoulder_world, identity_quat], dim=-1)
+        self.shoulder_marker.write_root_pose_to_sim(shoulder_pose)
 
         # Curriculum sphere (EE etrafında, dinamik)
         ee_pos = self._compute_ee_pos()
