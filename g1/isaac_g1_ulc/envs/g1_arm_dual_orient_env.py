@@ -34,8 +34,8 @@ from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG, GREEN_ARROW_X_MARKE
 EE_OFFSET = 0.02
 
 # Sağ omuz merkezi (root'a göre relatif) - workspace'in merkezi
-# Y negatif çünkü sağ taraf (Isaac Sim: X forward, Y left, Z up)
-RIGHT_SHOULDER_CENTER = torch.tensor([0.0, -0.174, 0.259])
+# Y pozitif çünkü sağ taraf (G1 robot için)
+RIGHT_SHOULDER_CENTER = torch.tensor([0.0, 0.174, 0.259])
 
 G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
 
@@ -168,59 +168,11 @@ class G1ArmOrientSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
     )
 
-    # 🔵 Mavi küre - Outer workspace sınırı (40cm)
-    outer_workspace: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/OuterWorkspace",
-        spawn=sim_utils.SphereCfg(
-            radius=0.40,  # 40cm
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.1, 0.2, 0.8),
-                emissive_color=(0.0, 0.05, 0.2),
-                opacity=0.06,  # Çok hafif
-            ),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Sağ omuz (Y NEGATİF)
-    )
-
-    # 🔴 Kırmızı küre - Inner exclusion zone (10cm)
-    inner_exclusion: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/InnerExclusion",
-        spawn=sim_utils.SphereCfg(
-            radius=0.10,  # 10cm
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.8, 0.1, 0.1),
-                emissive_color=(0.2, 0.0, 0.0),
-                opacity=0.12,
-            ),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Sağ omuz (Y NEGATİF)
-    )
-
-    # 🟡 Sarı küre - Curriculum spawn radius (EE etrafında)
-    curriculum_sphere: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/CurriculumSphere",
-        spawn=sim_utils.SphereCfg(
-            radius=0.05,  # Başlangıç 5cm
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.9, 0.9, 0.0),
-                emissive_color=(0.2, 0.2, 0.0),
-                opacity=0.1,
-            ),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
-    )
-
-    # ⚪ Beyaz küre - Omuz merkezi işaretçisi (solid)
+    # ⚪ Beyaz küre - Omuz merkezi marker (solid)
     shoulder_marker: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/ShoulderMarker",
         spawn=sim_utils.SphereCfg(
-            radius=0.025,  # 2.5cm
+            radius=0.025,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(
@@ -228,7 +180,7 @@ class G1ArmOrientSceneCfg(InteractiveSceneCfg):
                 emissive_color=(0.5, 0.5, 0.5),
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Sağ omuz
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.174, 1.259)),  # Sağ omuz (Y POZİTİF)
     )
 
 
@@ -275,7 +227,7 @@ class G1ArmOrientEnvCfg(DirectRLEnvCfg):
     action_scale = 0.08
 
     # Workspace - Final hedef (omuz merkezi etrafında yarım küre)
-    shoulder_center_offset = [0.0, -0.174, 0.259]  # Root'a göre SAĞ omuz (Y NEGATİF!)
+    shoulder_center_offset = [0.0, 0.174, 0.259]  # Root'a göre SAĞ omuz (Y POZİTİF!)
     final_workspace_radius = 0.40     # Son hedef: 40cm yarıçap
 
     # Curriculum - 20 aşama, 5cm'den 100cm'e
@@ -302,10 +254,59 @@ class G1ArmOrientEnv(DirectRLEnv):
         self.ee_marker = self.scene["ee_marker"]
 
         # Workspace visualization spheres
-        self.outer_workspace = self.scene["outer_workspace"]
-        self.inner_exclusion = self.scene["inner_exclusion"]
-        self.curriculum_sphere = self.scene["curriculum_sphere"]
         self.shoulder_marker = self.scene["shoulder_marker"]
+
+        # Wireframe visualization with VisualizationMarkers
+        # Outer workspace (40cm) - mavi noktalar
+        self.outer_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/OuterWorkspace",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.015,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(0.0, 0.3, 1.0),
+                            emissive_color=(0.0, 0.2, 0.5),
+                        ),
+                    ),
+                },
+            )
+        )
+
+        # Inner exclusion (10cm) - kırmızı noktalar
+        self.inner_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/InnerExclusion",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.012,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 0.0, 0.0),  # Tam kırmızı
+                            emissive_color=(0.8, 0.0, 0.0),
+                        ),
+                    ),
+                },
+            )
+        )
+
+        # Curriculum radius (EE etrafında) - sarı noktalar
+        self.curriculum_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/CurriculumSphere",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.01,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 1.0, 0.0),
+                            emissive_color=(0.5, 0.5, 0.0),
+                        ),
+                    ),
+                },
+            )
+        )
+
+        # Wireframe noktalarının sayısı (çember başına)
+        self.num_wireframe_points = 24
 
         joint_names = self.robot.data.joint_names
         body_names = self.robot.data.body_names
@@ -670,12 +671,12 @@ class G1ArmOrientEnv(DirectRLEnv):
 
     def _update_workspace_spheres(self):
         """
-        Update workspace visualization spheres.
+        Update workspace wireframe visualization.
 
-        🔵 Mavi = 40cm outer workspace (omuz merkezi etrafında)
-        🔴 Kırmızı = 10cm inner exclusion zone (omuz merkezi etrafında)
-        🟡 Sarı = Mevcut curriculum spawn radius (EE etrafında)
-        ⚪ Beyaz = Omuz merkezi marker
+        🔵 Mavi çember = 40cm outer workspace (yarım küre)
+        🔴 Kırmızı çember = 10cm inner exclusion
+        🟡 Sarı çember = Curriculum radius (EE etrafında)
+        ⚪ Beyaz küre = Omuz merkezi
         """
         root_pos = self.robot.data.root_pos_w
 
@@ -685,19 +686,73 @@ class G1ArmOrientEnv(DirectRLEnv):
         # Identity quaternion
         identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
-        # Outer workspace sphere (omuz merkezinde, sabit)
-        outer_pose = torch.cat([shoulder_world, identity_quat], dim=-1)
-        self.outer_workspace.write_root_pose_to_sim(outer_pose)
-
-        # Inner exclusion sphere (omuz merkezinde, sabit)
-        inner_pose = torch.cat([shoulder_world, identity_quat], dim=-1)
-        self.inner_exclusion.write_root_pose_to_sim(inner_pose)
-
-        # Shoulder marker (omuz merkezinde)
+        # Shoulder marker güncelle
         shoulder_pose = torch.cat([shoulder_world, identity_quat], dim=-1)
         self.shoulder_marker.write_root_pose_to_sim(shoulder_pose)
 
-        # Curriculum sphere (EE etrafında, dinamik)
-        ee_pos = self._compute_ee_pos()
-        curriculum_pose = torch.cat([ee_pos, identity_quat], dim=-1)
-        self.curriculum_sphere.write_root_pose_to_sim(curriculum_pose)
+        # Wireframe çemberler için noktalar (sadece env 0)
+        shoulder_0 = shoulder_world[0].cpu()
+        ee_0 = self._compute_ee_pos()[0].cpu()
+
+        n = self.num_wireframe_points
+        angles = torch.linspace(0, 2 * math.pi, n + 1)[:-1]
+
+        # 🔵 Outer workspace (40cm) - 3 çember: yatay, dikey XZ, dikey YZ
+        outer_points = []
+        radius = 0.40
+
+        # Yatay çember (XY düzlemi, Z=0)
+        for angle in angles:
+            x = shoulder_0[0] - radius * torch.cos(angle)  # X negatif = önde
+            y = shoulder_0[1] + radius * torch.sin(angle)
+            z = shoulder_0[2]
+            if x <= shoulder_0[0] + 0.05:  # Sadece ön yarı + biraz
+                outer_points.append([x.item(), y.item(), z.item()])
+
+        # Dikey çember (XZ düzlemi, Y=0)
+        for angle in angles:
+            x = shoulder_0[0] - radius * torch.sin(angle)
+            y = shoulder_0[1]
+            z = shoulder_0[2] + radius * torch.cos(angle)
+            if x <= shoulder_0[0] + 0.05:
+                outer_points.append([x.item(), y.item(), z.item()])
+
+        if outer_points:
+            outer_pos = torch.tensor(outer_points, device=self.device)
+            outer_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(outer_points), -1)
+            self.outer_markers.visualize(translations=outer_pos, orientations=outer_quat)
+
+        # 🔴 Inner exclusion (10cm) - 2 çember
+        inner_points = []
+        radius = 0.10
+
+        # Yatay çember
+        for angle in angles:
+            x = shoulder_0[0] - radius * torch.cos(angle)
+            y = shoulder_0[1] + radius * torch.sin(angle)
+            z = shoulder_0[2]
+            inner_points.append([x.item(), y.item(), z.item()])
+
+        # Dikey çember
+        for angle in angles:
+            x = shoulder_0[0] - radius * torch.sin(angle)
+            y = shoulder_0[1]
+            z = shoulder_0[2] + radius * torch.cos(angle)
+            inner_points.append([x.item(), y.item(), z.item()])
+
+        inner_pos = torch.tensor(inner_points, device=self.device)
+        inner_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(inner_points), -1)
+        self.inner_markers.visualize(translations=inner_pos, orientations=inner_quat)
+
+        # 🟡 Curriculum sphere (EE etrafında) - 1 yatay çember
+        curr_radius = self.current_spawn_radius
+        curr_points = []
+        for angle in angles:
+            x = ee_0[0] + curr_radius * torch.cos(angle)
+            y = ee_0[1] + curr_radius * torch.sin(angle)
+            z = ee_0[2]
+            curr_points.append([x.item(), y.item(), z.item()])
+
+        curr_pos = torch.tensor(curr_points, device=self.device)
+        curr_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(curr_points), -1)
+        self.curriculum_markers.visualize(translations=curr_pos, orientations=curr_quat)
