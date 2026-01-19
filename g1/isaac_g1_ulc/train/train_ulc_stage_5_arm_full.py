@@ -28,14 +28,6 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab.actuators import ImplicitActuatorCfg
 
-# Debug visualization
-try:
-    from omni.isaac.debug_draw import _debug_draw
-    DEBUG_DRAW_AVAILABLE = True
-except ImportError:
-    DEBUG_DRAW_AVAILABLE = False
-
-
 EE_OFFSET = 0.02
 
 # Sağ omuz merkezi (root'a göre relatif) - workspace'in merkezi
@@ -97,7 +89,6 @@ def quat_from_axis_angle(axis: torch.Tensor, angle: torch.Tensor) -> torch.Tenso
 
 @configclass
 class G1ArmOrientSceneCfg(InteractiveSceneCfg):
-
     ground = AssetBaseCfg(
         prim_path="/World/ground",
         spawn=sim_utils.GroundPlaneCfg(size=(10.0, 10.0)),
@@ -175,7 +166,6 @@ class G1ArmOrientSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class G1ArmOrientEnvCfg(DirectRLEnvCfg):
-
     decimation = 4
     episode_length_s = 300.0
 
@@ -194,22 +184,22 @@ class G1ArmOrientEnvCfg(DirectRLEnvCfg):
         render_interval=decimation,
         device="cuda:0",
         physx=sim_utils.PhysxCfg(
-            gpu_found_lost_pairs_capacity=2**21,
-            gpu_total_aggregate_pairs_capacity=2**21,
+            gpu_found_lost_pairs_capacity=2 ** 21,
+            gpu_total_aggregate_pairs_capacity=2 ** 21,
         ),
     )
 
     scene: G1ArmOrientSceneCfg = G1ArmOrientSceneCfg(num_envs=1, env_spacing=2.0)
 
     # Rewards
-    reward_reaching = 100.0          # Büyük bonus (kolay başlangıç için)
-    reward_pos_distance = -2.0       # Position distance penalty
-    reward_ori_distance = -0.3       # Orientation penalty (düşük tutuyoruz)
-    reward_action_rate = -0.005      # Action smoothness
+    reward_reaching = 100.0  # Büyük bonus (kolay başlangıç için)
+    reward_pos_distance = -2.0  # Position distance penalty
+    reward_ori_distance = -0.3  # Orientation penalty (düşük tutuyoruz)
+    reward_action_rate = -0.005  # Action smoothness
 
     # Thresholds
-    pos_threshold = 0.07             # 7cm position threshold
-    ori_threshold = 0.40             # ~23 degrees (toleranslı)
+    pos_threshold = 0.07  # 7cm position threshold
+    ori_threshold = 0.40  # ~23 degrees (toleranslı)
 
     # Action
     action_smoothing_alpha = 0.5
@@ -217,22 +207,21 @@ class G1ArmOrientEnvCfg(DirectRLEnvCfg):
 
     # Workspace - Final hedef (omuz merkezi etrafında yarım küre)
     shoulder_center_offset = [0.0, 0.174, 0.259]  # Root'a göre sağ omuz
-    final_workspace_radius = 0.40     # Son hedef: 40cm yarıçap
+    final_workspace_radius = 0.40  # Son hedef: 40cm yarıçap
 
     # Curriculum - 20 aşama, 5cm'den 100cm'e
     # Stage 4 gibi EE-relative spawn, ama radius genişler
-    initial_spawn_radius = 0.05       # Başlangıç: 5cm (çok kolay)
-    max_spawn_radius = 1.00           # Max: 100cm (tam workspace kapsar)
-    curriculum_stages = 20            # 20 aşama (her biri 5cm artış)
+    initial_spawn_radius = 0.05  # Başlangıç: 5cm (çok kolay)
+    max_spawn_radius = 1.00  # Max: 100cm (tam workspace kapsar)
+    curriculum_stages = 20  # 20 aşama (her biri 5cm artış)
 
     # Reward-based curriculum progression
     # İlk stage'ler için düşük threshold, sonra yükselir
     reward_threshold_to_advance = 30.0  # Bu reward'a ulaşınca sonraki stage'e geç
-    min_steps_per_stage = 150           # Min 150 iteration her stage'de kal
+    min_steps_per_stage = 150  # Min 150 iteration her stage'de kal
 
 
 class G1ArmOrientEnv(DirectRLEnv):
-
     cfg: G1ArmOrientEnvCfg
 
     def __init__(self, cfg: G1ArmOrientEnvCfg, render_mode: str | None = None, **kwargs):
@@ -307,15 +296,6 @@ class G1ArmOrientEnv(DirectRLEnv):
         # Forward vector for EE offset
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
-        # Debug visualization
-        self._debug_draw = None
-        if DEBUG_DRAW_AVAILABLE:
-            try:
-                self._debug_draw = _debug_draw.acquire_debug_draw_interface()
-                print("  [DEBUG] Wireframe visualization ENABLED")
-            except:
-                pass
-
         print("\n" + "=" * 70)
         print("G1 ARM ORIENT ENVIRONMENT - STAGE 5 (REWARD-BASED CURRICULUM)")
         print("=" * 70)
@@ -324,7 +304,7 @@ class G1ArmOrientEnv(DirectRLEnv):
         print("-" * 70)
         print("  WORKSPACE (Omuz Merkezi Etrafında Yarım Küre):")
         print(f"    Inner radius: 10cm (exclusion zone)")
-        print(f"    Outer radius: {self.cfg.final_workspace_radius*100:.0f}cm")
+        print(f"    Outer radius: {self.cfg.final_workspace_radius * 100:.0f}cm")
         print(f"    Yarım küre: X <= 0 (robotun önünde)")
         print("-" * 70)
         print("  CURRICULUM (20 Aşama - Reward-based):")
@@ -443,8 +423,8 @@ class G1ArmOrientEnv(DirectRLEnv):
             avg_recent_reward = sum(self.recent_rewards[-50:]) / 50
 
             if (avg_recent_reward > self.cfg.reward_threshold_to_advance and
-                self.stage_step_count >= self.cfg.min_steps_per_stage and
-                self.curriculum_stage < self.cfg.curriculum_stages - 1):
+                    self.stage_step_count >= self.cfg.min_steps_per_stage and
+                    self.curriculum_stage < self.cfg.curriculum_stages - 1):
 
                 # Advance to next stage!
                 self.curriculum_stage += 1
@@ -452,7 +432,8 @@ class G1ArmOrientEnv(DirectRLEnv):
                 self.recent_rewards = []  # Reset
 
                 # Update spawn radius (+5cm per stage)
-                radius_increment = (self.cfg.max_spawn_radius - self.cfg.initial_spawn_radius) / (self.cfg.curriculum_stages - 1)
+                radius_increment = (self.cfg.max_spawn_radius - self.cfg.initial_spawn_radius) / (
+                            self.cfg.curriculum_stages - 1)
                 self.current_spawn_radius = self.cfg.initial_spawn_radius + self.curriculum_stage * radius_increment
 
                 # Update orientation weight (stage 11+ için)
@@ -462,11 +443,11 @@ class G1ArmOrientEnv(DirectRLEnv):
                 else:
                     self.orientation_weight = 0.0
 
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"🎯 CURRICULUM ADVANCED TO STAGE {self.curriculum_stage + 1}/{self.cfg.curriculum_stages}")
                 print(f"   Spawn radius: {self.current_spawn_radius:.2f}m")
                 print(f"   Orientation weight: {self.orientation_weight:.2f}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
 
     def _get_observations(self) -> dict:
         root_pos = self.robot.data.root_pos_w
@@ -488,18 +469,15 @@ class G1ArmOrientEnv(DirectRLEnv):
             torch.cat([self._compute_ee_pos(), ee_quat], dim=-1)
         )
 
-        # Draw debug wireframes (only in visual mode)
-        self._draw_debug_wireframes()
-
         obs = torch.cat([
-            joint_pos,                    # 5
-            joint_vel * 0.1,              # 5
-            self.target_pos,              # 3
-            self.target_quat,             # 4
-            ee_pos,                       # 3
-            ee_quat,                      # 4
-            pos_err,                      # 3
-            ori_err,                      # 1
+            joint_pos,  # 5
+            joint_vel * 0.1,  # 5
+            self.target_pos,  # 3
+            self.target_quat,  # 4
+            ee_pos,  # 3
+            ee_quat,  # 4
+            pos_err,  # 3
+            ori_err,  # 1
         ], dim=-1)
 
         return {"policy": obs}
@@ -544,10 +522,10 @@ class G1ArmOrientEnv(DirectRLEnv):
 
         # Reward - orientation penalty sadece stage 11+ için
         reward = (
-            self.cfg.reward_reaching * fully_reached.float() +
-            self.cfg.reward_pos_distance * pos_dist +
-            self.cfg.reward_ori_distance * ori_dist * self.orientation_weight +
-            self.cfg.reward_action_rate * action_rate
+                self.cfg.reward_reaching * fully_reached.float() +
+                self.cfg.reward_pos_distance * pos_dist +
+                self.cfg.reward_ori_distance * ori_dist * self.orientation_weight +
+                self.cfg.reward_action_rate * action_rate
         )
 
         return reward
@@ -611,118 +589,3 @@ class G1ArmOrientEnv(DirectRLEnv):
         jt = self.robot.data.joint_pos.clone()
         jt[:, self.arm_indices] = tgt_pos
         self.robot.set_joint_position_target(jt)
-
-    def _draw_debug_wireframes(self):
-        """
-        Draw debug wireframes for workspace visualization.
-        Only draws for env 0 to avoid performance impact.
-
-        🔵 Mavi = 40cm outer yarım küre (workspace sınırı)
-        🔴 Kırmızı = 10cm inner küre (exclusion zone)
-        🟡 Sarı = Mevcut curriculum spawn radius (EE etrafında)
-        """
-        if self._debug_draw is None:
-            return
-
-        # Clear previous drawings
-        self._debug_draw.clear_lines()
-        self._debug_draw.clear_points()
-
-        # Get env 0 positions
-        root_pos = self.robot.data.root_pos_w[0].cpu().numpy()
-        shoulder_world = root_pos + self.shoulder_center[0].cpu().numpy()
-        ee_world = self._compute_ee_pos()[0].cpu().numpy()
-
-        # Parameters
-        outer_radius = self.cfg.final_workspace_radius  # 40cm
-        inner_radius = 0.10  # 10cm
-        curr_radius = self.current_spawn_radius  # Curriculum radius
-
-        # Draw circles for each wireframe
-        num_segments = 32
-
-        # Helper function to draw a circle
-        def draw_circle(center, radius, axis, color, height_offset=0):
-            points = []
-            for i in range(num_segments + 1):
-                angle = 2 * math.pi * i / num_segments
-                if axis == 'xy':
-                    x = center[0] + radius * math.cos(angle)
-                    y = center[1] + radius * math.sin(angle)
-                    z = center[2] + height_offset
-                elif axis == 'xz':
-                    x = center[0] + radius * math.cos(angle)
-                    y = center[1] + height_offset
-                    z = center[2] + radius * math.sin(angle)
-                elif axis == 'yz':
-                    x = center[0] + height_offset
-                    y = center[1] + radius * math.cos(angle)
-                    z = center[2] + radius * math.sin(angle)
-                points.append((x, y, z))
-
-            # Draw lines between consecutive points
-            for i in range(len(points) - 1):
-                self._debug_draw.draw_line(
-                    points[i], color, points[i+1], color
-                )
-
-        # Helper function to draw half sphere (X <= 0, front half)
-        def draw_half_sphere_wireframe(center, radius, color, num_circles=8):
-            # Horizontal circles at different heights
-            for i in range(num_circles + 1):
-                z_offset = -radius + 2 * radius * i / num_circles
-                circle_radius = math.sqrt(max(0, radius**2 - z_offset**2))
-                if circle_radius > 0.01:
-                    # Draw only front half (X <= center[0])
-                    points = []
-                    for j in range(num_segments // 2 + 1):
-                        angle = math.pi * j / (num_segments // 2)  # 0 to pi (front half)
-                        x = center[0] - circle_radius * math.cos(angle)  # X negative (front)
-                        y = center[1] + circle_radius * math.sin(angle)
-                        z = center[2] + z_offset
-                        points.append((x, y, z))
-
-                    for k in range(len(points) - 1):
-                        self._debug_draw.draw_line(points[k], color, points[k+1], color)
-
-            # Vertical arcs
-            for i in range(num_circles):
-                angle = math.pi * i / num_circles
-                points = []
-                for j in range(num_segments // 2 + 1):
-                    phi = math.pi * j / (num_segments // 2)
-                    x = center[0] - radius * math.sin(phi)  # X negative (front)
-                    y = center[1] + radius * math.cos(phi) * math.sin(angle)
-                    z = center[2] + radius * math.cos(phi) * math.cos(angle)
-                    points.append((x, y, z))
-
-                for k in range(len(points) - 1):
-                    self._debug_draw.draw_line(points[k], color, points[k+1], color)
-
-        # Helper function to draw full sphere wireframe
-        def draw_sphere_wireframe(center, radius, color, num_circles=6):
-            # Horizontal circles
-            for i in range(num_circles + 1):
-                z_offset = -radius + 2 * radius * i / num_circles
-                circle_radius = math.sqrt(max(0, radius**2 - z_offset**2))
-                if circle_radius > 0.01:
-                    draw_circle(center, circle_radius, 'xy', color, z_offset)
-
-            # Vertical circles
-            draw_circle(center, radius, 'xz', color)
-            draw_circle(center, radius, 'yz', color)
-
-        # 🔵 BLUE: Outer workspace (40cm half sphere around shoulder)
-        blue = (0.2, 0.4, 1.0, 1.0)
-        draw_half_sphere_wireframe(shoulder_world, outer_radius, blue)
-
-        # 🔴 RED: Inner exclusion zone (10cm sphere around shoulder)
-        red = (1.0, 0.2, 0.2, 1.0)
-        draw_sphere_wireframe(shoulder_world, inner_radius, red)
-
-        # 🟡 YELLOW: Current curriculum radius (around EE)
-        yellow = (1.0, 1.0, 0.0, 1.0)
-        draw_sphere_wireframe(ee_world, curr_radius, yellow, num_circles=4)
-
-        # Draw shoulder center as a point
-        self._debug_draw.draw_point(shoulder_world, (1.0, 1.0, 1.0, 1.0), 10)

@@ -24,9 +24,9 @@ import sys
 
 parser = argparse.ArgumentParser(description="G1 Arm Orient Training - Stage 5")
 parser.add_argument("--num_envs", type=int, default=2048, help="Number of environments")
-parser.add_argument("--max_iterations", type=int, default=8000, help="Max training iterations")
+parser.add_argument("--max_iterations", type=int, default=15000, help="Max training iterations")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-parser.add_argument("--stage4_checkpoint", type=str, default=None, help="Stage 4 checkpoint to initialize from")
+parser.add_argument("--stage4_checkpoint", type=str, default=None, help="Stage 4 checkpoint to initialize from (optional)")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -123,31 +123,34 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
         """Step with curriculum update and logging."""
         self._step_count += 1
 
+        # Get observations and rewards from step
+        result = super().step(actions)
+
         if self._step_count % 24 == 0:
             self._iteration += 1
+
+            # Calculate mean reward from this batch
+            rewards = result[1]  # rewards tensor
+            mean_reward = rewards.mean().item() if hasattr(rewards, 'mean') else 0.0
+
             if hasattr(self._unwrapped, 'update_curriculum'):
-                self._unwrapped.update_curriculum(self._iteration)
+                self._unwrapped.update_curriculum(self._iteration, mean_reward)
 
                 # Log to TensorBoard
                 if self._writer is not None:
                     self._writer.add_scalar(
-                        'Curriculum/workspace_radius',
-                        self._unwrapped.current_workspace_radius,
+                        'Curriculum/spawn_radius',
+                        self._unwrapped.current_spawn_radius,
                         self._iteration
                     )
                     self._writer.add_scalar(
-                        'Curriculum/phase',
-                        self._unwrapped.curriculum_phase,
+                        'Curriculum/stage',
+                        self._unwrapped.curriculum_stage + 1,
                         self._iteration
                     )
                     self._writer.add_scalar(
                         'Curriculum/orientation_weight',
                         self._unwrapped.orientation_weight,
-                        self._iteration
-                    )
-                    self._writer.add_scalar(
-                        'Curriculum/progress',
-                        self._unwrapped.curriculum_progress,
                         self._iteration
                     )
 
@@ -161,16 +164,16 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
 
                 if self._iteration % 200 == 0:
                     reach_rate = self._unwrapped.reach_count.mean().item()
-                    phase = self._unwrapped.curriculum_phase
-                    radius = self._unwrapped.current_workspace_radius
+                    stage = self._unwrapped.curriculum_stage + 1
+                    radius = self._unwrapped.current_spawn_radius
                     ori_w = self._unwrapped.orientation_weight
                     print(f"[Curriculum] Iter {self._iteration} | "
-                          f"Phase {phase} | "
+                          f"Stage {stage}/20 | "
                           f"Radius={radius:.2f}m | "
                           f"OriWeight={ori_w:.2f} | "
                           f"Reaches={reach_rate:.1f}")
 
-        return super().step(actions)
+        return result
 
 
 # =============================================================================
@@ -265,21 +268,21 @@ def main():
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("    G1 ARM ORIENT TRAINING - STAGE 5 (2-PHASE CURRICULUM)")
+    print("    G1 ARM ORIENT TRAINING - STAGE 5 (REWARD-BASED CURRICULUM)")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  PHASE 1 (0-4000): Sadece POSITION")
-    print(f"    - EE etrafında küçük hedefler")
-    print(f"    - Workspace: 12cm -> 40cm")
-    print("  PHASE 2 (4000-8000): Position + ORIENTATION")
-    print(f"    - Global workspace (omuz merkezi)")
-    print(f"    - Orientation weight: 0 -> 1")
+    print("  CURRICULUM (20 Aşama - Reward-based Progression):")
+    print(f"    Spawn radius: 5cm → 100cm (her stage +5cm)")
+    print(f"    Advance threshold: reward > {env_cfg.reward_threshold_to_advance}")
+    print("-" * 70)
+    print("  Stage 1-10:  Sadece POSITION")
+    print("  Stage 11-20: Position + ORIENTATION (palm down)")
     print("-" * 70)
     print(f"  Pos threshold: {env_cfg.pos_threshold}m")
-    print(f"  Ori threshold: {env_cfg.ori_threshold:.2f} rad (~20°)")
+    print(f"  Ori threshold: {env_cfg.ori_threshold:.2f} rad (~{int(env_cfg.ori_threshold * 57.3)}°)")
     if args.stage4_checkpoint:
         print(f"  Stage 4 init: {args.stage4_checkpoint}")
     if args.resume:

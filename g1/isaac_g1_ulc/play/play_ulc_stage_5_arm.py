@@ -18,7 +18,6 @@ parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkp
 parser.add_argument("--num_steps", type=int, default=1000, help="Number of steps to run")
 
 from isaaclab.app import AppLauncher
-
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.num_envs = 1
@@ -135,7 +134,7 @@ def main():
 
     # Load policy
     obs_dim = env_cfg.num_observations  # 28
-    act_dim = env_cfg.num_actions  # 5
+    act_dim = env_cfg.num_actions       # 5
     device = "cuda:0"
 
     policy = load_policy(checkpoint_path, obs_dim, act_dim, device)
