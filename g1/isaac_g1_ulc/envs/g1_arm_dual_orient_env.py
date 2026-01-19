@@ -27,13 +27,8 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab.actuators import ImplicitActuatorCfg
-
-# Debug visualization
-try:
-    from omni.isaac.debug_draw import _debug_draw
-    DEBUG_DRAW_AVAILABLE = True
-except ImportError:
-    DEBUG_DRAW_AVAILABLE = False
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.markers.config import BLUE_ARROW_X_MARKER_CFG, GREEN_ARROW_X_MARKER_CFG
 
 
 EE_OFFSET = 0.02
@@ -172,6 +167,51 @@ class G1ArmOrientSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
     )
 
+    # 🔵 Mavi küre - Outer workspace sınırı (40cm, yarı saydam)
+    outer_workspace: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/OuterWorkspace",
+        spawn=sim_utils.SphereCfg(
+            radius=0.40,  # 40cm
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.2, 0.4, 1.0),
+                opacity=0.15,  # Yarı saydam
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Omuz merkezi
+    )
+
+    # 🔴 Kırmızı küre - Inner exclusion zone (10cm, yarı saydam)
+    inner_exclusion: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/InnerExclusion",
+        spawn=sim_utils.SphereCfg(
+            radius=0.10,  # 10cm
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 0.2, 0.2),
+                opacity=0.25,  # Yarı saydam
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.174, 1.259)),  # Omuz merkezi
+    )
+
+    # 🟡 Sarı küre - Curriculum spawn radius (dinamik, EE etrafında)
+    curriculum_sphere: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/CurriculumSphere",
+        spawn=sim_utils.SphereCfg(
+            radius=0.05,  # Başlangıç 5cm, dinamik güncellenecek
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 1.0, 0.0),
+                opacity=0.20,  # Yarı saydam
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
+    )
+
 
 @configclass
 class G1ArmOrientEnvCfg(DirectRLEnvCfg):
@@ -242,6 +282,11 @@ class G1ArmOrientEnv(DirectRLEnv):
         self.target_obj = self.scene["target"]
         self.ee_marker = self.scene["ee_marker"]
 
+        # Workspace visualization spheres
+        self.outer_workspace = self.scene["outer_workspace"]
+        self.inner_exclusion = self.scene["inner_exclusion"]
+        self.curriculum_sphere = self.scene["curriculum_sphere"]
+
         joint_names = self.robot.data.joint_names
         body_names = self.robot.data.body_names
 
@@ -306,15 +351,6 @@ class G1ArmOrientEnv(DirectRLEnv):
 
         # Forward vector for EE offset
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
-
-        # Debug visualization
-        self._debug_draw = None
-        if DEBUG_DRAW_AVAILABLE:
-            try:
-                self._debug_draw = _debug_draw.acquire_debug_draw_interface()
-                print("  [DEBUG] Wireframe visualization ENABLED")
-            except:
-                pass
 
         print("\n" + "=" * 70)
         print("G1 ARM ORIENT ENVIRONMENT - STAGE 5 (REWARD-BASED CURRICULUM)")
@@ -488,8 +524,8 @@ class G1ArmOrientEnv(DirectRLEnv):
             torch.cat([self._compute_ee_pos(), ee_quat], dim=-1)
         )
 
-        # Draw debug wireframes (only in visual mode)
-        self._draw_debug_wireframes()
+        # Update workspace visualization spheres
+        self._update_workspace_spheres()
 
         obs = torch.cat([
             joint_pos,                    # 5
@@ -612,117 +648,31 @@ class G1ArmOrientEnv(DirectRLEnv):
         jt[:, self.arm_indices] = tgt_pos
         self.robot.set_joint_position_target(jt)
 
-    def _draw_debug_wireframes(self):
+    def _update_workspace_spheres(self):
         """
-        Draw debug wireframes for workspace visualization.
-        Only draws for env 0 to avoid performance impact.
+        Update workspace visualization spheres.
 
-        🔵 Mavi = 40cm outer yarım küre (workspace sınırı)
-        🔴 Kırmızı = 10cm inner küre (exclusion zone)
+        🔵 Mavi = 40cm outer workspace (omuz merkezi etrafında)
+        🔴 Kırmızı = 10cm inner exclusion zone (omuz merkezi etrafında)
         🟡 Sarı = Mevcut curriculum spawn radius (EE etrafında)
         """
-        if self._debug_draw is None:
-            return
+        root_pos = self.robot.data.root_pos_w
 
-        # Clear previous drawings
-        self._debug_draw.clear_lines()
-        self._debug_draw.clear_points()
+        # Omuz merkezi world koordinatları
+        shoulder_world = root_pos + self.shoulder_center
 
-        # Get env 0 positions
-        root_pos = self.robot.data.root_pos_w[0].cpu().numpy()
-        shoulder_world = root_pos + self.shoulder_center[0].cpu().numpy()
-        ee_world = self._compute_ee_pos()[0].cpu().numpy()
+        # Identity quaternion
+        identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
-        # Parameters
-        outer_radius = self.cfg.final_workspace_radius  # 40cm
-        inner_radius = 0.10  # 10cm
-        curr_radius = self.current_spawn_radius  # Curriculum radius
+        # Outer workspace sphere (omuz merkezinde, sabit)
+        outer_pose = torch.cat([shoulder_world, identity_quat], dim=-1)
+        self.outer_workspace.write_root_pose_to_sim(outer_pose)
 
-        # Draw circles for each wireframe
-        num_segments = 32
+        # Inner exclusion sphere (omuz merkezinde, sabit)
+        inner_pose = torch.cat([shoulder_world, identity_quat], dim=-1)
+        self.inner_exclusion.write_root_pose_to_sim(inner_pose)
 
-        # Helper function to draw a circle
-        def draw_circle(center, radius, axis, color, height_offset=0):
-            points = []
-            for i in range(num_segments + 1):
-                angle = 2 * math.pi * i / num_segments
-                if axis == 'xy':
-                    x = center[0] + radius * math.cos(angle)
-                    y = center[1] + radius * math.sin(angle)
-                    z = center[2] + height_offset
-                elif axis == 'xz':
-                    x = center[0] + radius * math.cos(angle)
-                    y = center[1] + height_offset
-                    z = center[2] + radius * math.sin(angle)
-                elif axis == 'yz':
-                    x = center[0] + height_offset
-                    y = center[1] + radius * math.cos(angle)
-                    z = center[2] + radius * math.sin(angle)
-                points.append((x, y, z))
-
-            # Draw lines between consecutive points
-            for i in range(len(points) - 1):
-                self._debug_draw.draw_line(
-                    points[i], color, points[i+1], color
-                )
-
-        # Helper function to draw half sphere (X <= 0, front half)
-        def draw_half_sphere_wireframe(center, radius, color, num_circles=8):
-            # Horizontal circles at different heights
-            for i in range(num_circles + 1):
-                z_offset = -radius + 2 * radius * i / num_circles
-                circle_radius = math.sqrt(max(0, radius**2 - z_offset**2))
-                if circle_radius > 0.01:
-                    # Draw only front half (X <= center[0])
-                    points = []
-                    for j in range(num_segments // 2 + 1):
-                        angle = math.pi * j / (num_segments // 2)  # 0 to pi (front half)
-                        x = center[0] - circle_radius * math.cos(angle)  # X negative (front)
-                        y = center[1] + circle_radius * math.sin(angle)
-                        z = center[2] + z_offset
-                        points.append((x, y, z))
-
-                    for k in range(len(points) - 1):
-                        self._debug_draw.draw_line(points[k], color, points[k+1], color)
-
-            # Vertical arcs
-            for i in range(num_circles):
-                angle = math.pi * i / num_circles
-                points = []
-                for j in range(num_segments // 2 + 1):
-                    phi = math.pi * j / (num_segments // 2)
-                    x = center[0] - radius * math.sin(phi)  # X negative (front)
-                    y = center[1] + radius * math.cos(phi) * math.sin(angle)
-                    z = center[2] + radius * math.cos(phi) * math.cos(angle)
-                    points.append((x, y, z))
-
-                for k in range(len(points) - 1):
-                    self._debug_draw.draw_line(points[k], color, points[k+1], color)
-
-        # Helper function to draw full sphere wireframe
-        def draw_sphere_wireframe(center, radius, color, num_circles=6):
-            # Horizontal circles
-            for i in range(num_circles + 1):
-                z_offset = -radius + 2 * radius * i / num_circles
-                circle_radius = math.sqrt(max(0, radius**2 - z_offset**2))
-                if circle_radius > 0.01:
-                    draw_circle(center, circle_radius, 'xy', color, z_offset)
-
-            # Vertical circles
-            draw_circle(center, radius, 'xz', color)
-            draw_circle(center, radius, 'yz', color)
-
-        # 🔵 BLUE: Outer workspace (40cm half sphere around shoulder)
-        blue = (0.2, 0.4, 1.0, 1.0)
-        draw_half_sphere_wireframe(shoulder_world, outer_radius, blue)
-
-        # 🔴 RED: Inner exclusion zone (10cm sphere around shoulder)
-        red = (1.0, 0.2, 0.2, 1.0)
-        draw_sphere_wireframe(shoulder_world, inner_radius, red)
-
-        # 🟡 YELLOW: Current curriculum radius (around EE)
-        yellow = (1.0, 1.0, 0.0, 1.0)
-        draw_sphere_wireframe(ee_world, curr_radius, yellow, num_circles=4)
-
-        # Draw shoulder center as a point
-        self._debug_draw.draw_point(shoulder_world, (1.0, 1.0, 1.0, 1.0), 10)
+        # Curriculum sphere (EE etrafında, dinamik)
+        ee_pos = self._compute_ee_pos()
+        curriculum_pose = torch.cat([ee_pos, identity_quat], dim=-1)
+        self.curriculum_sphere.write_root_pose_to_sim(curriculum_pose)
