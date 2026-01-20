@@ -1,15 +1,21 @@
 """
-G1 Arm Reach with Orientation - Stage 5 Training
-=================================================
+G1 Arm Reach with Orientation - Stage 5 V2 Training (Dense Shaping)
+====================================================================
 
 Sadece SAĞ KOL - Position + Orientation (Palm Down) reaching.
 
+V2 DEĞİŞİKLİKLER:
+- Dense progress reward
+- Düşük learning rate (1e-4)
+- Düşük init noise (0.3)
+- Daha stabil training
+
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm.py --num_envs 2048 --max_iterations 8000 --headless
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm_v2.py --num_envs 4096 --max_iterations 10000 --headless
 
-STAGE 4 CHECKPOINT İLE BAŞLA:
-./isaaclab.bat -p source/isaaclab_tasks/.../train/train_ulc_stage_5_arm.py --num_envs 2048 --max_iterations 8000 --headless --stage4_checkpoint logs/ulc/ulc_g1_stage4_arm_XXXX/model_best.pt
+STAGE 4 CHECKPOINT İLE BAŞLA (Opsiyonel):
+./isaaclab.bat -p .../train/train_ulc_stage_5_arm_v2.py --num_envs 4096 --max_iterations 10000 --headless --stage4_checkpoint logs/ulc/ulc_g1_stage4_arm_XXXX/model_best.pt
 """
 
 from __future__ import annotations
@@ -22,9 +28,9 @@ import sys
 # ARGUMENT PARSING
 # =============================================================================
 
-parser = argparse.ArgumentParser(description="G1 Arm Orient Training - Stage 5")
-parser.add_argument("--num_envs", type=int, default=2048, help="Number of environments")
-parser.add_argument("--max_iterations", type=int, default=15000, help="Max training iterations")
+parser = argparse.ArgumentParser(description="G1 Arm Orient Training - Stage 5 V2 (Dense Shaping)")
+parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments")
+parser.add_argument("--max_iterations", type=int, default=10000, help="Max training iterations")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
 parser.add_argument("--stage4_checkpoint", type=str, default=None, help="Stage 4 checkpoint to initialize from (optional)")
 
@@ -52,7 +58,8 @@ env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 envs_dir = os.path.join(env_dir, "envs")
 sys.path.insert(0, envs_dir)
 
-from g1_arm_dual_orient_env import G1ArmOrientEnv, G1ArmOrientEnvCfg
+# V2 Environment
+from g1_arm_dual_orient_env_v2 import G1ArmOrientEnv, G1ArmOrientEnvCfg
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
@@ -64,21 +71,22 @@ from isaaclab.utils import configclass
 
 
 # =============================================================================
-# RSL-RL TRAINING CONFIG
+# RSL-RL TRAINING CONFIG - V2 UPDATED
 # =============================================================================
 
 @configclass
 class G1ArmOrientPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """PPO runner config for arm reaching with orientation."""
+    """PPO runner config for arm reaching with orientation - V2."""
 
     num_steps_per_env = 24
-    max_iterations = 8000
+    max_iterations = 10000
     save_interval = 500
-    experiment_name = "g1_arm_orient"
+    experiment_name = "g1_arm_orient_v2"
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
+        # ============ V2: LOWER INIT NOISE ============
+        init_noise_std=0.3,           # ⬇️ 0.5 → 0.3 (daha stabil başlangıç)
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -88,10 +96,11 @@ class G1ArmOrientPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,           # Biraz daha exploration
+        entropy_coef=0.008,           # ⬆️ 0.005 → 0.008 (biraz daha exploration)
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=3e-4,           # Stage 4'ten biraz yüksek
+        # ============ V2: LOWER LEARNING RATE ============
+        learning_rate=1e-4,           # ⬇️ 3e-4 → 1e-4 (daha stabil)
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
@@ -130,7 +139,7 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
             self._iteration += 1
 
             # Calculate mean reward from this batch
-            rewards = result[1]  # rewards tensor
+            rewards = result[1]
             mean_reward = rewards.mean().item() if hasattr(rewards, 'mean') else 0.0
 
             if hasattr(self._unwrapped, 'update_curriculum'):
@@ -162,15 +171,23 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                         self._iteration
                     )
 
-                if self._iteration % 200 == 0:
+                    # 🆕 V2: Log progress reward components
+                    self._writer.add_scalar(
+                        'Reward/mean_pos_dist',
+                        self._unwrapped.prev_pos_dist.mean().item(),
+                        self._iteration
+                    )
+
+                if self._iteration % 100 == 0:
                     reach_rate = self._unwrapped.reach_count.mean().item()
                     stage = self._unwrapped.curriculum_stage + 1
                     radius = self._unwrapped.current_spawn_radius
                     ori_w = self._unwrapped.orientation_weight
+                    pos_dist = self._unwrapped.prev_pos_dist.mean().item()
                     print(f"[Curriculum] Iter {self._iteration} | "
                           f"Stage {stage}/20 | "
                           f"Radius={radius:.2f}m | "
-                          f"OriWeight={ori_w:.2f} | "
+                          f"PosDist={pos_dist:.3f}m | "
                           f"Reaches={reach_rate:.1f}")
 
         return result
@@ -250,7 +267,7 @@ def main():
     runner_cfg.max_iterations = args.max_iterations
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage5_arm_{timestamp}")
+    log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage5_arm_v2_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
 
     # Set TensorBoard writer
@@ -268,21 +285,31 @@ def main():
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("    G1 ARM ORIENT TRAINING - STAGE 5 (REWARD-BASED CURRICULUM)")
+    print("    G1 ARM ORIENT TRAINING - STAGE 5 V2 (DENSE SHAPING)")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  CURRICULUM (20 Aşama - Reward-based Progression):")
-    print(f"    Spawn radius: 5cm → 100cm (her stage +5cm)")
-    print(f"    Advance threshold: reward > {env_cfg.reward_threshold_to_advance}")
+    print("  V2 HYPERPARAMETERS:")
+    print(f"    ✓ Learning rate: 1e-4 (was 3e-4)")
+    print(f"    ✓ Init noise std: 0.3 (was 0.5)")
+    print(f"    ✓ Entropy coef: 0.008 (was 0.005)")
+    print("-" * 70)
+    print("  V2 REWARD STRUCTURE:")
+    print(f"    ✓ Reaching bonus: 500 (was 100)")
+    print(f"    ✓ Progress reward: 15.0 (NEW - dense shaping)")
+    print(f"    ✓ Distance penalty: -0.5 (was -2.0)")
+    print(f"    ✓ Action penalty: -0.001 (was -0.005)")
+    print("-" * 70)
+    print("  V2 CURRICULUM:")
+    print(f"    ✓ Initial spawn: 3cm (was 5cm)")
+    print(f"    ✓ Pos threshold: 10cm (was 7cm)")
+    print(f"    ✓ Advance threshold: 10 reward (was 30)")
+    print(f"    ✓ Timeout: 180 steps / 6 sec (was 90 / 3 sec)")
     print("-" * 70)
     print("  Stage 1-10:  Sadece POSITION")
     print("  Stage 11-20: Position + ORIENTATION (palm down)")
-    print("-" * 70)
-    print(f"  Pos threshold: {env_cfg.pos_threshold}m")
-    print(f"  Ori threshold: {env_cfg.ori_threshold:.2f} rad (~{int(env_cfg.ori_threshold * 57.3)}°)")
     if args.stage4_checkpoint:
         print(f"  Stage 4 init: {args.stage4_checkpoint}")
     if args.resume:
