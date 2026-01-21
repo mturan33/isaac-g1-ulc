@@ -37,7 +37,7 @@ envs_dir = os.path.join(env_dir, "envs")
 sys.path.insert(0, envs_dir)
 
 # V3 environment kullan
-from g1_arm_reach_env_v3 import G1ArmReachEnv, G1ArmReachEnvCfg
+from g1_arm_dual_orient_env import G1ArmReachEnv, G1ArmReachEnvCfg
 
 
 def find_latest_checkpoint():
