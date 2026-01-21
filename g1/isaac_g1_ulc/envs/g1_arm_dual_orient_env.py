@@ -14,7 +14,7 @@ sadece default pozisyondan değil!
 
 KULLANIM:
 Dosyayı envs/ klasörüne kopyala:
-  g1_arm_reach_env_v3.py
+  g1_arm_dual_orient_env.py
 
 Train scripti train/ klasörüne:
   train_ulc_stage_5_arm_v3.py
