@@ -19,6 +19,7 @@ parser.add_argument("--max_iterations", type=int, default=5000, help="Max traini
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
 
 from isaaclab.app import AppLauncher
+
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -129,19 +130,23 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                 if self._writer is not None:
                     # Curriculum metrics
                     self._writer.add_scalar('Curriculum/stage', self._unwrapped.curriculum_stage + 1, self._iteration)
-                    self._writer.add_scalar('Curriculum/spawn_radius', self._unwrapped.current_spawn_radius, self._iteration)
+                    self._writer.add_scalar('Curriculum/spawn_radius', self._unwrapped.current_spawn_radius,
+                                            self._iteration)
 
                     if hasattr(self._unwrapped, 'current_pos_threshold'):
-                        self._writer.add_scalar('Curriculum/pos_threshold', self._unwrapped.current_pos_threshold, self._iteration)
+                        self._writer.add_scalar('Curriculum/pos_threshold', self._unwrapped.current_pos_threshold,
+                                                self._iteration)
 
-                    self._writer.add_scalar('Curriculum/orientation_enabled', float(self._unwrapped.orientation_enabled), self._iteration)
+                    self._writer.add_scalar('Curriculum/orientation_enabled',
+                                            float(self._unwrapped.orientation_enabled), self._iteration)
 
                     # Success metrics
                     self._writer.add_scalar('Success/rate', success_rate, self._iteration)
                     self._writer.add_scalar('Success/total_reaches', self._unwrapped.total_reaches, self._iteration)
                     self._writer.add_scalar('Success/total_attempts', self._unwrapped.total_attempts, self._iteration)
                     self._writer.add_scalar('Success/stage_reaches', self._unwrapped.stage_reaches, self._iteration)
-                    self._writer.add_scalar('Success/avg_reaches_per_env', self._unwrapped.reach_count.mean().item(), self._iteration)
+                    self._writer.add_scalar('Success/avg_reaches_per_env', self._unwrapped.reach_count.mean().item(),
+                                            self._iteration)
 
                     # Distance metrics
                     if self._distance_count > 0:
@@ -154,9 +159,12 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
 
                         total_steps = self._distance_count * self._unwrapped.num_envs
                         if total_steps > 0:
-                            self._writer.add_scalar('Zones/pct_in_zone1_15cm', self._zone1_count / total_steps * 100, self._iteration)
-                            self._writer.add_scalar('Zones/pct_in_zone2_10cm', self._zone2_count / total_steps * 100, self._iteration)
-                            self._writer.add_scalar('Zones/pct_in_zone3_5cm', self._zone3_count / total_steps * 100, self._iteration)
+                            self._writer.add_scalar('Zones/pct_in_zone1_15cm', self._zone1_count / total_steps * 100,
+                                                    self._iteration)
+                            self._writer.add_scalar('Zones/pct_in_zone2_10cm', self._zone2_count / total_steps * 100,
+                                                    self._iteration)
+                            self._writer.add_scalar('Zones/pct_in_zone3_5cm', self._zone3_count / total_steps * 100,
+                                                    self._iteration)
 
                         # Reset counters
                         self._distance_sum = 0.0
@@ -180,8 +188,8 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
 
                     print(f"[Curriculum] Iter {self._iteration:5d} | "
                           f"Stage {stage}/10 | "
-                          f"Radius={radius*100:.0f}cm | "
-                          f"Thresh={threshold*100:.0f}cm | "
+                          f"Radius={radius * 100:.0f}cm | "
+                          f"Thresh={threshold * 100:.0f}cm | "
                           f"Stage SR: {stage_sr:.1f}% | "
                           f"Global SR: {global_sr:.1f}% | "
                           f"Reaches: {total_r}")
