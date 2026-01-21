@@ -18,7 +18,7 @@ Dosyayı envs/ klasörüne kopyala:
   g1_arm_dual_orient_env.py
 
 Train scripti train/ klasörüne:
-  train_ulc_stage_5_arm_v3_1.py
+  train_ulc_stage_5_arm_full.py
 """
 
 from __future__ import annotations

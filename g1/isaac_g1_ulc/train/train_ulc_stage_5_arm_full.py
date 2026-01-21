@@ -9,7 +9,7 @@ V3 -> V3.1 DEĞİŞİKLİKLER:
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm_v3_1.py --num_envs 4096 --max_iterations 3000 --headless
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm_full.py --num_envs 4096 --max_iterations 3000 --headless
 """
 
 from __future__ import annotations
