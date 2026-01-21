@@ -1,21 +1,16 @@
 """
-G1 Arm Reach with Orientation - Stage 5 V2 Training (Dense Shaping)
-====================================================================
+G1 Arm Reach - Stage 5 V3 Training (Research-Backed)
+=====================================================
 
-Sadece SAĞ KOL - Position + Orientation (Palm Down) reaching.
-
-V2 DEĞİŞİKLİKLER:
-- Dense progress reward
-- Düşük learning rate (1e-4)
-- Düşük init noise (0.3)
-- Daha stabil training
+Araştırma-tabanlı eğitim scripti:
+1. Fixed learning rate (adaptive değil)
+2. Success rate tracking ve logging
+3. Reach-based curriculum
+4. Proper TensorBoard logging
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm_v2.py --num_envs 4096 --max_iterations 10000 --headless
-
-STAGE 4 CHECKPOINT İLE BAŞLA (Opsiyonel):
-./isaaclab.bat -p .../train/train_ulc_stage_5_arm_v2.py --num_envs 4096 --max_iterations 10000 --headless --stage4_checkpoint logs/ulc/ulc_g1_stage4_arm_XXXX/model_best.pt
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm_v3.py --num_envs 4096 --max_iterations 5000 --headless
 """
 
 from __future__ import annotations
@@ -24,42 +19,26 @@ import argparse
 import os
 import sys
 
-# =============================================================================
-# ARGUMENT PARSING
-# =============================================================================
-
-parser = argparse.ArgumentParser(description="G1 Arm Orient Training - Stage 5 V2 (Dense Shaping)")
+parser = argparse.ArgumentParser(description="G1 Arm Reach Training - V3 (Research-Backed)")
 parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments")
-parser.add_argument("--max_iterations", type=int, default=10000, help="Max training iterations")
+parser.add_argument("--max_iterations", type=int, default=5000, help="Max training iterations")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-parser.add_argument("--stage4_checkpoint", type=str, default=None, help="Stage 4 checkpoint to initialize from (optional)")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
-# =============================================================================
-# LAUNCH APP
-# =============================================================================
-
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
-# =============================================================================
-# IMPORTS
-# =============================================================================
-
 import torch
-import torch.nn as nn
 from datetime import datetime
 
-# Environment import - relative path
 env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 envs_dir = os.path.join(env_dir, "envs")
 sys.path.insert(0, envs_dir)
 
-# V2 Environment
-from g1_arm_dual_orient_env_v2 import G1ArmOrientEnv, G1ArmOrientEnvCfg
+from g1_arm_reach_env_v3 import G1ArmReachEnv, G1ArmReachEnvCfg
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
@@ -70,23 +49,18 @@ from rsl_rl.runners import OnPolicyRunner
 from isaaclab.utils import configclass
 
 
-# =============================================================================
-# RSL-RL TRAINING CONFIG - V2 UPDATED
-# =============================================================================
-
 @configclass
-class G1ArmOrientPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """PPO runner config for arm reaching with orientation - V2."""
+class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """V3 PPO config with fixed learning rate."""
 
     num_steps_per_env = 24
-    max_iterations = 10000
-    save_interval = 500
-    experiment_name = "g1_arm_orient_v2"
+    max_iterations = 5000
+    save_interval = 250
+    experiment_name = "g1_arm_reach_v3"
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        # ============ V2: LOWER INIT NOISE ============
-        init_noise_std=0.3,           # ⬇️ 0.5 → 0.3 (daha stabil başlangıç)
+        init_noise_std=0.5,               # Standard noise
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -96,12 +70,12 @@ class G1ArmOrientPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.008,           # ⬆️ 0.005 → 0.008 (biraz daha exploration)
+        entropy_coef=0.01,                # Higher entropy for exploration
         num_learning_epochs=5,
         num_mini_batches=4,
-        # ============ V2: LOWER LEARNING RATE ============
-        learning_rate=1e-4,           # ⬇️ 3e-4 → 1e-4 (daha stabil)
-        schedule="adaptive",
+        # ============ V3: FIXED LEARNING RATE ============
+        learning_rate=3e-4,               # Fixed LR
+        schedule="fixed",                 # NO adaptive schedule!
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,
@@ -109,12 +83,8 @@ class G1ArmOrientPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     )
 
 
-# =============================================================================
-# CURRICULUM WRAPPER
-# =============================================================================
-
 class CurriculumEnvWrapper(RslRlVecEnvWrapper):
-    """Wrapper that updates curriculum and logs progress."""
+    """Wrapper with success rate tracking and reach-based curriculum."""
 
     def __init__(self, env):
         super().__init__(env)
@@ -123,206 +93,161 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
         self._unwrapped = env
         self._writer = None
 
+        # Success tracking
+        self._recent_success_rates = []
+
     def set_writer(self, log_dir):
-        """Set TensorBoard writer."""
         from torch.utils.tensorboard import SummaryWriter
         self._writer = SummaryWriter(log_dir=log_dir, flush_secs=10)
 
     def step(self, actions):
-        """Step with curriculum update and logging."""
         self._step_count += 1
-
-        # Get observations and rewards from step
         result = super().step(actions)
 
         if self._step_count % 24 == 0:
             self._iteration += 1
 
-            # Calculate mean reward from this batch
-            rewards = result[1]
-            mean_reward = rewards.mean().item() if hasattr(rewards, 'mean') else 0.0
-
+            # Update curriculum
             if hasattr(self._unwrapped, 'update_curriculum'):
-                self._unwrapped.update_curriculum(self._iteration, mean_reward)
+                success_rate = self._unwrapped.update_curriculum(self._iteration)
+                self._recent_success_rates.append(success_rate)
+                if len(self._recent_success_rates) > 100:
+                    self._recent_success_rates.pop(0)
 
                 # Log to TensorBoard
                 if self._writer is not None:
-                    self._writer.add_scalar(
-                        'Curriculum/spawn_radius',
-                        self._unwrapped.current_spawn_radius,
-                        self._iteration
-                    )
+                    # Curriculum metrics
                     self._writer.add_scalar(
                         'Curriculum/stage',
                         self._unwrapped.curriculum_stage + 1,
                         self._iteration
                     )
                     self._writer.add_scalar(
-                        'Curriculum/orientation_weight',
-                        self._unwrapped.orientation_weight,
+                        'Curriculum/spawn_radius',
+                        self._unwrapped.current_spawn_radius,
+                        self._iteration
+                    )
+                    self._writer.add_scalar(
+                        'Curriculum/orientation_enabled',
+                        float(self._unwrapped.orientation_enabled),
                         self._iteration
                     )
 
-                    # Log reach count
+                    # Success metrics (CRITICAL!)
+                    self._writer.add_scalar(
+                        'Success/rate',
+                        success_rate,
+                        self._iteration
+                    )
+                    self._writer.add_scalar(
+                        'Success/total_reaches',
+                        self._unwrapped.total_reaches,
+                        self._iteration
+                    )
+                    self._writer.add_scalar(
+                        'Success/total_attempts',
+                        self._unwrapped.total_attempts,
+                        self._iteration
+                    )
+                    self._writer.add_scalar(
+                        'Success/stage_reaches',
+                        self._unwrapped.stage_reaches,
+                        self._iteration
+                    )
+
+                    # Per-env metrics
                     avg_reaches = self._unwrapped.reach_count.mean().item()
                     self._writer.add_scalar(
-                        'Curriculum/avg_reaches_per_env',
+                        'Success/avg_reaches_per_env',
                         avg_reaches,
                         self._iteration
                     )
 
-                    # 🆕 V2: Log progress reward components
-                    self._writer.add_scalar(
-                        'Reward/mean_pos_dist',
-                        self._unwrapped.prev_pos_dist.mean().item(),
-                        self._iteration
-                    )
-
-                if self._iteration % 100 == 0:
-                    reach_rate = self._unwrapped.reach_count.mean().item()
+                # Console logging
+                if self._iteration % 50 == 0:
                     stage = self._unwrapped.curriculum_stage + 1
                     radius = self._unwrapped.current_spawn_radius
-                    ori_w = self._unwrapped.orientation_weight
-                    pos_dist = self._unwrapped.prev_pos_dist.mean().item()
-                    print(f"[Curriculum] Iter {self._iteration} | "
-                          f"Stage {stage}/20 | "
+                    total_r = self._unwrapped.total_reaches
+                    total_a = self._unwrapped.total_attempts
+                    stage_r = self._unwrapped.stage_reaches
+                    stage_a = self._unwrapped.stage_attempts
+
+                    stage_sr = stage_r / max(stage_a, 1) * 100
+                    global_sr = total_r / max(total_a, 1) * 100
+
+                    print(f"[Curriculum] Iter {self._iteration:5d} | "
+                          f"Stage {stage}/10 | "
                           f"Radius={radius:.2f}m | "
-                          f"PosDist={pos_dist:.3f}m | "
-                          f"Reaches={reach_rate:.1f}")
+                          f"Stage SR: {stage_sr:.1f}% ({stage_r}/{stage_a}) | "
+                          f"Global SR: {global_sr:.1f}% ({total_r}/{total_a})")
 
         return result
 
 
-# =============================================================================
-# CHECKPOINT LOADING UTILITIES
-# =============================================================================
-
-def load_stage4_weights(runner, checkpoint_path: str):
-    """
-    Load Stage 4 weights into Stage 5 network.
-
-    Stage 4: obs=19 (position only), act=5
-    Stage 5: obs=28 (position + orientation), act=5
-
-    We can transfer the actor/critic hidden layers since action dim is same.
-    Input layer will be reinitialized due to different obs dim.
-    """
-    print(f"\n[INFO] Loading Stage 4 checkpoint: {checkpoint_path}")
-
-    checkpoint = torch.load(checkpoint_path, map_location='cuda:0')
-
-    if 'model_state_dict' in checkpoint:
-        stage4_state = checkpoint['model_state_dict']
-    else:
-        stage4_state = checkpoint
-
-    # Get current model
-    current_state = runner.alg.actor_critic.state_dict()
-
-    # Track what we transfer
-    transferred = []
-    skipped = []
-
-    for key in stage4_state.keys():
-        if key in current_state:
-            if stage4_state[key].shape == current_state[key].shape:
-                current_state[key] = stage4_state[key]
-                transferred.append(key)
-            else:
-                skipped.append(f"{key} (shape mismatch: {stage4_state[key].shape} vs {current_state[key].shape})")
-        else:
-            skipped.append(f"{key} (not in current model)")
-
-    # Load transferred weights
-    runner.alg.actor_critic.load_state_dict(current_state)
-
-    print(f"[INFO] Transferred {len(transferred)} layers:")
-    for key in transferred[:5]:
-        print(f"  ✓ {key}")
-    if len(transferred) > 5:
-        print(f"  ... and {len(transferred) - 5} more")
-
-    if skipped:
-        print(f"[INFO] Skipped {len(skipped)} layers (will be randomly initialized):")
-        for key in skipped[:3]:
-            print(f"  ✗ {key}")
-        if len(skipped) > 3:
-            print(f"  ... and {len(skipped) - 3} more")
-
-    print()
-
-
-# =============================================================================
-# MAIN
-# =============================================================================
-
 def main():
-    env_cfg = G1ArmOrientEnvCfg()
+    env_cfg = G1ArmReachEnvCfg()
     env_cfg.scene.num_envs = args.num_envs
 
-    env = G1ArmOrientEnv(cfg=env_cfg)
+    env = G1ArmReachEnv(cfg=env_cfg)
     env = CurriculumEnvWrapper(env)
 
-    runner_cfg = G1ArmOrientPPORunnerCfg()
+    runner_cfg = G1ArmReachPPORunnerCfg()
     runner_cfg.max_iterations = args.max_iterations
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join("logs", "ulc", f"ulc_g1_stage5_arm_v2_{timestamp}")
+    log_dir = os.path.join("logs", "ulc", f"ulc_g1_arm_reach_v3_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
 
-    # Set TensorBoard writer
     env.set_writer(log_dir)
 
     runner = OnPolicyRunner(env, runner_cfg.to_dict(), log_dir=log_dir, device="cuda:0")
 
-    # Load Stage 4 checkpoint if provided
-    if args.stage4_checkpoint:
-        load_stage4_weights(runner, args.stage4_checkpoint)
-
-    # Resume from Stage 5 checkpoint if provided
     if args.resume:
         print(f"\n[INFO] Resuming from: {args.resume}")
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("    G1 ARM ORIENT TRAINING - STAGE 5 V2 (DENSE SHAPING)")
+    print("    G1 ARM REACH TRAINING - V3 (RESEARCH-BACKED)")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  V2 HYPERPARAMETERS:")
-    print(f"    ✓ Learning rate: 1e-4 (was 3e-4)")
-    print(f"    ✓ Init noise std: 0.3 (was 0.5)")
-    print(f"    ✓ Entropy coef: 0.008 (was 0.005)")
+    print("  V3 KEY FEATURES:")
+    print(f"    ✓ Fixed learning rate: 3e-4 (NO adaptive)")
+    print(f"    ✓ Tanh kernel rewards (bounded 0-1)")
+    print(f"    ✓ Reach-based curriculum (requires 70% success rate)")
+    print(f"    ✓ Episode termination on success")
+    print(f"    ✓ Success rate tracking")
     print("-" * 70)
-    print("  V2 REWARD STRUCTURE:")
-    print(f"    ✓ Reaching bonus: 500 (was 100)")
-    print(f"    ✓ Progress reward: 15.0 (NEW - dense shaping)")
-    print(f"    ✓ Distance penalty: -0.5 (was -2.0)")
-    print(f"    ✓ Action penalty: -0.001 (was -0.005)")
+    print("  CURRICULUM:")
+    print(f"    10 stages: 5cm → 50cm spawn radius")
+    print(f"    Advance requires: 70% SR + 50 reaches + 200 steps")
+    print(f"    Orientation enabled at Stage 6+")
     print("-" * 70)
-    print("  V2 CURRICULUM:")
-    print(f"    ✓ Initial spawn: 3cm (was 5cm)")
-    print(f"    ✓ Pos threshold: 10cm (was 7cm)")
-    print(f"    ✓ Advance threshold: 10 reward (was 30)")
-    print(f"    ✓ Timeout: 180 steps / 6 sec (was 90 / 3 sec)")
-    print("-" * 70)
-    print("  Stage 1-10:  Sadece POSITION")
-    print("  Stage 11-20: Position + ORIENTATION (palm down)")
-    if args.stage4_checkpoint:
-        print(f"  Stage 4 init: {args.stage4_checkpoint}")
+    print("  EXPECTED BEHAVIOR:")
+    print("    - First 500 iter: Stage 1, success rate climbing")
+    print("    - Stage advance messages when criteria met")
+    print("    - noise_std should stay ~0.5-1.0 (not explode)")
     if args.resume:
         print(f"  Resume from: {args.resume}")
     print("=" * 70 + "\n")
 
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
+    # Final stats
+    final_sr = env._unwrapped.get_success_rate() * 100
+    final_stage = env._unwrapped.curriculum_stage + 1
+    total_reaches = env._unwrapped.total_reaches
+
     print("\n" + "=" * 70)
     print("TRAINING COMPLETE")
     print("=" * 70)
-    print(f"  Logs saved to: {log_dir}")
-    print(f"  Final model: {log_dir}/model_{args.max_iterations}.pt")
+    print(f"  Final stage: {final_stage}/10")
+    print(f"  Final success rate: {final_sr:.1f}%")
+    print(f"  Total reaches: {total_reaches}")
+    print(f"  Logs: {log_dir}")
+    print(f"  Model: {log_dir}/model_{args.max_iterations}.pt")
     print("=" * 70 + "\n")
 
     env.close()
