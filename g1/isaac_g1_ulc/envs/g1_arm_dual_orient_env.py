@@ -767,3 +767,9 @@ class G1ArmReachEnv(DirectRLEnv):
         if self.total_attempts > 0:
             return self.total_reaches / self.total_attempts
         return 0.0
+
+
+# ============ BACKWARD COMPATIBILITY ALIASES ============
+# Eski script'ler G1ArmOrientEnv kullanıyor, yeniler G1ArmReachEnv
+G1ArmOrientEnv = G1ArmReachEnv
+G1ArmOrientEnvCfg = G1ArmReachEnvCfg
