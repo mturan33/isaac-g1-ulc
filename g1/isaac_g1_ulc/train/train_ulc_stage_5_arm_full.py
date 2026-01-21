@@ -1,17 +1,10 @@
 """
-G1 Arm Reach - Stage 5 V3.2 Training (LITERATURE-BACKED)
+G1 Arm Reach - Stage 5 Training (V3.2 Literature-Backed)
 =========================================================
-
-LİTERATÜRDEN ALINAN TEKNİKLER:
-1. Potential-Based Reward Shaping (PBRS) - Ng et al. 1999
-2. Proximity Bonus Zones - "Last mile" problem
-3. Precision-Based Continuous Curriculum (PCCL) - ICRA 2020
-4. Dense + Sparse Hybrid Rewards
-5. Hindsight-Inspired Partial Success
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm_v3_2.py --num_envs 4096 --max_iterations 5000 --headless
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm.py --num_envs 4096 --max_iterations 5000 --headless
 """
 
 from __future__ import annotations
@@ -20,7 +13,7 @@ import argparse
 import os
 import sys
 
-parser = argparse.ArgumentParser(description="G1 Arm Reach Training - V3.2 (Literature-Backed)")
+parser = argparse.ArgumentParser(description="G1 Arm Reach Training")
 parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments")
 parser.add_argument("--max_iterations", type=int, default=5000, help="Max training iterations")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
@@ -39,7 +32,7 @@ env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 envs_dir = os.path.join(env_dir, "envs")
 sys.path.insert(0, envs_dir)
 
-# V3.2 Environment - backward compatible import
+# Import environment - supports both old and new names
 from g1_arm_dual_orient_env import G1ArmReachEnv, G1ArmReachEnvCfg
 
 from isaaclab_rl.rsl_rl import (
@@ -54,16 +47,16 @@ from isaaclab.utils import configclass
 
 @configclass
 class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """V3.2 PPO config - optimized for reaching."""
+    """PPO config optimized for reaching."""
 
     num_steps_per_env = 24
     max_iterations = 5000
     save_interval = 250
-    experiment_name = "g1_arm_reach_v3_2"
+    experiment_name = "g1_arm_reach"
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.4,  # Slightly lower for better exploitation
+        init_noise_std=0.4,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -73,7 +66,7 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.008,  # Slightly lower for more exploitation
+        entropy_coef=0.008,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=3e-4,
@@ -86,7 +79,7 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 class CurriculumEnvWrapper(RslRlVecEnvWrapper):
-    """Wrapper with comprehensive logging for V3.2 features."""
+    """Wrapper with comprehensive logging."""
 
     def __init__(self, env):
         super().__init__(env)
@@ -95,12 +88,10 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
         self._unwrapped = env
         self._writer = None
 
-        # Distance tracking
+        # Tracking
         self._distance_sum = 0.0
         self._distance_count = 0
         self._min_distance_sum = 0.0
-
-        # Zone tracking
         self._zone1_count = 0
         self._zone2_count = 0
         self._zone3_count = 0
@@ -120,13 +111,12 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                 self._distance_sum += distances.mean().item()
                 self._distance_count += 1
 
-                # Zone counts
                 self._zone1_count += (distances < 0.15).sum().item()
                 self._zone2_count += (distances < 0.10).sum().item()
                 self._zone3_count += (distances < 0.05).sum().item()
 
-                # Min distance tracking
-                self._min_distance_sum += self._unwrapped.min_distance_in_episode.mean().item()
+                if hasattr(self._unwrapped, 'min_distance_in_episode'):
+                    self._min_distance_sum += self._unwrapped.min_distance_in_episode.mean().item()
             except:
                 pass
 
@@ -140,7 +130,10 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                     # Curriculum metrics
                     self._writer.add_scalar('Curriculum/stage', self._unwrapped.curriculum_stage + 1, self._iteration)
                     self._writer.add_scalar('Curriculum/spawn_radius', self._unwrapped.current_spawn_radius, self._iteration)
-                    self._writer.add_scalar('Curriculum/pos_threshold', self._unwrapped.current_pos_threshold, self._iteration)
+
+                    if hasattr(self._unwrapped, 'current_pos_threshold'):
+                        self._writer.add_scalar('Curriculum/pos_threshold', self._unwrapped.current_pos_threshold, self._iteration)
+
                     self._writer.add_scalar('Curriculum/orientation_enabled', float(self._unwrapped.orientation_enabled), self._iteration)
 
                     # Success metrics
@@ -153,17 +146,19 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                     # Distance metrics
                     if self._distance_count > 0:
                         avg_distance = self._distance_sum / self._distance_count
-                        avg_min_distance = self._min_distance_sum / self._distance_count
                         self._writer.add_scalar('Distance/avg_to_target', avg_distance, self._iteration)
-                        self._writer.add_scalar('Distance/avg_min_in_episode', avg_min_distance, self._iteration)
 
-                        # Zone percentages
+                        if self._min_distance_sum > 0:
+                            avg_min_distance = self._min_distance_sum / self._distance_count
+                            self._writer.add_scalar('Distance/avg_min_in_episode', avg_min_distance, self._iteration)
+
                         total_steps = self._distance_count * self._unwrapped.num_envs
                         if total_steps > 0:
                             self._writer.add_scalar('Zones/pct_in_zone1_15cm', self._zone1_count / total_steps * 100, self._iteration)
                             self._writer.add_scalar('Zones/pct_in_zone2_10cm', self._zone2_count / total_steps * 100, self._iteration)
                             self._writer.add_scalar('Zones/pct_in_zone3_5cm', self._zone3_count / total_steps * 100, self._iteration)
 
+                        # Reset counters
                         self._distance_sum = 0.0
                         self._distance_count = 0
                         self._min_distance_sum = 0.0
@@ -174,7 +169,7 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                 if self._iteration % 50 == 0:
                     stage = self._unwrapped.curriculum_stage + 1
                     radius = self._unwrapped.current_spawn_radius
-                    threshold = self._unwrapped.current_pos_threshold
+                    threshold = getattr(self._unwrapped, 'current_pos_threshold', 0.10)
                     total_r = self._unwrapped.total_reaches
                     total_a = self._unwrapped.total_attempts
                     stage_r = self._unwrapped.stage_reaches
@@ -183,7 +178,7 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                     stage_sr = stage_r / max(stage_a, 1) * 100
                     global_sr = total_r / max(total_a, 1) * 100
 
-                    print(f"[V3.2] Iter {self._iteration:5d} | "
+                    print(f"[Curriculum] Iter {self._iteration:5d} | "
                           f"Stage {stage}/10 | "
                           f"Radius={radius*100:.0f}cm | "
                           f"Thresh={threshold*100:.0f}cm | "
@@ -205,7 +200,7 @@ def main():
     runner_cfg.max_iterations = args.max_iterations
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join("logs", "ulc", f"ulc_g1_arm_reach_v3_2_{timestamp}")
+    log_dir = os.path.join("logs", "ulc", f"g1_arm_reach_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
 
     env.set_writer(log_dir)
@@ -217,39 +212,17 @@ def main():
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("    G1 ARM REACH TRAINING - V3.2 (LITERATURE-BACKED)")
+    print("    G1 ARM REACH TRAINING")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  📚 LITERATURE-BACKED FEATURES:")
-    print("    1. Potential-Based Reward Shaping (PBRS)")
-    print("       - Ng et al. 1999: F(s,s') = γ·Φ(s') - Φ(s)")
-    print("       - Exponential potential: Φ(s) = exp(-d/σ)")
-    print()
-    print("    2. Proximity Bonus Zones")
-    print("       - Zone1: <15cm → +1.0")
-    print("       - Zone2: <10cm → +2.0")
-    print("       - Zone3: <5cm  → +5.0")
-    print()
-    print("    3. Precision-Based Continuous Curriculum (PCCL)")
-    print("       - ICRA 2020: 'Accelerating RL for Reaching'")
-    print("       - Threshold changes with stage:")
-    print(f"         {[f'{t*100:.0f}cm' for t in env_cfg.stage_thresholds]}")
-    print()
-    print("    4. Dense + Sparse Hybrid Rewards")
-    print("       - Dense: Tanh kernel (every step)")
-    print("       - Sparse: Reach bonus (on success)")
-    print()
-    print("    5. Hindsight-Inspired Tracking")
-    print("       - Track min distance per episode")
-    print("-" * 70)
-    print("  EXPECTED IMPROVEMENTS:")
-    print("    - PBRS: Smoother learning gradient")
-    print("    - Zones: Better 'last mile' convergence")
-    print("    - PCCL: Faster curriculum progression")
-    print("    - Stage 1 SR should exceed 50% quickly")
+    print("  FEATURES:")
+    print("    - Potential-Based Reward Shaping (PBRS)")
+    print("    - Proximity Bonus Zones (15cm/10cm/5cm)")
+    print("    - Precision-Based Continuous Curriculum (PCCL)")
+    print("    - Dense + Sparse Hybrid Rewards")
     print("=" * 70 + "\n")
 
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
@@ -259,12 +232,11 @@ def main():
     total_reaches = env._unwrapped.total_reaches
 
     print("\n" + "=" * 70)
-    print("TRAINING COMPLETE - V3.2")
+    print("TRAINING COMPLETE")
     print("=" * 70)
     print(f"  Final stage: {final_stage}/10")
     print(f"  Final success rate: {final_sr:.1f}%")
     print(f"  Total reaches: {total_reaches}")
-    print(f"  Final threshold: {env._unwrapped.current_pos_threshold*100:.0f}cm")
     print(f"  Logs: {log_dir}")
     print("=" * 70 + "\n")
 
