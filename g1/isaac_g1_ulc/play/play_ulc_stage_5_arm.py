@@ -1,13 +1,13 @@
 """
-G1 Arm Reach with Orientation - Stage 5 V2 Play Script
-=======================================================
+G1 Arm Reach - V3 Play Script (ARM POSITION PERSISTENCE)
+=========================================================
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_5_arm_v2.py
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_5_arm_v3.py
 
 Belirli checkpoint ile:
-./isaaclab.bat -p .../play/play_ulc_stage_5_arm_v2.py --checkpoint logs/ulc/ulc_g1_stage5_arm_2026-01-20_21-47-13/model_2000.pt
+./isaaclab.bat -p .../play/play_ulc_stage_5_arm_v3.py --checkpoint logs/ulc/ulc_g1_arm_reach_v3_XXXX/model_2000.pt
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import argparse
 import os
 import sys
 
-parser = argparse.ArgumentParser(description="G1 Arm Orient Play - Stage 5 V2")
+parser = argparse.ArgumentParser(description="G1 Arm Reach Play - V3")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint")
 parser.add_argument("--num_steps", type=int, default=2000, help="Number of steps to run")
 
@@ -36,15 +36,15 @@ env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 envs_dir = os.path.join(env_dir, "envs")
 sys.path.insert(0, envs_dir)
 
-# V2 environment kullan
-from g1_arm_dual_orient_env_v2 import G1ArmOrientEnv, G1ArmOrientEnvCfg
+# V3 environment kullan
+from g1_arm_reach_env_v3 import G1ArmReachEnv, G1ArmReachEnvCfg
 
 
 def find_latest_checkpoint():
     """Find the latest Stage 5 checkpoint."""
-    # V2 önce, sonra V1
+    # V3 önce
     patterns = [
-        "logs/ulc/ulc_g1_stage5_arm_v2_*",
+        "logs/ulc/ulc_g1_arm_reach_v3_*",
         "logs/ulc/ulc_g1_stage5_arm_*"
     ]
 
@@ -155,10 +155,10 @@ def load_policy(checkpoint_path: str, obs_dim: int, act_dim: int, device: str) -
 
 def main():
     # Setup environment
-    env_cfg = G1ArmOrientEnvCfg()
+    env_cfg = G1ArmReachEnvCfg()
     env_cfg.scene.num_envs = 1
 
-    env = G1ArmOrientEnv(cfg=env_cfg)
+    env = G1ArmReachEnv(cfg=env_cfg)
 
     # Find checkpoint
     checkpoint_path = args.checkpoint
@@ -188,7 +188,7 @@ def main():
     policy.eval()
 
     print("\n" + "=" * 60)
-    print("G1 ARM ORIENT PLAY - STAGE 5 V2")
+    print("G1 ARM REACH PLAY - V3 (ARM POSITION PERSISTENCE)")
     print("=" * 60)
     print(f"  Checkpoint: {os.path.basename(checkpoint_path)}")
     print(f"  From: {os.path.dirname(checkpoint_path)}")

@@ -6,7 +6,7 @@ Araştırma-tabanlı eğitim scripti:
 1. Fixed learning rate (adaptive değil)
 2. Success rate tracking ve logging
 3. Reach-based curriculum
-4. Proper TensorBoard logging
+4. ARM POSITION PERSISTENCE
 
 KULLANIM:
 cd C:\IsaacLab
@@ -19,7 +19,7 @@ import argparse
 import os
 import sys
 
-parser = argparse.ArgumentParser(description="G1 Arm Reach Training - V3 (Research-Backed)")
+parser = argparse.ArgumentParser(description="G1 Arm Reach Training - V3")
 parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments")
 parser.add_argument("--max_iterations", type=int, default=5000, help="Max training iterations")
 parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
@@ -38,7 +38,9 @@ env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 envs_dir = os.path.join(env_dir, "envs")
 sys.path.insert(0, envs_dir)
 
+# V3 Environment - DOĞRU İSİM
 from g1_arm_reach_env_v3 import G1ArmReachEnv, G1ArmReachEnvCfg
+
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
@@ -60,7 +62,7 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,               # Standard noise
+        init_noise_std=0.5,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -70,12 +72,11 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,                # Higher entropy for exploration
+        entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=4,
-        # ============ V3: FIXED LEARNING RATE ============
-        learning_rate=3e-4,               # Fixed LR
-        schedule="fixed",                 # NO adaptive schedule!
+        learning_rate=3e-4,
+        schedule="fixed",  # FIXED - adaptive değil!
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,
@@ -84,7 +85,7 @@ class G1ArmReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 class CurriculumEnvWrapper(RslRlVecEnvWrapper):
-    """Wrapper with success rate tracking and reach-based curriculum."""
+    """Wrapper with success rate tracking."""
 
     def __init__(self, env):
         super().__init__(env)
@@ -92,9 +93,6 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
         self._step_count = 0
         self._unwrapped = env
         self._writer = None
-
-        # Success tracking
-        self._recent_success_rates = []
 
     def set_writer(self, log_dir):
         from torch.utils.tensorboard import SummaryWriter
@@ -107,63 +105,19 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
         if self._step_count % 24 == 0:
             self._iteration += 1
 
-            # Update curriculum
             if hasattr(self._unwrapped, 'update_curriculum'):
                 success_rate = self._unwrapped.update_curriculum(self._iteration)
-                self._recent_success_rates.append(success_rate)
-                if len(self._recent_success_rates) > 100:
-                    self._recent_success_rates.pop(0)
 
-                # Log to TensorBoard
                 if self._writer is not None:
-                    # Curriculum metrics
-                    self._writer.add_scalar(
-                        'Curriculum/stage',
-                        self._unwrapped.curriculum_stage + 1,
-                        self._iteration
-                    )
-                    self._writer.add_scalar(
-                        'Curriculum/spawn_radius',
-                        self._unwrapped.current_spawn_radius,
-                        self._iteration
-                    )
-                    self._writer.add_scalar(
-                        'Curriculum/orientation_enabled',
-                        float(self._unwrapped.orientation_enabled),
-                        self._iteration
-                    )
+                    self._writer.add_scalar('Curriculum/stage', self._unwrapped.curriculum_stage + 1, self._iteration)
+                    self._writer.add_scalar('Curriculum/spawn_radius', self._unwrapped.current_spawn_radius, self._iteration)
+                    self._writer.add_scalar('Curriculum/orientation_enabled', float(self._unwrapped.orientation_enabled), self._iteration)
+                    self._writer.add_scalar('Success/rate', success_rate, self._iteration)
+                    self._writer.add_scalar('Success/total_reaches', self._unwrapped.total_reaches, self._iteration)
+                    self._writer.add_scalar('Success/total_attempts', self._unwrapped.total_attempts, self._iteration)
+                    self._writer.add_scalar('Success/stage_reaches', self._unwrapped.stage_reaches, self._iteration)
+                    self._writer.add_scalar('Success/avg_reaches_per_env', self._unwrapped.reach_count.mean().item(), self._iteration)
 
-                    # Success metrics (CRITICAL!)
-                    self._writer.add_scalar(
-                        'Success/rate',
-                        success_rate,
-                        self._iteration
-                    )
-                    self._writer.add_scalar(
-                        'Success/total_reaches',
-                        self._unwrapped.total_reaches,
-                        self._iteration
-                    )
-                    self._writer.add_scalar(
-                        'Success/total_attempts',
-                        self._unwrapped.total_attempts,
-                        self._iteration
-                    )
-                    self._writer.add_scalar(
-                        'Success/stage_reaches',
-                        self._unwrapped.stage_reaches,
-                        self._iteration
-                    )
-
-                    # Per-env metrics
-                    avg_reaches = self._unwrapped.reach_count.mean().item()
-                    self._writer.add_scalar(
-                        'Success/avg_reaches_per_env',
-                        avg_reaches,
-                        self._iteration
-                    )
-
-                # Console logging
                 if self._iteration % 50 == 0:
                     stage = self._unwrapped.curriculum_stage + 1
                     radius = self._unwrapped.current_spawn_radius
@@ -179,7 +133,7 @@ class CurriculumEnvWrapper(RslRlVecEnvWrapper):
                           f"Stage {stage}/10 | "
                           f"Radius={radius:.2f}m | "
                           f"Stage SR: {stage_sr:.1f}% ({stage_r}/{stage_a}) | "
-                          f"Global SR: {global_sr:.1f}% ({total_r}/{total_a})")
+                          f"Global SR: {global_sr:.1f}%")
 
         return result
 
@@ -207,35 +161,29 @@ def main():
         runner.load(args.resume)
 
     print("\n" + "=" * 70)
-    print("    G1 ARM REACH TRAINING - V3 (RESEARCH-BACKED)")
+    print("    G1 ARM REACH TRAINING - V3 (ARM POSITION PERSISTENCE)")
     print("=" * 70)
     print(f"  Environments:     {args.num_envs}")
     print(f"  Max iterations:   {args.max_iterations}")
     print(f"  Log directory:    {log_dir}")
     print("-" * 70)
-    print("  V3 KEY FEATURES:")
-    print(f"    ✓ Fixed learning rate: 3e-4 (NO adaptive)")
-    print(f"    ✓ Tanh kernel rewards (bounded 0-1)")
-    print(f"    ✓ Reach-based curriculum (requires 70% success rate)")
-    print(f"    ✓ Episode termination on success")
-    print(f"    ✓ Success rate tracking")
+    print("  🆕 ARM POSITION PERSISTENCE:")
+    print(f"    ✓ Kol önceki hedef pozisyonunda başlar")
+    print(f"    ✓ Robot HER konumdan HER konuma gitmeyi öğrenir")
+    print(f"    ✓ %10 random start (exploration için)")
     print("-" * 70)
-    print("  CURRICULUM:")
-    print(f"    10 stages: 5cm → 50cm spawn radius")
-    print(f"    Advance requires: 70% SR + 50 reaches + 200 steps")
-    print(f"    Orientation enabled at Stage 6+")
+    print("  V3 KEY FEATURES:")
+    print(f"    ✓ Fixed learning rate: 3e-4")
+    print(f"    ✓ Tanh kernel rewards")
+    print(f"    ✓ Reach-based curriculum (70% SR)")
     print("-" * 70)
     print("  EXPECTED BEHAVIOR:")
-    print("    - First 500 iter: Stage 1, success rate climbing")
-    print("    - Stage advance messages when criteria met")
-    print("    - noise_std should stay ~0.5-1.0 (not explode)")
-    if args.resume:
-        print(f"  Resume from: {args.resume}")
+    print("    - Success rate %70'e ulaşınca stage ilerler")
+    print("    - noise_std ~0.5-1.0 civarında kalmalı")
     print("=" * 70 + "\n")
 
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
-    # Final stats
     final_sr = env._unwrapped.get_success_rate() * 100
     final_stage = env._unwrapped.curriculum_stage + 1
     total_reaches = env._unwrapped.total_reaches
@@ -247,7 +195,6 @@ def main():
     print(f"  Final success rate: {final_sr:.1f}%")
     print(f"  Total reaches: {total_reaches}")
     print(f"  Logs: {log_dir}")
-    print(f"  Model: {log_dir}/model_{args.max_iterations}.pt")
     print("=" * 70 + "\n")
 
     env.close()
