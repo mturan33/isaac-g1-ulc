@@ -4,10 +4,10 @@ G1 Arm Reach - V3 Play Script (ARM POSITION PERSISTENCE)
 
 KULLANIM:
 cd C:\IsaacLab
-./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_5_arm_v3.py
+./isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_5_arm.py
 
 Belirli checkpoint ile:
-./isaaclab.bat -p .../play/play_ulc_stage_5_arm_v3.py --checkpoint logs/ulc/ulc_g1_arm_reach_v3_XXXX/model_2000.pt
+./isaaclab.bat -p .../play/play_ulc_stage_5_arm.py --checkpoint logs/ulc/ulc_g1_arm_reach_v3_XXXX/model_2000.pt
 """
 
 from __future__ import annotations

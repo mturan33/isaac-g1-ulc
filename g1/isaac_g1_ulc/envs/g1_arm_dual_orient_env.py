@@ -1,23 +1,24 @@
 """
-G1 Arm Reach with Orientation - Stage 5 V3 (Research-Backed)
-=============================================================
+G1 Arm Reach with Orientation - Stage 5 V3.1 (SPAWN FIX)
+=========================================================
 
-Araştırma-tabanlı iyileştirmeler:
-1. Reach-based curriculum (reach count şartı)
-2. Tanh kernel reward (bounded, smooth)
-3. Success rate tracking
-4. ARM POSITION PERSISTENCE - Kol önceki hedef pozisyonunda başlar!
-5. Episode termination on success
+V3 -> V3.1 DEĞİŞİKLİKLER:
+1. SPAWN GEOMETRY FIX: initial_spawn_radius > workspace_inner_radius
+2. Spawn logic'te max() güvenliği eklendi
+3. pos_threshold gevşetildi (8cm -> 10cm)
+4. action_scale artırıldı (0.10 -> 0.15)
 
-ÖNEMLİ: Robot her konumdan her konuma gitmeyi öğrenir,
-sadece default pozisyondan değil!
+BUG FIX:
+V3'te hedefler exclusion zone içinde spawn oluyordu çünkü
+initial_spawn_radius (5cm) < workspace_inner_radius (10cm) idi.
+Bu yüzden 0 reach alıyorduk.
 
 KULLANIM:
 Dosyayı envs/ klasörüne kopyala:
   g1_arm_dual_orient_env.py
 
 Train scripti train/ klasörüne:
-  train_ulc_stage_5_arm_v3.py
+  train_ulc_stage_5_arm_v3_1.py
 """
 
 from __future__ import annotations
@@ -195,7 +196,7 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
 
     scene: G1ArmReachSceneCfg = G1ArmReachSceneCfg(num_envs=1, env_spacing=2.0)
 
-    # ============ V3: TANH KERNEL REWARDS ============
+    # ============ V3.1: TANH KERNEL REWARDS ============
     reward_pos_tanh_std = 0.10
     reward_pos_tanh_weight = 2.0
 
@@ -207,33 +208,34 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
     reward_action_rate = -0.01
     reward_joint_vel = -0.001
 
-    # ============ THRESHOLDS ============
-    pos_threshold = 0.08
+    # ============ V3.1: THRESHOLDS (GEVŞETİLDİ) ============
+    pos_threshold = 0.10  # 8cm -> 10cm (daha kolay)
     ori_threshold = 0.50
 
     # Episode settings
     terminate_on_success = True
     max_reaches_per_episode = 5
 
-    # Action
+    # ============ V3.1: ACTION SCALE ARTIRILDI ============
     action_smoothing_alpha = 0.3
-    action_scale = 0.10
+    action_scale = 0.15  # 0.10 -> 0.15 (daha büyük hareketler)
 
-    # Workspace
+    # ============ V3.1: WORKSPACE (DÜZELTİLDİ) ============
     shoulder_center_offset = [0.0, 0.174, 0.259]
-    workspace_inner_radius = 0.10
-    workspace_outer_radius = 0.40
+    workspace_inner_radius = 0.08   # 10cm -> 8cm (küçültüldü)
+    workspace_outer_radius = 0.45   # 40cm -> 45cm
 
-    # ============ V3: REACH-BASED CURRICULUM ============
-    initial_spawn_radius = 0.05
-    max_spawn_radius = 0.50
+    # ============ V3.1: SPAWN GEOMETRY FIX ============
+    # KRİTİK: initial_spawn_radius > workspace_inner_radius OLMALI!
+    initial_spawn_radius = 0.18     # 5cm -> 18cm (BÜYÜK DEĞİŞİKLİK!)
+    max_spawn_radius = 0.45
     curriculum_stages = 10
 
-    min_success_rate = 0.70
-    min_reaches_to_advance = 50
-    min_steps_per_stage = 200
+    min_success_rate = 0.60         # 70% -> 60% (biraz gevşetildi)
+    min_reaches_to_advance = 30     # 50 -> 30
+    min_steps_per_stage = 150       # 200 -> 150
 
-    # ============ V3: ARM POSITION PERSISTENCE ============
+    # ============ ARM POSITION PERSISTENCE ============
     persist_arm_position = True
     random_start_probability = 0.1
 
@@ -321,7 +323,7 @@ class G1ArmReachEnv(DirectRLEnv):
             self.cfg.shoulder_center_offset, device=self.device
         ).unsqueeze(0).expand(self.num_envs, -1).clone()
 
-        # ============ V3: ARM POSITION PERSISTENCE ============
+        # ============ ARM POSITION PERSISTENCE ============
         self.last_reached_joint_pos = torch.zeros((self.num_envs, 5), device=self.device)
         self.default_arm_pos = torch.tensor(
             [DEFAULT_ARM_POSE[jn] for jn in G1_RIGHT_ARM_JOINTS],
@@ -348,20 +350,27 @@ class G1ArmReachEnv(DirectRLEnv):
 
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
+        # ============ V3.1: SPAWN GEOMETRY VALIDATION ============
+        assert self.cfg.initial_spawn_radius > self.cfg.workspace_inner_radius, \
+            f"BUG: initial_spawn_radius ({self.cfg.initial_spawn_radius}) must be > workspace_inner_radius ({self.cfg.workspace_inner_radius})"
+
         print("\n" + "=" * 70)
-        print("G1 ARM REACH ENVIRONMENT - V3 (ARM POSITION PERSISTENCE)")
+        print("G1 ARM REACH ENVIRONMENT - V3.1 (SPAWN FIX)")
         print("=" * 70)
         print(f"  Arm joints: {self.arm_indices.tolist()}")
         print(f"  Palm idx: {self.palm_idx}")
         print("-" * 70)
+        print("  🔧 V3.1 SPAWN FIX:")
+        print(f"    ✓ workspace_inner_radius: {self.cfg.workspace_inner_radius*100:.0f}cm")
+        print(f"    ✓ initial_spawn_radius:   {self.cfg.initial_spawn_radius*100:.0f}cm")
+        print(f"    ✓ Hedefler {self.cfg.workspace_inner_radius*100:.0f}-{self.cfg.initial_spawn_radius*100:.0f}cm arasında spawn olacak")
+        print(f"    ✓ pos_threshold: {self.cfg.pos_threshold*100:.0f}cm")
+        print(f"    ✓ action_scale: {self.cfg.action_scale}")
+        print("-" * 70)
         print("  🆕 ARM POSITION PERSISTENCE:")
         print(f"    ✓ Hedefe ulaşınca kol o pozisyonda kalır")
         print(f"    ✓ Yeni episode önceki hedef pozisyonundan başlar")
-        print(f"    ✓ Robot HER konumdan HER konuma gitmeyi öğrenir!")
         print(f"    ✓ Random start probability: {self.cfg.random_start_probability*100:.0f}%")
-        print("-" * 70)
-        print(f"  Workspace: {self.cfg.workspace_inner_radius*100:.0f}cm - {self.cfg.workspace_outer_radius*100:.0f}cm")
-        print(f"  Pos threshold: {self.cfg.pos_threshold*100:.0f}cm")
         print("=" * 70 + "\n")
 
     def _setup_scene(self):
@@ -379,16 +388,23 @@ class G1ArmReachEnv(DirectRLEnv):
         return self.robot.data.body_quat_w[:, self.palm_idx]
 
     def _sample_target_in_workspace(self, env_ids: torch.Tensor):
+        """V3.1: Fixed spawn geometry - hedefler artık doğru bölgede spawn olacak."""
         num = len(env_ids)
         root_pos = self.robot.data.root_pos_w[env_ids]
         shoulder_rel = self.shoulder_center[env_ids]
 
+        # Random direction (önde, robotun önünde)
         direction = torch.randn((num, 3), device=self.device)
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-        direction[:, 0] = -torch.abs(direction[:, 0])
+        direction[:, 0] = -torch.abs(direction[:, 0])  # Öne doğru
 
+        # ============ V3.1: SPAWN GEOMETRY FIX ============
         inner = self.cfg.workspace_inner_radius
-        outer = min(self.current_spawn_radius, self.cfg.workspace_outer_radius)
+        # max() ile güvenlik: outer her zaman inner'dan büyük olmalı
+        outer = max(self.current_spawn_radius, inner + 0.05)
+        outer = min(outer, self.cfg.workspace_outer_radius)
+
+        # Mesafe: inner ile outer arasında
         distance = inner + torch.rand((num, 1), device=self.device) * (outer - inner)
 
         targets = shoulder_rel + direction * distance
@@ -540,7 +556,7 @@ class G1ArmReachEnv(DirectRLEnv):
         self.robot.write_root_pose_to_sim(self.fixed_root_pose[env_ids], env_ids=env_ids)
         self.robot.write_root_velocity_to_sim(self.zero_root_vel[env_ids], env_ids=env_ids)
 
-        # ============ V3: ARM POSITION PERSISTENCE ============
+        # ============ ARM POSITION PERSISTENCE ============
         jp = self.robot.data.default_joint_pos[env_ids].clone()
         jv = torch.zeros_like(self.robot.data.joint_vel[env_ids])
 
