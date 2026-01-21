@@ -39,7 +39,7 @@ env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 envs_dir = os.path.join(env_dir, "envs")
 sys.path.insert(0, envs_dir)
 
-# V3.2 Environment
+# V3.2 Environment - backward compatible import
 from g1_arm_dual_orient_env import G1ArmReachEnv, G1ArmReachEnvCfg
 
 from isaaclab_rl.rsl_rl import (
