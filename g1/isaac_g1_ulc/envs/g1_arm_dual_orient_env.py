@@ -1,39 +1,23 @@
 """
-G1 Arm Reach with Orientation - Stage 5 V3.2 (LITERATURE-BACKED)
-=================================================================
+G1 Arm Reach with Orientation - Stage 5 V3.3 (SMOOTH + STABLE)
+==============================================================
 
-LİTERATÜRDEN ALINAN TEKNİKLER:
+V3.2 → V3.3 DEĞİŞİKLİKLER:
 
-1. POTENTIAL-BASED REWARD SHAPING (PBRS)
-   - Ng et al. 1999, "Policy invariance under reward transformations"
-   - F(s,s') = γ·Φ(s') - Φ(s) formülü
-   - Exponential potential: exp(-distance/σ)
+1. SMOOTHNESS İYİLEŞTİRMELERİ:
+   - action_smoothing_alpha: 0.3 → 0.15 (daha smooth geçişler)
+   - reward_action_rate: -0.005 → -0.02 (ani hareketleri cezalandır)
+   - reward_joint_vel: -0.0005 → -0.003 (hız cezası artır)
+   - reward_joint_acc: YENİ - ivme cezası (titreme önleme)
 
-2. PROXIMITY BONUS ZONES
-   - "Last mile" problemini çözer
-   - Zone1: 15cm altı, Zone2: 10cm altı, Zone3: 5cm altı
-   - Her zone'da artan bonus
+2. CURRICULUM YAVAŞLATMA:
+   - min_success_rate: 0.50 → 0.65 (daha yüksek başarı gerekli)
+   - min_reaches_to_advance: 20 → 60 (daha fazla reach)
+   - min_steps_per_stage: 100 → 300 (daha uzun stage'ler)
 
-3. PRECISION-BASED CONTINUOUS CURRICULUM (PCCL)
-   - "Accelerating RL for Reaching" - ICRA 2020
-   - Threshold curriculum'la birlikte değişir
-   - Kolay başla (15cm), zorlaştır (6cm)
-
-4. DENSE + SPARSE HYBRID REWARDS
-   - Dense: Tanh kernel (her adım)
-   - Sparse: Reach bonus (hedefe ulaşınca)
-
-5. ADAPTIVE NOISE DECAY
-   - Success rate'e göre exploration azaltma
-   - Exploitation'a geçiş
-
-6. HINDSIGHT-INSPIRED GOAL RELABELING
-   - Episode sonunda ulaşılan pozisyonu "mini-success" say
-   - Kısmi başarıları ödüllendir
-
-KULLANIM:
-cd C:\IsaacLab
-./isaaclab.bat -p .../train/train_ulc_stage_5_arm_v3_2.py --num_envs 4096 --max_iterations 5000 --headless
+3. STABILITY:
+   - Daha düşük action_scale ile başla
+   - Smooth ramp-up for actions
 """
 
 from __future__ import annotations
@@ -137,7 +121,7 @@ class G1ArmReachSceneCfg(InteractiveSceneCfg):
             "arm_joints": ImplicitActuatorCfg(
                 joint_names_expr=["right_shoulder.*", "right_elbow.*"],
                 stiffness=150.0,
-                damping=15.0,
+                damping=20.0,  # Increased damping for smoother motion
             ),
         },
     )
@@ -192,7 +176,7 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0
 
     num_actions = 5
-    num_observations = 29  # +1 for distance_to_target
+    num_observations = 29
     num_states = 0
 
     action_space = 5
@@ -211,72 +195,70 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
 
     scene: G1ArmReachSceneCfg = G1ArmReachSceneCfg(num_envs=1, env_spacing=2.0)
 
-    # ============ V3.2: POTENTIAL-BASED REWARD SHAPING ============
-    # Exponential potential: Φ(s) = exp(-distance / σ)
-    # F(s,s') = γ·Φ(s') - Φ(s)
+    # ============ POTENTIAL-BASED REWARD SHAPING ============
     use_potential_shaping = True
     potential_gamma = 0.99
-    potential_sigma = 0.15  # Exponential decay rate
-    potential_scale = 3.0   # Scaling factor for potential difference
+    potential_sigma = 0.15
+    potential_scale = 3.0
 
-    # ============ V3.2: PROXIMITY BONUS ZONES ============
-    # Zone-based rewards for "last mile" problem
-    proximity_zone1_dist = 0.15   # 15cm - outer zone
+    # ============ PROXIMITY BONUS ZONES ============
+    proximity_zone1_dist = 0.15
     proximity_zone1_bonus = 1.0
-    proximity_zone2_dist = 0.10   # 10cm - middle zone
+    proximity_zone2_dist = 0.10
     proximity_zone2_bonus = 2.0
-    proximity_zone3_dist = 0.05   # 5cm - inner zone (almost there!)
+    proximity_zone3_dist = 0.05
     proximity_zone3_bonus = 5.0
 
-    # ============ V3.2: DENSE + SPARSE HYBRID ============
-    reward_pos_tanh_std = 0.12    # Slightly wider for smoother gradient
-    reward_pos_tanh_weight = 1.5  # Dense component
+    # ============ REWARDS ============
+    reward_pos_tanh_std = 0.12
+    reward_pos_tanh_weight = 1.5
 
     reward_ori_tanh_std = 0.50
     reward_ori_tanh_weight = 0.3
 
-    reward_reaching = 150.0       # Sparse bonus (increased)
+    reward_reaching = 150.0
 
-    reward_action_rate = -0.005   # Reduced penalty
-    reward_joint_vel = -0.0005
+    # ============ V3.3: SMOOTHNESS PENALTIES (ARTTIRILDI) ============
+    reward_action_rate = -0.02      # -0.005 → -0.02 (4x artış)
+    reward_joint_vel = -0.003       # -0.0005 → -0.003 (6x artış)
+    reward_joint_acc = -0.01        # YENİ: İvme cezası (titreme önleme)
 
-    # ============ V3.2: PRECISION-BASED CURRICULUM THRESHOLDS ============
-    # Stage'e göre değişen threshold'lar (PCCL)
-    # Kolay başla, zorlaştır
+    # ============ PCCL THRESHOLDS ============
     stage_thresholds = [0.15, 0.14, 0.13, 0.12, 0.11, 0.10, 0.09, 0.08, 0.07, 0.06]
     ori_threshold = 0.50
+
+    # Backward compatibility
+    pos_threshold = 0.15  # Initial value, will be updated by curriculum
 
     # Episode settings
     terminate_on_success = True
     max_reaches_per_episode = 5
 
-    # ============ V3.2: ACTION SCALE ============
-    action_smoothing_alpha = 0.3
-    action_scale = 0.15
+    # ============ V3.3: SMOOTHNESS (ACTION) ============
+    action_smoothing_alpha = 0.15   # 0.3 → 0.15 (daha smooth)
+    action_scale = 0.12             # 0.15 → 0.12 (daha küçük adımlar)
 
     # ============ WORKSPACE ============
     shoulder_center_offset = [0.0, 0.174, 0.259]
     workspace_inner_radius = 0.08
     workspace_outer_radius = 0.45
 
-    # ============ V3.2: CURRICULUM (PCCL-inspired) ============
-    initial_spawn_radius = 0.15   # Start closer
+    # ============ V3.3: SLOWER CURRICULUM ============
+    initial_spawn_radius = 0.15
     max_spawn_radius = 0.40
     curriculum_stages = 10
 
-    # Daha düşük threshold'lar başlangıçta
-    min_success_rate = 0.50       # %50 yeterli (was 60%)
-    min_reaches_to_advance = 20   # 20 reach yeterli (was 30)
-    min_steps_per_stage = 100     # 100 step (was 150)
+    min_success_rate = 0.65         # 0.50 → 0.65 (daha yüksek başarı)
+    min_reaches_to_advance = 60     # 20 → 60 (3x fazla reach)
+    min_steps_per_stage = 300       # 100 → 300 (3x uzun stage)
 
     # ============ ARM POSITION PERSISTENCE ============
     persist_arm_position = True
-    random_start_probability = 0.15  # Slightly more exploration
+    random_start_probability = 0.15
 
-    # ============ V3.2: HINDSIGHT-INSPIRED ============
-    # Episode sonunda hedefe en yakın noktayı ödüllendir
+    # ============ HINDSIGHT ============
     use_hindsight_bonus = True
-    hindsight_threshold = 0.20    # 20cm içine girdiyse kısmi başarı
+    hindsight_threshold = 0.20
     hindsight_bonus = 10.0
 
 
@@ -359,11 +341,14 @@ class G1ArmReachEnv(DirectRLEnv):
         self.smoothed_actions = torch.zeros((self.num_envs, 5), device=self.device)
         self.prev_actions = torch.zeros((self.num_envs, 5), device=self.device)
 
+        # V3.3: Previous velocity for acceleration calculation
+        self.prev_joint_vel = torch.zeros((self.num_envs, 5), device=self.device)
+
         self.shoulder_center = torch.tensor(
             self.cfg.shoulder_center_offset, device=self.device
         ).unsqueeze(0).expand(self.num_envs, -1).clone()
 
-        # ============ ARM POSITION PERSISTENCE ============
+        # ARM POSITION PERSISTENCE
         self.last_reached_joint_pos = torch.zeros((self.num_envs, 5), device=self.device)
         self.default_arm_pos = torch.tensor(
             [DEFAULT_ARM_POSE[jn] for jn in G1_RIGHT_ARM_JOINTS],
@@ -372,11 +357,11 @@ class G1ArmReachEnv(DirectRLEnv):
         self.last_reached_joint_pos[:] = self.default_arm_pos
         self.reached_success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        # ============ V3.2: POTENTIAL-BASED SHAPING STATE ============
+        # POTENTIAL-BASED SHAPING STATE
         self.prev_potential = torch.zeros(self.num_envs, device=self.device)
         self.prev_distance = torch.zeros(self.num_envs, device=self.device)
 
-        # ============ V3.2: HINDSIGHT TRACKING ============
+        # HINDSIGHT TRACKING
         self.min_distance_in_episode = torch.full((self.num_envs,), 1.0, device=self.device)
 
         # Success tracking
@@ -405,20 +390,24 @@ class G1ArmReachEnv(DirectRLEnv):
             f"BUG: initial_spawn_radius ({self.cfg.initial_spawn_radius}) must be > workspace_inner_radius ({self.cfg.workspace_inner_radius})"
 
         print("\n" + "=" * 70)
-        print("G1 ARM REACH ENVIRONMENT - V3.2 (LITERATURE-BACKED)")
+        print("G1 ARM REACH ENVIRONMENT - V3.3 (SMOOTH + STABLE)")
         print("=" * 70)
         print(f"  Arm joints: {self.arm_indices.tolist()}")
         print(f"  Palm idx: {self.palm_idx}")
         print("-" * 70)
-        print("  📚 LITERATURE-BACKED FEATURES:")
-        print(f"    ✓ Potential-Based Reward Shaping (PBRS)")
-        print(f"    ✓ Proximity Bonus Zones (15cm/10cm/5cm)")
-        print(f"    ✓ Precision-Based Curriculum (PCCL)")
-        print(f"    ✓ Dense + Sparse Hybrid Rewards")
-        print(f"    ✓ Hindsight-Inspired Partial Success")
+        print("  🆕 V3.3 SMOOTHNESS IMPROVEMENTS:")
+        print(f"    ✓ action_smoothing_alpha: {self.cfg.action_smoothing_alpha}")
+        print(f"    ✓ action_scale: {self.cfg.action_scale}")
+        print(f"    ✓ reward_action_rate: {self.cfg.reward_action_rate}")
+        print(f"    ✓ reward_joint_vel: {self.cfg.reward_joint_vel}")
+        print(f"    ✓ reward_joint_acc: {self.cfg.reward_joint_acc} (YENİ)")
+        print("-" * 70)
+        print("  🆕 V3.3 SLOWER CURRICULUM:")
+        print(f"    ✓ min_success_rate: {self.cfg.min_success_rate*100:.0f}%")
+        print(f"    ✓ min_reaches_to_advance: {self.cfg.min_reaches_to_advance}")
+        print(f"    ✓ min_steps_per_stage: {self.cfg.min_steps_per_stage}")
         print("-" * 70)
         print(f"  PCCL THRESHOLDS: {[f'{t*100:.0f}cm' for t in self.cfg.stage_thresholds]}")
-        print(f"  Initial threshold: {self.current_pos_threshold*100:.0f}cm")
         print("=" * 70 + "\n")
 
     def _setup_scene(self):
@@ -536,7 +525,6 @@ class G1ArmReachEnv(DirectRLEnv):
 
         self._update_workspace_spheres()
 
-        # V3.2: Include distance in observation (normalized)
         obs = torch.cat([
             joint_pos,
             joint_vel * 0.1,
@@ -546,7 +534,7 @@ class G1ArmReachEnv(DirectRLEnv):
             ee_quat,
             pos_err,
             ori_err,
-            pos_dist / 0.5,  # Normalized distance
+            pos_dist / 0.5,
         ], dim=-1)
 
         return {"policy": obs}
@@ -560,10 +548,9 @@ class G1ArmReachEnv(DirectRLEnv):
         ee_quat = self._compute_ee_quat()
         ori_dist = quat_diff_rad(ee_quat, self.target_quat)
 
-        # ============ V3.2: POTENTIAL-BASED REWARD SHAPING ============
+        # POTENTIAL-BASED REWARD SHAPING
         if self.cfg.use_potential_shaping:
             current_potential = self._compute_potential(pos_dist)
-            # F(s,s') = γ·Φ(s') - Φ(s)
             potential_reward = self.cfg.potential_scale * (
                 self.cfg.potential_gamma * current_potential - self.prev_potential
             )
@@ -571,7 +558,7 @@ class G1ArmReachEnv(DirectRLEnv):
         else:
             potential_reward = torch.zeros_like(pos_dist)
 
-        # ============ DENSE: TANH KERNEL ============
+        # DENSE: TANH KERNEL
         pos_reward = 1.0 - torch.tanh(pos_dist / self.cfg.reward_pos_tanh_std)
 
         if self.orientation_enabled:
@@ -579,22 +566,16 @@ class G1ArmReachEnv(DirectRLEnv):
         else:
             ori_reward = torch.zeros_like(pos_dist)
 
-        # ============ V3.2: PROXIMITY BONUS ZONES ============
+        # PROXIMITY BONUS ZONES
         proximity_bonus = torch.zeros_like(pos_dist)
-
-        # Zone 1: 15cm
         in_zone1 = pos_dist < self.cfg.proximity_zone1_dist
         proximity_bonus = torch.where(in_zone1, proximity_bonus + self.cfg.proximity_zone1_bonus, proximity_bonus)
-
-        # Zone 2: 10cm
         in_zone2 = pos_dist < self.cfg.proximity_zone2_dist
         proximity_bonus = torch.where(in_zone2, proximity_bonus + self.cfg.proximity_zone2_bonus, proximity_bonus)
-
-        # Zone 3: 5cm
         in_zone3 = pos_dist < self.cfg.proximity_zone3_dist
         proximity_bonus = torch.where(in_zone3, proximity_bonus + self.cfg.proximity_zone3_bonus, proximity_bonus)
 
-        # ============ SPARSE: REACH DETECTION ============
+        # SPARSE: REACH DETECTION
         pos_reached = pos_dist < self.current_pos_threshold
         if self.orientation_enabled:
             ori_reached = ori_dist < self.cfg.ori_threshold
@@ -609,32 +590,36 @@ class G1ArmReachEnv(DirectRLEnv):
             self.stage_reaches += len(reached_ids)
             self.total_reaches += len(reached_ids)
 
-            # Save joint positions for persistence
             current_arm_pos = self.robot.data.joint_pos[reached_ids][:, self.arm_indices]
             self.last_reached_joint_pos[reached_ids] = current_arm_pos
             self.reached_success[reached_ids] = True
 
             self._sample_target_in_workspace(reached_ids)
 
-        # ============ V3.2: HINDSIGHT TRACKING ============
+        # HINDSIGHT TRACKING
         self.min_distance_in_episode = torch.minimum(self.min_distance_in_episode, pos_dist)
-
-        # Update previous distance
         self.prev_distance = pos_dist
 
-        # ============ PENALTIES ============
+        # ============ V3.3: SMOOTHNESS PENALTIES ============
         action_rate = (self.smoothed_actions - self.prev_actions).norm(dim=-1)
-        joint_vel = self.robot.data.joint_vel[:, self.arm_indices].norm(dim=-1)
 
-        # ============ TOTAL REWARD ============
+        joint_vel = self.robot.data.joint_vel[:, self.arm_indices]
+        joint_vel_norm = joint_vel.norm(dim=-1)
+
+        # V3.3: Acceleration penalty (change in velocity = jerk indicator)
+        joint_acc = (joint_vel - self.prev_joint_vel).norm(dim=-1)
+        self.prev_joint_vel = joint_vel.clone()
+
+        # TOTAL REWARD
         reward = (
-            potential_reward +                                    # PBRS
-            self.cfg.reward_pos_tanh_weight * pos_reward +       # Dense
-            self.cfg.reward_ori_tanh_weight * ori_reward +       # Dense (orientation)
-            proximity_bonus +                                     # Zone bonuses
-            self.cfg.reward_reaching * fully_reached.float() +   # Sparse
-            self.cfg.reward_action_rate * action_rate +          # Penalty
-            self.cfg.reward_joint_vel * joint_vel                # Penalty
+            potential_reward +
+            self.cfg.reward_pos_tanh_weight * pos_reward +
+            self.cfg.reward_ori_tanh_weight * ori_reward +
+            proximity_bonus +
+            self.cfg.reward_reaching * fully_reached.float() +
+            self.cfg.reward_action_rate * action_rate +
+            self.cfg.reward_joint_vel * joint_vel_norm +
+            self.cfg.reward_joint_acc * joint_acc  # V3.3: Acceleration penalty
         )
 
         return reward
@@ -647,13 +632,6 @@ class G1ArmReachEnv(DirectRLEnv):
 
         truncated = self.episode_length_buf >= self.max_episode_length
 
-        # ============ V3.2: HINDSIGHT BONUS AT EPISODE END ============
-        if self.cfg.use_hindsight_bonus:
-            ending_envs = truncated & ~terminated
-            if ending_envs.any():
-                close_enough = self.min_distance_in_episode[ending_envs] < self.cfg.hindsight_threshold
-                # Not directly adding reward here, but tracking for logging
-
         return terminated, truncated
 
     def _reset_idx(self, env_ids: torch.Tensor):
@@ -664,7 +642,6 @@ class G1ArmReachEnv(DirectRLEnv):
         self.robot.write_root_pose_to_sim(self.fixed_root_pose[env_ids], env_ids=env_ids)
         self.robot.write_root_velocity_to_sim(self.zero_root_vel[env_ids], env_ids=env_ids)
 
-        # ARM POSITION PERSISTENCE
         jp = self.robot.data.default_joint_pos[env_ids].clone()
         jv = torch.zeros_like(self.robot.data.joint_vel[env_ids])
 
@@ -686,6 +663,7 @@ class G1ArmReachEnv(DirectRLEnv):
 
         self.smoothed_actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
+        self.prev_joint_vel[env_ids] = 0.0  # V3.3: Reset velocity tracking
         self.episode_reach_count[env_ids] = 0.0
         self.reached_success[env_ids] = False
         self.min_distance_in_episode[env_ids] = 1.0
@@ -770,6 +748,5 @@ class G1ArmReachEnv(DirectRLEnv):
 
 
 # ============ BACKWARD COMPATIBILITY ALIASES ============
-# Eski script'ler G1ArmOrientEnv kullanıyor, yeniler G1ArmReachEnv
 G1ArmOrientEnv = G1ArmReachEnv
 G1ArmOrientEnvCfg = G1ArmReachEnvCfg
