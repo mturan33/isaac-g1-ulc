@@ -239,12 +239,14 @@ class G1ArmReachEnvCfg(DirectRLEnvCfg):
     action_scale = 0.12             # 0.15 → 0.12 (daha küçük adımlar)
 
     # ============ WORKSPACE ============
+    # G1 arm span: ~45cm, upper arm ~22cm, forearm ~23cm
+    # Minimum reach (kol bükülü): ~18-20cm (fiziksel limit)
     shoulder_center_offset = [0.0, 0.174, 0.259]
-    workspace_inner_radius = 0.08
+    workspace_inner_radius = 0.18  # 8cm → 18cm (gerçekçi minimum)
     workspace_outer_radius = 0.45
 
     # ============ V3.3: SLOWER CURRICULUM ============
-    initial_spawn_radius = 0.15
+    initial_spawn_radius = 0.20     # 15cm → 20cm (> inner_radius 18cm)
     max_spawn_radius = 0.40
     curriculum_stages = 10
 

@@ -27,7 +27,6 @@ parser.add_argument("--num_envs", type=int, default=64, help="Number of environm
 parser.add_argument("--episodes_per_test", type=int, default=100, help="Episodes per difficulty level")
 
 from isaaclab.app import AppLauncher
-
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -54,13 +53,14 @@ class PolicyBenchmark:
         self.device = device
 
         # Test configurations (spawn_radius, threshold, name)
+        # G1 minimum reach ~18cm based on arm kinematics
         self.test_levels = [
-            (0.15, 0.15, "Level 1 - Easy (15cm)"),
-            (0.20, 0.14, "Level 2 - Medium-Easy (20cm)"),
-            (0.25, 0.13, "Level 3 - Medium (25cm)"),
-            (0.30, 0.12, "Level 4 - Medium-Hard (30cm)"),
-            (0.35, 0.11, "Level 5 - Hard (35cm)"),
-            (0.40, 0.10, "Level 6 - Very Hard (40cm)"),
+            (0.20, 0.15, "Level 1 - Easy (20cm spawn)"),
+            (0.25, 0.14, "Level 2 - Medium-Easy (25cm)"),
+            (0.30, 0.13, "Level 3 - Medium (30cm)"),
+            (0.35, 0.12, "Level 4 - Medium-Hard (35cm)"),
+            (0.40, 0.11, "Level 5 - Hard (40cm)"),
+            (0.45, 0.10, "Level 6 - Max Range (45cm)"),
         ]
 
     def run_episode_batch(self, spawn_radius: float, threshold: float, num_episodes: int):
@@ -170,7 +170,7 @@ class PolicyBenchmark:
         for i, (spawn_radius, threshold, name) in enumerate(self.test_levels):
             print(f"\n{'─' * 60}")
             print(f"Testing: {name}")
-            print(f"  Spawn radius: {spawn_radius * 100:.0f}cm, Threshold: {threshold * 100:.0f}cm")
+            print(f"  Spawn radius: {spawn_radius*100:.0f}cm, Threshold: {threshold*100:.0f}cm")
             print(f"{'─' * 60}")
 
             start_time = time.time()
@@ -192,7 +192,7 @@ class PolicyBenchmark:
             print(f"\n  {sr_emoji} Success Rate: {sr:.1f}%")
             print(f"  📊 Reaches: {metrics['total_reaches']} / {metrics['total_attempts']}")
             print(f"  ⏱️  Avg Reach Time: {metrics['avg_reach_time']:.1f} steps")
-            print(f"  📏 Avg Min Distance: {metrics['avg_min_distance'] * 100:.1f}cm")
+            print(f"  📏 Avg Min Distance: {metrics['avg_min_distance']*100:.1f}cm")
             print(f"  🔄 Avg Action Rate: {metrics['avg_action_rate']:.4f}")
             print(f"  💨 Avg Joint Velocity: {metrics['avg_velocity']:.3f}")
             print(f"  ⏰ Test Time: {elapsed:.1f}s")
@@ -233,7 +233,7 @@ class PolicyBenchmark:
 
             print("║ {:^6} │ {:^20} │ {:^10} │ {:^10} │ {:^10} │ {:^10} ║".format(
                 f"{status} {r['level']}",
-                f"{r['spawn_radius'] * 100:.0f}cm/{r['threshold'] * 100:.0f}cm",
+                f"{r['spawn_radius']*100:.0f}cm/{r['threshold']*100:.0f}cm",
                 sr_str,
                 reach_str,
                 time_str,
@@ -287,8 +287,8 @@ class PolicyBenchmark:
 
         if failing_levels:
             max_passing = max([r["spawn_radius"] for r in results if r["success_rate"] >= 0.25], default=0)
-            print(f"  ⚠️  Policy struggles at radius > {max_passing * 100:.0f}cm")
-            print(f"      Consider more training with curriculum starting at {max_passing * 100:.0f}cm")
+            print(f"  ⚠️  Policy struggles at radius > {max_passing*100:.0f}cm")
+            print(f"      Consider more training with curriculum starting at {max_passing*100:.0f}cm")
 
         if avg_smoothness > 0.15:
             print(f"  ⚠️  Action smoothness is high ({avg_smoothness:.3f})")
@@ -350,6 +350,9 @@ def main():
     env_cfg = G1ArmReachEnvCfg()
     env_cfg.scene.num_envs = args.num_envs
 
+    # G1 minimum reach ~18cm based on arm kinematics
+    env_cfg.workspace_inner_radius = 0.18
+
     env = G1ArmReachEnv(cfg=env_cfg)
 
     # Build actor
@@ -383,10 +386,10 @@ def main():
 
         for r in results:
             f.write(f"\nLevel {r['level']}: {r['name']}\n")
-            f.write(f"  Success Rate: {r['success_rate'] * 100:.1f}%\n")
+            f.write(f"  Success Rate: {r['success_rate']*100:.1f}%\n")
             f.write(f"  Reaches: {r['total_reaches']} / {r['total_attempts']}\n")
             f.write(f"  Avg Reach Time: {r['avg_reach_time']:.1f} steps\n")
-            f.write(f"  Avg Min Distance: {r['avg_min_distance'] * 100:.1f}cm\n")
+            f.write(f"  Avg Min Distance: {r['avg_min_distance']*100:.1f}cm\n")
             f.write(f"  Avg Action Rate: {r['avg_action_rate']:.4f}\n")
 
         f.write("\n" + "=" * 50 + "\n")

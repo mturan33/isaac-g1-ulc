@@ -43,6 +43,11 @@ def main():
 
     env = G1ArmReachEnv(cfg=env_cfg)
 
+    # Override workspace for realistic testing
+    # G1 minimum reach ~18cm based on arm kinematics
+    env.cfg.workspace_inner_radius = 0.18
+    env.current_spawn_radius = 0.25  # Start at 25cm (comfortable range)
+
     # Load checkpoint
     checkpoint_path = args.checkpoint
     checkpoint_dir = os.path.dirname(checkpoint_path)
