@@ -1,29 +1,18 @@
 """
-G1 Stage 6: Reactive Balance Training
-=====================================
+G1 Stage 6: Reactive Balance Training (FIXED)
+==============================================
+
+FIX: Stage 5 arm policy LayerNorm kullanmıyor!
 
 ARCHITECTURE:
 - Arm Policy: FROZEN (Stage 5 - reaching expert)
 - Balance Loco Policy: TRAINABLE (learns to balance while arm moves)
-
-The balance policy learns:
-1. Keep CoM over support polygon
-2. Squat when arm reaches down
-3. Lean forward when arm reaches forward
-4. Smooth weight shifts during arm movement
 
 USAGE:
 ./isaaclab.bat -p .../train_reactive_balance.py \
     --num_envs 2048 \
     --max_iterations 15000 \
     --arm_checkpoint logs/ulc/g1_arm_reach_.../model_19998.pt \
-    --headless
-
-Optional: Start from Stage 3 weights for leg initialization
-./isaaclab.bat -p .../train_reactive_balance.py \
-    --num_envs 2048 \
-    --arm_checkpoint logs/ulc/g1_arm_reach_.../model_19998.pt \
-    --loco_init logs/ulc/ulc_g1_stage3_.../model_best.pt \
     --headless
 """
 
@@ -73,16 +62,21 @@ from torch.utils.tensorboard import SummaryWriter
 class FrozenArmPolicy(nn.Module):
     """
     Arm policy from Stage 5 (FROZEN).
+
+    IMPORTANT: Stage 5 model does NOT use LayerNorm!
+    Structure: Linear -> ELU -> Linear -> ELU -> Linear -> ELU -> Linear
+
     Observation: 29 dims (arm-specific)
     Output: 5 dims (right arm actions)
     """
     def __init__(self, num_obs=29, num_act=5, hidden=[256, 128, 64]):
         super().__init__()
 
+        # NO LayerNorm - matches Stage 5 training script!
         layers = []
         prev = num_obs
         for h in hidden:
-            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
+            layers += [nn.Linear(prev, h), nn.ELU()]  # No LayerNorm!
             prev = h
         layers.append(nn.Linear(prev, num_act))
         self.actor = nn.Sequential(*layers)
@@ -103,15 +97,12 @@ class BalanceLocoPolicy(nn.Module):
     Sees: base state, leg joints, commands, CoM, arm state
     Outputs: 12 leg actions
 
-    Key features:
-    - CoM-aware (sees center of mass position and velocity)
-    - Arm-aware (sees arm joint positions and target)
-    - Learns adaptive posture (squat, lean)
+    Uses LayerNorm for stability during training.
     """
     def __init__(self, num_obs=72, num_act=12, hidden=[512, 256, 128]):
         super().__init__()
 
-        # Actor
+        # Actor with LayerNorm (new training)
         layers = []
         prev = num_obs
         for h in hidden:
@@ -157,8 +148,7 @@ def load_frozen_arm_policy(checkpoint_path: str, device: str) -> FrozenArmPolicy
     """Load Stage 5 arm policy and freeze it."""
     print(f"\n[Load] Loading FROZEN arm policy: {checkpoint_path}")
 
-    policy = FrozenArmPolicy().to(device)
-
+    # First, inspect checkpoint to determine architecture
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     if "model_state_dict" in ckpt:
@@ -166,25 +156,59 @@ def load_frozen_arm_policy(checkpoint_path: str, device: str) -> FrozenArmPolicy
     else:
         state_dict = ckpt
 
-    # Extract actor weights
+    # Extract actor weights and analyze structure
     actor_state = {}
     for key, value in state_dict.items():
         if key.startswith("actor."):
             actor_state[key] = value
+            print(f"    {key}: {value.shape}")
 
-    if actor_state:
-        policy.load_state_dict(actor_state, strict=False)
-        print(f"  ✓ Loaded {len(actor_state)} weights")
-        print(f"  ✓ All parameters FROZEN")
-    else:
+    if not actor_state:
         raise ValueError("No actor weights found in arm checkpoint!")
+
+    # Determine hidden layer sizes from weights
+    # actor.0 is first Linear, actor.2 is second, actor.4 is third, actor.6 is output
+    hidden = []
+    if "actor.0.weight" in actor_state:
+        hidden.append(actor_state["actor.0.weight"].shape[0])  # 256
+    if "actor.2.weight" in actor_state:
+        hidden.append(actor_state["actor.2.weight"].shape[0])  # 128
+    if "actor.4.weight" in actor_state:
+        hidden.append(actor_state["actor.4.weight"].shape[0])  # 64
+
+    num_obs = actor_state["actor.0.weight"].shape[1]
+    num_act = actor_state["actor.6.weight"].shape[0] if "actor.6.weight" in actor_state else 5
+
+    print(f"  Detected architecture: {num_obs} -> {hidden} -> {num_act}")
+
+    # Create policy with correct architecture
+    policy = FrozenArmPolicy(num_obs=num_obs, num_act=num_act, hidden=hidden).to(device)
+
+    # Load weights
+    policy.load_state_dict(actor_state, strict=False)
+    print(f"  ✓ Loaded {len(actor_state)} weights")
+    print(f"  ✓ All parameters FROZEN")
+
+    # Verify frozen
+    for param in policy.parameters():
+        param.requires_grad = False
 
     return policy
 
 
-def load_loco_init(checkpoint_path: str, policy: BalanceLocoPolicy, device: str):
-    """Optionally initialize balance policy from Stage 3."""
-    print(f"\n[Init] Initializing from Stage 3: {checkpoint_path}")
+def load_loco_init_partial(checkpoint_path: str, policy: BalanceLocoPolicy, device: str):
+    """
+    Initialize balance policy from Stage 3 with PARTIAL weight transfer.
+
+    Stage 3 obs: 51 dims
+    Balance obs: 72 dims (51 base + 6 CoM + 11 arm + 4 extra)
+
+    Strategy:
+    - First layer: Only transfer weights for overlapping observations
+    - Middle layers: Transfer if shapes match
+    - Output layer: Transfer (same 12 leg outputs)
+    """
+    print(f"\n[Init] Partial weight transfer from Stage 3: {checkpoint_path}")
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
@@ -195,21 +219,42 @@ def load_loco_init(checkpoint_path: str, policy: BalanceLocoPolicy, device: str)
     else:
         state_dict = ckpt
 
-    # Stage 3 has different observation size, so we do partial transfer
-    # Only transfer first layer weights that correspond to shared observations
+    # Show Stage 3 architecture
+    print("  Stage 3 checkpoint weights:")
+    for key, value in state_dict.items():
+        if key.startswith("actor."):
+            print(f"    {key}: {value.shape}")
 
-    loaded = 0
+    # Transfer strategy
+    loaded_count = 0
+    partial_count = 0
+
     for name, param in policy.named_parameters():
         if name in state_dict:
-            try:
-                # Check shape compatibility
-                if param.shape == state_dict[name].shape:
-                    param.data.copy_(state_dict[name])
-                    loaded += 1
-            except:
-                pass
+            src = state_dict[name]
 
-    print(f"  ✓ Transferred {loaded} parameters")
+            if param.shape == src.shape:
+                # Exact match - direct copy
+                param.data.copy_(src)
+                loaded_count += 1
+                print(f"  ✓ Full transfer: {name}")
+
+            elif name == "actor.0.weight":
+                # First layer - partial transfer for overlapping obs
+                # Stage 3: [512, 51], Balance: [512, 72]
+                # Copy first 51 columns (shared observations)
+                min_in = min(param.shape[1], src.shape[1])
+                param.data[:, :min_in] = src[:, :min_in]
+                partial_count += 1
+                print(f"  ~ Partial transfer: {name} ({min_in}/{param.shape[1]} inputs)")
+
+            elif name == "actor.0.bias":
+                # First layer bias - direct copy if same size
+                if param.shape == src.shape:
+                    param.data.copy_(src)
+                    loaded_count += 1
+
+    print(f"\n  Summary: {loaded_count} full + {partial_count} partial transfers")
     return policy
 
 
@@ -217,61 +262,81 @@ def load_loco_init(checkpoint_path: str, policy: BalanceLocoPolicy, device: str)
 # ARM OBSERVATION EXTRACTOR
 # ============================================================================
 
-def extract_arm_obs(full_obs: torch.Tensor) -> torch.Tensor:
+class ArmObservationExtractor:
     """
     Extract arm-relevant observations for frozen arm policy.
 
-    From full_obs (72 dims):
-    - Base state for context: 0-9 (9)
-    - Arm joints are at: 53-63 (arm_pos=5, arm_vel=5)
-    - Target is at: 63-64 (just z for now, need full target)
+    Balance obs (72 dims) → Arm obs (29 dims)
 
-    For Stage 5 arm policy (29 dims expected):
-    - base_state: 9
+    Stage 5 arm observation structure:
     - arm_joint_pos: 5
     - arm_joint_vel: 5
-    - target_pos: 3
-    - ee_pos: 3
+    - target_pos (relative): 3
+    - ee_pos (relative): 3
     - pos_error: 3
     - pos_dist: 1
-
-    We need to reconstruct this from what we have.
+    - prev_actions: 5
+    - base_vel: 3
+    - base_angvel: 1
+    Total: 29
     """
-    batch_size = full_obs.shape[0]
-    device = full_obs.device
 
-    # Extract what we have
-    base_state = full_obs[:, 0:9]      # 9
-    arm_joint_pos = full_obs[:, 53:58]  # 5
-    arm_joint_vel = full_obs[:, 58:63] * 10  # 5 (undo 0.1 scaling)
-    target_z = full_obs[:, 63:64]       # 1
+    def __init__(self, device: str):
+        self.device = device
 
-    # Reconstruct target_pos (we only have z, approximate x,y)
-    # Assume target is in front of robot
-    target_pos = torch.cat([
-        torch.zeros(batch_size, 2, device=device),  # x, y
-        target_z  # z
-    ], dim=-1)  # 3
+    def extract(self, full_obs: torch.Tensor, env) -> torch.Tensor:
+        """
+        Extract arm observations from balance observations.
 
-    # Approximate ee_pos from arm joints (rough forward kinematics)
-    # This is a simplification - in practice, env should provide this
-    ee_pos_approx = torch.zeros(batch_size, 3, device=device)
+        Full obs layout (72 dims):
+        [0:3]   lin_vel_b
+        [3:6]   ang_vel_b
+        [6:9]   proj_gravity
+        [9:21]  leg_joint_pos
+        [21:33] leg_joint_vel
+        [33:34] height_cmd
+        [34:37] vel_cmd
+        [37:40] torso_cmd
+        [40:42] gait_phase
+        [42:43] reserved
+        [43:46] com_pos
+        [46:49] com_vel
+        [49:54] arm_joint_pos
+        [54:59] arm_joint_vel
+        [59:60] target_z (partial)
+        [60:72] prev_leg_actions
+        """
+        batch_size = full_obs.shape[0]
 
-    # pos_error and dist (approximate)
-    pos_error = target_pos - ee_pos_approx
-    pos_dist = pos_error.norm(dim=-1, keepdim=True) / 0.5
+        # Extract from full_obs
+        lin_vel_b = full_obs[:, 0:3]
+        ang_vel_b = full_obs[:, 3:6]
+        arm_joint_pos = full_obs[:, 49:54]
+        arm_joint_vel = full_obs[:, 54:59] * 10  # Undo 0.1 scaling
 
-    arm_obs = torch.cat([
-        base_state,      # 9
-        arm_joint_pos,   # 5
-        arm_joint_vel,   # 5
-        target_pos,      # 3
-        ee_pos_approx,   # 3
-        pos_error,       # 3
-        pos_dist,        # 1
-    ], dim=-1)  # 29
+        # Get actual values from environment
+        target_pos = env.target_pos_body.clone()
+        ee_pos = env._compute_ee_pos_body()
+        pos_error = target_pos - ee_pos
+        pos_dist = pos_error.norm(dim=-1, keepdim=True)
 
-    return arm_obs
+        # Previous arm actions (from env)
+        prev_arm_actions = env.smoothed_arm_actions.clone()
+
+        # Build arm observation (29 dims)
+        arm_obs = torch.cat([
+            arm_joint_pos,                    # 5
+            arm_joint_vel,                    # 5
+            target_pos,                       # 3
+            ee_pos,                           # 3
+            pos_error,                        # 3
+            pos_dist / 0.5,                   # 1
+            prev_arm_actions,                 # 5
+            lin_vel_b,                        # 3
+            ang_vel_b[:, 2:3],               # 1 (yaw rate)
+        ], dim=-1)
+
+        return arm_obs.clamp(-10, 10)
 
 
 # ============================================================================
@@ -288,7 +353,8 @@ class PPO:
             self.opt, args.max_iterations, eta_min=1e-5
         )
 
-        print(f"\n[PPO] Balance policy parameters: {sum(p.numel() for p in policy.parameters()):,}")
+        trainable = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+        print(f"\n[PPO] Balance policy trainable parameters: {trainable:,}")
 
     def gae(self, rewards, values, dones, next_value, gamma=0.99, lam=0.95):
         advantages = torch.zeros_like(rewards)
@@ -364,7 +430,7 @@ def train():
     device = "cuda:0"
 
     print("\n" + "=" * 70)
-    print("G1 REACTIVE BALANCE TRAINING")
+    print("G1 REACTIVE BALANCE TRAINING (FIXED)")
     print("=" * 70)
     print(f"  Environments: {args.num_envs}")
     print(f"  Max iterations: {args.max_iterations}")
@@ -372,7 +438,7 @@ def train():
     print(f"  Loco init (optional): {args.loco_init}")
     print("=" * 70)
     print("  ARCHITECTURE:")
-    print("    Arm Policy: FROZEN (reaching expert)")
+    print("    Arm Policy: FROZEN (reaching expert, NO LayerNorm)")
     print("    Balance Policy: TRAINABLE (learns balance)")
     print("=" * 70 + "\n")
 
@@ -381,15 +447,19 @@ def train():
     env_cfg.scene.num_envs = args.num_envs
     env = G1ReactiveBalanceEnv(cfg=env_cfg)
 
-    # Load frozen arm policy
+    # Load frozen arm policy (auto-detects architecture)
     arm_policy = load_frozen_arm_policy(args.arm_checkpoint, device)
+    arm_policy.eval()
+
+    # Arm observation extractor
+    arm_obs_extractor = ArmObservationExtractor(device)
 
     # Create balance policy
     balance_policy = BalanceLocoPolicy().to(device)
 
     # Optional: Initialize from Stage 3
     if args.loco_init:
-        balance_policy = load_loco_init(args.loco_init, balance_policy, device)
+        balance_policy = load_loco_init_partial(args.loco_init, balance_policy, device)
 
     # Resume if specified
     start_iter = 0
@@ -444,7 +514,7 @@ def train():
         for _ in range(rollout_steps):
             # Get arm actions from frozen policy
             with torch.no_grad():
-                arm_obs = extract_arm_obs(obs)
+                arm_obs = arm_obs_extractor.extract(obs, env)
                 arm_actions = arm_policy(arm_obs)
 
             # Set arm actions in environment
