@@ -1,669 +1,258 @@
 """
-G1 Stage 6: Dual Trainable Loco-Manipulation
-=============================================
+G1 + Dex1 Stage 6 Training Script
+==================================
 
-HER İKİ POLİCY EĞİTİLİYOR:
-- Arm Policy: LOW LR (1e-5) → Yeni pozisyonlara adapte olur
-- Balance Policy: HIGH LR (3e-4) → Squat/lean öğrenir
+Trains the G1 humanoid with Dex1 gripper for loco-manipulation tasks.
 
-NEDEN?
-- Stage 5 arm policy sadece STANDING pozisyonunda eğitildi
-- Squat pozisyonunda reaching yapamıyor
-- Arm policy de yeni workspace'e adapte olmalı
+Usage:
+    cd C:\IsaacLab
+    .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\g1_dex1_stage6\train_stage6.py --num_envs 4096
 
-SONUÇ:
-- Robot squat yapınca arm policy de adapte olur
-- Her ikisi birlikte koordineli çalışır
-- Yerden nesne almak mümkün olur
-
-USAGE:
-./isaaclab.bat -p .../train_dual_trainable.py \
-    --num_envs 2048 \
-    --max_iterations 15000 \
-    --arm_checkpoint logs/ulc/g1_arm_reach_.../model_19998.pt \
-    --loco_init logs/ulc/ulc_g1_stage3_.../model_best.pt \
-    --headless
+Author: Turan (VLM-RL Project)
+Date: January 2026
 """
-
-from __future__ import annotations
 
 import argparse
 import os
 import sys
-import torch
-import torch.nn as nn
-import numpy as np
 from datetime import datetime
 
-# ============================================================================
-# ARGUMENTS
-# ============================================================================
-
-parser = argparse.ArgumentParser(description="G1 Dual Trainable Training")
-parser.add_argument("--num_envs", type=int, default=2048)
-parser.add_argument("--max_iterations", type=int, default=15000)
-parser.add_argument("--arm_checkpoint", type=str, required=True,
-                    help="Stage 5 arm checkpoint (will be FINE-TUNED)")
-parser.add_argument("--loco_init", type=str, default=None,
-                    help="Optional: Stage 3 checkpoint for balance init")
-parser.add_argument("--resume", type=str, default=None)
-parser.add_argument("--arm_lr", type=float, default=1e-5,
-                    help="Learning rate for arm policy (low for fine-tuning)")
-parser.add_argument("--balance_lr", type=float, default=3e-4,
-                    help="Learning rate for balance policy")
-
-from isaaclab.app import AppLauncher
-AppLauncher.add_app_launcher_args(parser)
-args = parser.parse_args()
-
-app_launcher = AppLauncher(args)
-simulation_app = app_launcher.app
-
-env_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-envs_dir = os.path.join(env_dir, "envs")
-sys.path.insert(0, envs_dir)
-
-from g1_reactive_balance_env import G1ReactiveBalanceEnv, G1ReactiveBalanceEnvCfg
-
-from torch.utils.tensorboard import SummaryWriter
-
-
-# ============================================================================
-# NETWORKS
-# ============================================================================
-
-class ArmPolicy(nn.Module):
-    """
-    Arm policy - TRAINABLE with low learning rate.
-    Will adapt to new positions (squat, lean).
-    """
-    def __init__(self, num_obs=29, num_act=5, hidden=[256, 128, 64]):
-        super().__init__()
-
-        # NO LayerNorm - matches Stage 5
-        layers = []
-        prev = num_obs
-        for h in hidden:
-            layers += [nn.Linear(prev, h), nn.ELU()]
-            prev = h
-        layers.append(nn.Linear(prev, num_act))
-        self.actor = nn.Sequential(*layers)
-
-        self.log_std = nn.Parameter(torch.ones(num_act) * -1.0)  # Low exploration
-
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.actor(obs)
-
-    def act(self, obs: torch.Tensor, deterministic: bool = False):
-        mean = self.forward(obs)
-        if deterministic:
-            return mean
-        std = self.log_std.clamp(-3, 0).exp()  # Very low std for fine-tuning
-        return torch.distributions.Normal(mean, std).sample()
-
-    def evaluate(self, obs: torch.Tensor, actions: torch.Tensor):
-        mean = self.forward(obs)
-        std = self.log_std.clamp(-3, 0).exp()
-        dist = torch.distributions.Normal(mean, std)
-        return dist.log_prob(actions).sum(-1), dist.entropy().sum(-1)
-
-
-class BalancePolicy(nn.Module):
-    """
-    Balance policy - TRAINABLE with high learning rate.
-    Learns squat/lean to enable arm reaching.
-    """
-    def __init__(self, num_obs=72, num_act=12, hidden=[512, 256, 128]):
-        super().__init__()
-
-        # With LayerNorm for stability
-        layers = []
-        prev = num_obs
-        for h in hidden:
-            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
-            prev = h
-        layers.append(nn.Linear(prev, num_act))
-        self.actor = nn.Sequential(*layers)
-
-        # Critic (shared for both policies)
-        critic_layers = []
-        prev = num_obs + 29  # Balance obs + Arm obs
-        for h in hidden:
-            critic_layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
-            prev = h
-        critic_layers.append(nn.Linear(prev, 1))
-        self.critic = nn.Sequential(*critic_layers)
-
-        self.log_std = nn.Parameter(torch.zeros(num_act))
-
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.actor(obs)
-
-    def get_value(self, balance_obs: torch.Tensor, arm_obs: torch.Tensor) -> torch.Tensor:
-        combined = torch.cat([balance_obs, arm_obs], dim=-1)
-        return self.critic(combined)
-
-    def act(self, obs: torch.Tensor, deterministic: bool = False):
-        mean = self.forward(obs)
-        if deterministic:
-            return mean
-        std = self.log_std.clamp(-2, 1).exp()
-        return torch.distributions.Normal(mean, std).sample()
-
-    def evaluate(self, obs: torch.Tensor, actions: torch.Tensor):
-        mean = self.forward(obs)
-        std = self.log_std.clamp(-2, 1).exp()
-        dist = torch.distributions.Normal(mean, std)
-        return dist.log_prob(actions).sum(-1), dist.entropy().sum(-1)
-
-
-# ============================================================================
-# DUAL CONTROLLER
-# ============================================================================
-
-class DualController(nn.Module):
-    """
-    Dual controller managing both policies.
-    """
-    def __init__(self, arm_policy: ArmPolicy, balance_policy: BalancePolicy):
-        super().__init__()
-        self.arm = arm_policy
-        self.balance = balance_policy
-
-    def forward(self, balance_obs: torch.Tensor, arm_obs: torch.Tensor):
-        leg_actions = self.balance(balance_obs)
-        arm_actions = self.arm(arm_obs)
-        return leg_actions, arm_actions
-
-    def get_value(self, balance_obs: torch.Tensor, arm_obs: torch.Tensor):
-        return self.balance.get_value(balance_obs, arm_obs)
-
-
-# ============================================================================
-# CHECKPOINT LOADING
-# ============================================================================
-
-def load_arm_checkpoint(checkpoint_path: str, device: str) -> ArmPolicy:
-    """Load Stage 5 arm policy for fine-tuning."""
-    print(f"\n[Load] Loading arm policy for FINE-TUNING: {checkpoint_path}")
-
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-    if "model_state_dict" in ckpt:
-        state_dict = ckpt["model_state_dict"]
-    else:
-        state_dict = ckpt
-
-    # Analyze architecture
-    actor_state = {}
-    for key, value in state_dict.items():
-        if key.startswith("actor."):
-            actor_state[key] = value
-
-    hidden = []
-    if "actor.0.weight" in actor_state:
-        hidden.append(actor_state["actor.0.weight"].shape[0])
-    if "actor.2.weight" in actor_state:
-        hidden.append(actor_state["actor.2.weight"].shape[0])
-    if "actor.4.weight" in actor_state:
-        hidden.append(actor_state["actor.4.weight"].shape[0])
-
-    num_obs = actor_state["actor.0.weight"].shape[1]
-    num_act = actor_state["actor.6.weight"].shape[0]
-
-    print(f"  Architecture: {num_obs} -> {hidden} -> {num_act}")
-
-    policy = ArmPolicy(num_obs=num_obs, num_act=num_act, hidden=hidden).to(device)
-    policy.load_state_dict(actor_state, strict=False)
-
-    print(f"  ✓ Loaded weights, policy is TRAINABLE")
-
-    return policy
-
-
-def load_balance_init(checkpoint_path: str, policy: BalancePolicy, device: str):
-    """Initialize balance policy from Stage 3."""
-    print(f"\n[Init] Balance policy from Stage 3: {checkpoint_path}")
-
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-    if "actor_critic" in ckpt:
-        state_dict = ckpt["actor_critic"]
-    elif "model_state_dict" in ckpt:
-        state_dict = ckpt["model_state_dict"]
-    else:
-        state_dict = ckpt
-
-    loaded = 0
-    partial = 0
-
-    for name, param in policy.named_parameters():
-        if name in state_dict:
-            src = state_dict[name]
-
-            if param.shape == src.shape:
-                param.data.copy_(src)
-                loaded += 1
-            elif name == "actor.0.weight":
-                min_in = min(param.shape[1], src.shape[1])
-                param.data[:, :min_in] = src[:, :min_in]
-                param.data[:, min_in:] = torch.randn_like(param.data[:, min_in:]) * 0.01
-                partial += 1
-
-    print(f"  ✓ {loaded} full + {partial} partial transfers")
-    return policy
-
-
-# ============================================================================
-# ARM OBSERVATION EXTRACTOR
-# ============================================================================
-
-class ArmObsExtractor:
-    def __init__(self, device: str):
-        self.device = device
-
-    def extract(self, balance_obs: torch.Tensor, env) -> torch.Tensor:
-        """Extract arm observations from environment."""
-        batch_size = balance_obs.shape[0]
-
-        # From balance_obs
-        lin_vel_b = balance_obs[:, 0:3]
-        ang_vel_b = balance_obs[:, 3:6]
-        arm_joint_pos = balance_obs[:, 49:54]
-        arm_joint_vel = balance_obs[:, 54:59] * 10
-
-        # From environment (actual values)
-        target_pos = env.target_pos_body.clone()
-        ee_pos = env._compute_ee_pos_body()
-        pos_error = target_pos - ee_pos
-        pos_dist = pos_error.norm(dim=-1, keepdim=True)
-        prev_arm_actions = env.smoothed_arm_actions.clone()
-
-        # Build 29-dim arm observation
-        arm_obs = torch.cat([
-            arm_joint_pos,          # 5
-            arm_joint_vel,          # 5
-            target_pos,             # 3
-            ee_pos,                 # 3
-            pos_error,              # 3
-            pos_dist / 0.5,         # 1
-            prev_arm_actions,       # 5
-            lin_vel_b,              # 3
-            ang_vel_b[:, 2:3],      # 1
-        ], dim=-1)
-
-        return arm_obs.clamp(-10, 10)
-
-
-# ============================================================================
-# DUAL PPO TRAINER
-# ============================================================================
-
-class DualPPO:
-    """
-    PPO trainer with separate learning rates for arm and balance.
-    """
-    def __init__(self, controller: DualController, device: str,
-                 arm_lr: float = 1e-5, balance_lr: float = 3e-4):
-        self.controller = controller
-        self.device = device
-
-        # Separate optimizers with different learning rates
-        self.arm_opt = torch.optim.AdamW(
-            controller.arm.parameters(), lr=arm_lr, weight_decay=1e-6
-        )
-        self.balance_opt = torch.optim.AdamW(
-            controller.balance.parameters(), lr=balance_lr, weight_decay=1e-5
-        )
-
-        # Schedulers
-        self.arm_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.arm_opt, args.max_iterations, eta_min=arm_lr * 0.1
-        )
-        self.balance_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.balance_opt, args.max_iterations, eta_min=1e-5
-        )
-
-        arm_params = sum(p.numel() for p in controller.arm.parameters())
-        balance_params = sum(p.numel() for p in controller.balance.parameters())
-        print(f"\n[DualPPO] Arm params: {arm_params:,} (lr={arm_lr})")
-        print(f"[DualPPO] Balance params: {balance_params:,} (lr={balance_lr})")
-
-    def gae(self, rewards, values, dones, next_value, gamma=0.99, lam=0.95):
-        advantages = torch.zeros_like(rewards)
-        last_gae = 0
-
-        for t in reversed(range(len(rewards))):
-            next_val = next_value if t == len(rewards) - 1 else values[t + 1]
-            delta = rewards[t] + gamma * next_val * (1 - dones[t]) - values[t]
-            advantages[t] = last_gae = delta + gamma * lam * (1 - dones[t]) * last_gae
-
-        returns = advantages + values
-        return advantages, returns
-
-    def update(self, balance_obs, arm_obs, leg_actions, arm_actions,
-               old_leg_logp, old_arm_logp, returns, advantages, old_values):
-
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-        metrics = {"arm_loss": 0, "balance_loss": 0, "arm_entropy": 0, "balance_entropy": 0}
-        num_updates = 0
-
-        batch_size = balance_obs.shape[0]
-        minibatch_size = 4096
-
-        for _ in range(5):
-            indices = torch.randperm(batch_size, device=self.device)
-
-            for start in range(0, batch_size, minibatch_size):
-                mb_idx = indices[start:start + minibatch_size]
-
-                # ═══════════════════════════════════════════════════
-                # BALANCE POLICY UPDATE (HIGH LR)
-                # ═══════════════════════════════════════════════════
-                balance_logp, balance_entropy = self.controller.balance.evaluate(
-                    balance_obs[mb_idx], leg_actions[mb_idx]
-                )
-
-                value = self.controller.get_value(
-                    balance_obs[mb_idx], arm_obs[mb_idx]
-                ).squeeze(-1)
-
-                ratio = (balance_logp - old_leg_logp[mb_idx]).exp()
-                surr1 = ratio * advantages[mb_idx]
-                surr2 = ratio.clamp(0.8, 1.2) * advantages[mb_idx]
-                balance_actor_loss = -torch.min(surr1, surr2).mean()
-
-                value_loss = 0.5 * ((value - returns[mb_idx]) ** 2).mean()
-
-                balance_loss = balance_actor_loss + 0.5 * value_loss - 0.01 * balance_entropy.mean()
-
-                self.balance_opt.zero_grad()
-                balance_loss.backward()
-                nn.utils.clip_grad_norm_(self.controller.balance.parameters(), 0.5)
-                self.balance_opt.step()
-
-                # ═══════════════════════════════════════════════════
-                # ARM POLICY UPDATE (LOW LR)
-                # ═══════════════════════════════════════════════════
-                arm_logp, arm_entropy = self.controller.arm.evaluate(
-                    arm_obs[mb_idx], arm_actions[mb_idx]
-                )
-
-                ratio = (arm_logp - old_arm_logp[mb_idx]).exp()
-                surr1 = ratio * advantages[mb_idx]
-                surr2 = ratio.clamp(0.9, 1.1) * advantages[mb_idx]  # Tighter clip for arm
-                arm_loss = -torch.min(surr1, surr2).mean() - 0.005 * arm_entropy.mean()
-
-                self.arm_opt.zero_grad()
-                arm_loss.backward()
-                nn.utils.clip_grad_norm_(self.controller.arm.parameters(), 0.3)  # Smaller grad clip
-                self.arm_opt.step()
-
-                metrics["arm_loss"] += arm_loss.item()
-                metrics["balance_loss"] += balance_loss.item()
-                metrics["arm_entropy"] += arm_entropy.mean().item()
-                metrics["balance_entropy"] += balance_entropy.mean().item()
-                num_updates += 1
-
-        self.arm_sched.step()
-        self.balance_sched.step()
-
-        for k in metrics:
-            metrics[k] /= num_updates
-
-        metrics["arm_lr"] = self.arm_sched.get_last_lr()[0]
-        metrics["balance_lr"] = self.balance_sched.get_last_lr()[0]
-
-        return metrics
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-def train():
-    device = "cuda:0"
-
-    print("\n" + "=" * 70)
-    print("G1 DUAL TRAINABLE LOCO-MANIPULATION")
-    print("=" * 70)
-    print(f"  Environments: {args.num_envs}")
-    print(f"  Max iterations: {args.max_iterations}")
-    print(f"  Arm checkpoint: {args.arm_checkpoint}")
-    print(f"  Balance init: {args.loco_init}")
-    print("-" * 70)
-    print("  ARCHITECTURE:")
-    print(f"    Arm Policy: TRAINABLE (lr={args.arm_lr}) - adapts to squat/lean")
-    print(f"    Balance Policy: TRAINABLE (lr={args.balance_lr}) - learns squat/lean")
-    print("=" * 70 + "\n")
-
-    # Environment
-    env_cfg = G1ReactiveBalanceEnvCfg()
-    env_cfg.scene.num_envs = args.num_envs
-    env = G1ReactiveBalanceEnv(cfg=env_cfg)
-
-    # Load policies
-    arm_policy = load_arm_checkpoint(args.arm_checkpoint, device)
-    balance_policy = BalancePolicy().to(device)
-
-    if args.loco_init:
-        balance_policy = load_balance_init(args.loco_init, balance_policy, device)
-
-    # Dual controller
-    controller = DualController(arm_policy, balance_policy)
-
-    # Resume
-    start_iter = 0
-    best_reward = float('-inf')
-    if args.resume:
-        print(f"\n[Resume] Loading: {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        controller.load_state_dict(ckpt["controller"])
-        start_iter = ckpt.get("iteration", 0)
-        best_reward = ckpt.get("best_reward", float('-inf'))
-        env.curriculum_level = ckpt.get("curriculum_level", 0)
+# Add project paths
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from isaacsim import SimulationApp
+
+# Parse arguments before SimulationApp
+parser = argparse.ArgumentParser(description="Train G1 Dex1 Stage 6")
+parser.add_argument("--num_envs", type=int, default=4096, help="Number of environments")
+parser.add_argument("--headless", action="store_true", help="Run headless")
+parser.add_argument("--max_iterations", type=int, default=10000, help="Max training iterations")
+parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint to resume from")
+parser.add_argument("--curriculum_level", type=int, default=0, help="Starting curriculum level")
+parser.add_argument("--seed", type=int, default=42, help="Random seed")
+parser.add_argument("--log_dir", type=str, default="logs/g1_dex1_stage6", help="Log directory")
+args, unknown = parser.parse_known_args()
+
+# Launch simulation
+simulation_app = SimulationApp({"headless": args.headless})
+
+import torch
+import numpy as np
+from g1_dex1_stage6_env import G1Dex1Stage6Env, G1Dex1Stage6EnvCfg
+
+# RSL-RL imports
+from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.algorithms import PPO
+from rsl_rl.modules import ActorCritic
+
+
+class PPORunnerConfig:
+    """PPO Runner configuration."""
+    seed: int = 42
+    device: str = "cuda"
+    num_steps_per_env: int = 24
+    max_iterations: int = 10000
+    save_interval: int = 500
+    experiment_name: str = "g1_dex1_stage6"
+    run_name: str = ""
+    log_dir: str = "logs"
+    resume: bool = False
+    load_run: str = ""
+    checkpoint: int = -1
+
+    # Learning
+    learning_rate: float = 3e-4
+    num_learning_epochs: int = 5
+    num_mini_batches: int = 4
 
     # PPO
-    ppo = DualPPO(controller, device, arm_lr=args.arm_lr, balance_lr=args.balance_lr)
+    clip_param: float = 0.2
+    gamma: float = 0.99
+    lam: float = 0.95
+    entropy_coef: float = 0.01
+    value_loss_coef: float = 1.0
+    max_grad_norm: float = 1.0
+    use_clipped_value_loss: bool = True
 
-    # Arm obs extractor
-    arm_extractor = ArmObsExtractor(device)
+    # Network
+    policy_class_name: str = "ActorCritic"
+    actor_hidden_dims: list = None
+    critic_hidden_dims: list = None
+    activation: str = "elu"
 
-    # Logging
+    def __init__(self):
+        self.actor_hidden_dims = [512, 256, 128]
+        self.critic_hidden_dims = [512, 256, 128]
+
+
+def train():
+    """Main training function."""
+
+    # Create log directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = f"logs/ulc/g1_dual_trainable_{timestamp}"
+    log_dir = os.path.join(args.log_dir, f"stage6_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=log_dir, flush_secs=10)
 
-    print(f"\n[INFO] Logging to: {log_dir}")
+    print(f"\n{'='*60}")
+    print(f"G1 + Dex1 Stage 6 Training")
+    print(f"{'='*60}")
+    print(f"Log directory: {log_dir}")
+    print(f"Environments: {args.num_envs}")
+    print(f"Max iterations: {args.max_iterations}")
+    print(f"Curriculum level: {args.curriculum_level}")
+    print(f"{'='*60}\n")
 
-    # Exploration
-    balance_policy.log_std.data.fill_(np.log(0.4))
-    arm_policy.log_std.data.fill_(np.log(0.15))  # Low exploration for arm
+    # Set seed
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
-    obs, _ = env.reset()
-    balance_obs = obs["policy"]
+    # Create environment config
+    env_cfg = G1Dex1Stage6EnvCfg()
+    env_cfg.scene.num_envs = args.num_envs
+    env_cfg.curriculum_level = args.curriculum_level
 
-    start_time = datetime.now()
-    rollout_steps = 24
+    # Create environment
+    env = G1Dex1Stage6Env(env_cfg)
 
-    print("\n" + "=" * 70)
-    print("STARTING DUAL TRAINING")
-    print("  Both policies learn together!")
-    print("  Arm adapts to squat positions, Balance learns to squat")
-    print("=" * 70 + "\n")
+    # Runner config
+    runner_cfg = PPORunnerConfig()
+    runner_cfg.seed = args.seed
+    runner_cfg.max_iterations = args.max_iterations
+    runner_cfg.log_dir = log_dir
+    runner_cfg.experiment_name = f"g1_dex1_stage6_level{args.curriculum_level}"
+    runner_cfg.run_name = timestamp
 
-    for iteration in range(start_iter, args.max_iterations):
-        iter_start = datetime.now()
+    # Create actor-critic network
+    actor_critic = ActorCritic(
+        num_obs=env_cfg.num_observations,
+        num_actions=env_cfg.num_actions,
+        actor_hidden_dims=runner_cfg.actor_hidden_dims,
+        critic_hidden_dims=runner_cfg.critic_hidden_dims,
+        activation=runner_cfg.activation,
+        init_noise_std=1.0,
+    ).to("cuda")
 
-        # Buffers
-        balance_obs_buf = []
-        arm_obs_buf = []
-        leg_act_buf = []
-        arm_act_buf = []
-        rew_buf = []
-        done_buf = []
-        val_buf = []
-        leg_logp_buf = []
-        arm_logp_buf = []
+    # Create PPO algorithm
+    ppo = PPO(
+        actor_critic=actor_critic,
+        num_learning_epochs=runner_cfg.num_learning_epochs,
+        num_mini_batches=runner_cfg.num_mini_batches,
+        clip_param=runner_cfg.clip_param,
+        gamma=runner_cfg.gamma,
+        lam=runner_cfg.lam,
+        value_loss_coef=runner_cfg.value_loss_coef,
+        entropy_coef=runner_cfg.entropy_coef,
+        learning_rate=runner_cfg.learning_rate,
+        max_grad_norm=runner_cfg.max_grad_norm,
+        use_clipped_value_loss=runner_cfg.use_clipped_value_loss,
+        device="cuda",
+    )
 
-        for _ in range(rollout_steps):
-            arm_obs = arm_extractor.extract(balance_obs, env)
+    # Load checkpoint if provided
+    if args.checkpoint is not None:
+        print(f"Loading checkpoint: {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint)
+        actor_critic.load_state_dict(checkpoint["model_state_dict"])
+        ppo.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+    # Create runner
+    runner = OnPolicyRunner(
+        env=env,
+        train_cfg=runner_cfg,
+        log_dir=log_dir,
+        device="cuda",
+    )
+
+    # Training loop
+    print("\nStarting training...")
+
+    try:
+        obs, _ = env.reset()
+        obs = obs["policy"]
+
+        for iteration in range(args.max_iterations):
+            # Collect rollouts
+            for step in range(runner_cfg.num_steps_per_env):
+                # Get actions
+                with torch.no_grad():
+                    actions = actor_critic.act(obs)
+
+                # Step environment
+                next_obs, rewards, terminated, truncated, info = env.step(actions)
+                next_obs = next_obs["policy"]
+                dones = terminated | truncated
+
+                # Store transition
+                runner.storage.add_transitions(
+                    obs=obs,
+                    actions=actions,
+                    rewards=rewards,
+                    dones=dones,
+                    values=actor_critic.evaluate(obs),
+                    log_probs=actor_critic.get_actions_log_prob(actions),
+                )
+
+                obs = next_obs
+
+                # Reset done environments
+                if dones.any():
+                    obs[dones] = env.reset()[0]["policy"][dones]
+
+            # Compute returns
             with torch.no_grad():
-                # Balance policy
-                leg_mean = balance_policy(balance_obs)
-                leg_std = balance_policy.log_std.clamp(-2, 1).exp()
-                leg_dist = torch.distributions.Normal(leg_mean, leg_std)
-                leg_action = leg_dist.sample()
-                leg_logp = leg_dist.log_prob(leg_action).sum(-1)
+                last_values = actor_critic.evaluate(obs)
+            runner.storage.compute_returns(last_values, runner_cfg.gamma, runner_cfg.lam)
 
-                # Arm policy
-                arm_mean = arm_policy(arm_obs)
-                arm_std = arm_policy.log_std.clamp(-3, 0).exp()
-                arm_dist = torch.distributions.Normal(arm_mean, arm_std)
-                arm_action = arm_dist.sample()
-                arm_logp = arm_dist.log_prob(arm_action).sum(-1)
+            # Update policy
+            mean_loss = ppo.update(runner.storage)
+            runner.storage.clear()
 
-                # Value
-                value = balance_policy.get_value(balance_obs, arm_obs).squeeze(-1)
+            # Log progress
+            if iteration % 10 == 0:
+                mean_reward = rewards.mean().item()
+                print(f"Iter {iteration}/{args.max_iterations} | "
+                      f"Reward: {mean_reward:.3f} | "
+                      f"Loss: {mean_loss:.4f}")
 
-            # Store
-            balance_obs_buf.append(balance_obs)
-            arm_obs_buf.append(arm_obs)
-            leg_act_buf.append(leg_action)
-            arm_act_buf.append(arm_action)
-            val_buf.append(value)
-            leg_logp_buf.append(leg_logp)
-            arm_logp_buf.append(arm_logp)
+            # Save checkpoint
+            if iteration % runner_cfg.save_interval == 0 and iteration > 0:
+                save_path = os.path.join(log_dir, f"model_{iteration}.pt")
+                torch.save({
+                    "iteration": iteration,
+                    "model_state_dict": actor_critic.state_dict(),
+                    "optimizer_state_dict": ppo.optimizer.state_dict(),
+                    "curriculum_level": env._curriculum_level,
+                }, save_path)
+                print(f"Saved checkpoint: {save_path}")
 
-            # Set arm actions and step
-            env.set_frozen_arm_actions(arm_action)
-            obs_dict, reward, terminated, truncated, _ = env.step(leg_action)
-            balance_obs = obs_dict["policy"]
+            # Check curriculum advancement
+            if env.advance_curriculum():
+                # Save curriculum advancement checkpoint
+                save_path = os.path.join(log_dir, f"model_curriculum_{env._curriculum_level}.pt")
+                torch.save({
+                    "iteration": iteration,
+                    "model_state_dict": actor_critic.state_dict(),
+                    "optimizer_state_dict": ppo.optimizer.state_dict(),
+                    "curriculum_level": env._curriculum_level,
+                }, save_path)
 
-            rew_buf.append(reward)
-            done_buf.append((terminated | truncated).float())
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
 
-        # Stack
-        balance_obs_buf = torch.stack(balance_obs_buf)
-        arm_obs_buf = torch.stack(arm_obs_buf)
-        leg_act_buf = torch.stack(leg_act_buf)
-        arm_act_buf = torch.stack(arm_act_buf)
-        rew_buf = torch.stack(rew_buf)
-        done_buf = torch.stack(done_buf)
-        val_buf = torch.stack(val_buf)
-        leg_logp_buf = torch.stack(leg_logp_buf)
-        arm_logp_buf = torch.stack(arm_logp_buf)
+    finally:
+        # Save final model
+        final_path = os.path.join(log_dir, "model_final.pt")
+        torch.save({
+            "iteration": iteration if 'iteration' in dir() else 0,
+            "model_state_dict": actor_critic.state_dict(),
+            "optimizer_state_dict": ppo.optimizer.state_dict(),
+            "curriculum_level": env._curriculum_level,
+        }, final_path)
+        print(f"Saved final model: {final_path}")
 
-        # GAE
-        with torch.no_grad():
-            arm_obs_final = arm_extractor.extract(balance_obs, env)
-            next_value = balance_policy.get_value(balance_obs, arm_obs_final).squeeze(-1)
+        env.close()
 
-        advantages, returns = ppo.gae(rew_buf, val_buf, done_buf, next_value)
-
-        # Update
-        T, N = balance_obs_buf.shape[:2]
-        metrics = ppo.update(
-            balance_obs_buf.view(T*N, -1),
-            arm_obs_buf.view(T*N, -1),
-            leg_act_buf.view(T*N, -1),
-            arm_act_buf.view(T*N, -1),
-            leg_logp_buf.view(T*N),
-            arm_logp_buf.view(T*N),
-            returns.view(T*N),
-            advantages.view(T*N),
-            val_buf.view(T*N),
-        )
-
-        # Curriculum
-        if iteration % 24 == 0:
-            env.update_curriculum(iteration)
-
-        # Stats
-        mean_reward = rew_buf.mean().item()
-        iter_time = (datetime.now() - iter_start).total_seconds()
-        fps = rollout_steps * args.num_envs / iter_time
-
-        # Save best
-        if mean_reward > best_reward:
-            best_reward = mean_reward
-            torch.save({
-                "controller": controller.state_dict(),
-                "arm": arm_policy.state_dict(),
-                "balance": balance_policy.state_dict(),
-                "iteration": iteration,
-                "best_reward": best_reward,
-                "curriculum_level": env.curriculum_level,
-            }, f"{log_dir}/model_best.pt")
-            print(f"[BEST] New best reward: {best_reward:.2f}")
-
-        # Logging
-        writer.add_scalar("Train/reward", mean_reward, iteration)
-        writer.add_scalar("Train/best_reward", best_reward, iteration)
-        writer.add_scalar("Loss/arm", metrics["arm_loss"], iteration)
-        writer.add_scalar("Loss/balance", metrics["balance_loss"], iteration)
-        writer.add_scalar("LR/arm", metrics["arm_lr"], iteration)
-        writer.add_scalar("LR/balance", metrics["balance_lr"], iteration)
-        writer.add_scalar("Curriculum/level", env.curriculum_level + 1, iteration)
-        writer.add_scalar("Success/total_reaches", env.total_reaches, iteration)
-
-        for key, value in env.extras.items():
-            if isinstance(value, (int, float)):
-                writer.add_scalar(f"Env/{key}", value, iteration)
-
-        writer.flush()
-
-        # Console
-        if iteration % 10 == 0:
-            elapsed = datetime.now() - start_time
-            arm_dist = env.extras.get("M/arm_dist", 0)
-            height = env.extras.get("M/height", 0)
-
-            print(
-                f"#{iteration:5d} | "
-                f"R={mean_reward:6.2f} | "
-                f"Best={best_reward:6.2f} | "
-                f"Lv={env.curriculum_level + 1} | "
-                f"Reach={env.total_reaches} | "
-                f"H={height:.2f} | "
-                f"Arm={arm_dist:.3f}m | "
-                f"FPS={fps:.0f}"
-            )
-
-        # Checkpoints
-        if (iteration + 1) % 1000 == 0:
-            torch.save({
-                "controller": controller.state_dict(),
-                "arm": arm_policy.state_dict(),
-                "balance": balance_policy.state_dict(),
-                "iteration": iteration,
-                "best_reward": best_reward,
-                "curriculum_level": env.curriculum_level,
-            }, f"{log_dir}/model_{iteration + 1}.pt")
-
-    # Final
-    torch.save({
-        "controller": controller.state_dict(),
-        "arm": arm_policy.state_dict(),
-        "balance": balance_policy.state_dict(),
-        "iteration": args.max_iterations,
-        "best_reward": best_reward,
-        "curriculum_level": env.curriculum_level,
-    }, f"{log_dir}/model_final.pt")
-
-    writer.close()
-    env.close()
-
-    print("\n" + "=" * 70)
-    print("TRAINING COMPLETE!")
-    print(f"  Best Reward: {best_reward:.2f}")
-    print(f"  Final Level: {env.curriculum_level + 1}/6")
-    print(f"  Total Reaches: {env.total_reaches}")
-    print(f"  Log Dir: {log_dir}")
-    print("=" * 70)
+    print("\nTraining complete!")
 
 
 if __name__ == "__main__":

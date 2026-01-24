@@ -21,4 +21,32 @@ Usage:
 # Training scripts are standalone executables, not importable modules
 # This __init__.py exists for package structure
 
-__all__ = []
+import gymnasium as gym
+
+from .g1_dex1_stage6_env import (
+    G1Dex1Stage6Env,
+    G1Dex1Stage6EnvCfg,
+    CURRICULUM_LEVELS,
+    G1_LEG_JOINT_NAMES,
+    G1_RIGHT_ARM_JOINT_NAMES,
+    G1_RIGHT_GRIPPER_JOINT_NAMES,
+    G1_DEFAULT_JOINT_POS,
+)
+
+# Register environment with Gymnasium
+gym.register(
+    id="Isaac-G1-Dex1-Stage6-v0",
+    entry_point="g1_dex1_stage6:G1Dex1Stage6Env",
+    kwargs={"cfg": G1Dex1Stage6EnvCfg()},
+    disable_env_checker=True,
+)
+
+__all__ = [
+    "G1Dex1Stage6Env",
+    "G1Dex1Stage6EnvCfg",
+    "CURRICULUM_LEVELS",
+    "G1_LEG_JOINT_NAMES",
+    "G1_RIGHT_ARM_JOINT_NAMES",
+    "G1_RIGHT_GRIPPER_JOINT_NAMES",
+    "G1_DEFAULT_JOINT_POS",
+]
