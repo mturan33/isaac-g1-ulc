@@ -1,29 +1,21 @@
 """
 ULC G1 Training Scripts
 =======================
-
 Stage-based training for Unified Loco-Manipulation Controller.
-
-Stages:
-    - Stage 1: Standing (balance, height tracking)
-    - Stage 2: Locomotion (walking, rough terrain, perturbation)
-    - Stage 3: Torso Control (upper body movement during locomotion)
-    - Stage 4: Arm Manipulation (reaching, grasping with whole-body control)
-
-Usage:
-    # Stage 1: Standing
-    ./isaaclab.bat -p .../train/train_ulc_stage_1.py --num_envs 4096 --headless
-
-    # Stage 2: Locomotion (from Stage 1 checkpoint)
-    ./isaaclab.bat -p .../train/train_ulc_stage_2.py --num_envs 4096 --headless --stage1_checkpoint <path>
 """
 
-# Training scripts are standalone executables, not importable modules
-# This __init__.py exists for package structure
+# Environment envs klasöründen import
+# Not: train klasöründen envs'e relative import
+import sys
+import os
 
-import gymnasium as gym
+# Add parent directory to path for imports
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
-from .g1_dex1_stage6_env import (
+# Now import from envs
+from envs.g1_locomanip_env import (
     G1Dex1Stage6Env,
     G1Dex1Stage6EnvCfg,
     CURRICULUM_LEVELS,
@@ -33,10 +25,12 @@ from .g1_dex1_stage6_env import (
     G1_DEFAULT_JOINT_POS,
 )
 
-# Register environment with Gymnasium
+import gymnasium as gym
+
+# Register environment
 gym.register(
     id="Isaac-G1-Dex1-Stage6-v0",
-    entry_point="g1_dex1_stage6:G1Dex1Stage6Env",
+    entry_point="envs.g1_locomanip_env:G1Dex1Stage6Env",
     kwargs={"cfg": G1Dex1Stage6EnvCfg()},
     disable_env_checker=True,
 )
@@ -45,8 +39,4 @@ __all__ = [
     "G1Dex1Stage6Env",
     "G1Dex1Stage6EnvCfg",
     "CURRICULUM_LEVELS",
-    "G1_LEG_JOINT_NAMES",
-    "G1_RIGHT_ARM_JOINT_NAMES",
-    "G1_RIGHT_GRIPPER_JOINT_NAMES",
-    "G1_DEFAULT_JOINT_POS",
 ]
