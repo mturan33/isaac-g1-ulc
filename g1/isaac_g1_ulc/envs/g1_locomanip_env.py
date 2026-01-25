@@ -25,6 +25,7 @@ from typing import Dict, Tuple, Sequence
 from dataclasses import dataclass, field
 
 import isaaclab.sim as sim_utils
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -413,7 +414,7 @@ class G1Dex1Stage6EnvCfg(DirectRLEnvCfg):
         ),
         soft_joint_pos_limit_factor=0.9,
         actuators={
-            "legs": sim_utils.ImplicitActuatorCfg(
+            "legs": ImplicitActuatorCfg(
                 joint_names_expr=[
                     ".*_hip_yaw_joint",
                     ".*_hip_roll_joint",
@@ -425,21 +426,21 @@ class G1Dex1Stage6EnvCfg(DirectRLEnvCfg):
                 stiffness=150.0,
                 damping=5.0,
             ),
-            "feet": sim_utils.ImplicitActuatorCfg(
+            "feet": ImplicitActuatorCfg(
                 joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
                 effort_limit=100.0,
                 velocity_limit=100.0,
                 stiffness=100.0,
                 damping=5.0,
             ),
-            "waist": sim_utils.ImplicitActuatorCfg(
+            "waist": ImplicitActuatorCfg(
                 joint_names_expr=["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"],
                 effort_limit=1000.0,
                 velocity_limit=0.0,  # Locked
                 stiffness=10000.0,
                 damping=10000.0,
             ),
-            "arms": sim_utils.ImplicitActuatorCfg(
+            "arms": ImplicitActuatorCfg(
                 joint_names_expr=[
                     ".*_shoulder_.*_joint",
                     ".*_elbow_joint",
@@ -458,7 +459,7 @@ class G1Dex1Stage6EnvCfg(DirectRLEnvCfg):
                     ".*_wrist_.*_joint": 2.0,
                 },
             ),
-            "grippers": sim_utils.ImplicitActuatorCfg(
+            "grippers": ImplicitActuatorCfg(
                 joint_names_expr=[".*_hand_Joint.*"],
                 effort_limit=50.0,
                 velocity_limit=50.0,
