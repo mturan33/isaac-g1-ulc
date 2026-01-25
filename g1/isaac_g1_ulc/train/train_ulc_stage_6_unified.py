@@ -38,7 +38,17 @@ simulation_app = SimulationApp({"headless": args.headless})
 
 import torch
 import numpy as np
-from g1_dex1_stage6_env import G1Dex1Stage6Env, G1Dex1Stage6EnvCfg
+import sys
+import os
+
+# Add parent and envs directory to path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+envs_dir = os.path.join(parent_dir, "envs")
+sys.path.insert(0, parent_dir)
+sys.path.insert(0, envs_dir)
+
+from g1_locomanip_env import G1Dex1Stage6Env, G1Dex1Stage6EnvCfg
 
 # RSL-RL imports
 from rsl_rl.runners import OnPolicyRunner
