@@ -27,6 +27,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from isaaclab.assets import Articulation
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -390,18 +391,18 @@ class G1Dex1Stage6EnvCfg(DirectRLEnvCfg):
     # Scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=2.5)
 
-    # Terrain
-    terrain = TerrainImporterCfg(
-        prim_path="/World/ground",
-        terrain_type="plane",
-        collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(
-            friction_combine_mode="average",
-            restitution_combine_mode="average",
-            static_friction=1.0,
-            dynamic_friction=1.0,
-        ),
-    )
+    # # Terrain
+    # terrain = TerrainImporterCfg(
+    #     prim_path="/World/ground",
+    #     terrain_type="plane",
+    #     collision_group=-1,
+    #     physics_material=sim_utils.RigidBodyMaterialCfg(
+    #         friction_combine_mode="average",
+    #         restitution_combine_mode="average",
+    #         static_friction=1.0,
+    #         dynamic_friction=1.0,
+    #     ),
+    # )
 
     # Robot - G1 29DoF with Dex1 (Wholebody version)
     robot_cfg: ArticulationCfg = ArticulationCfg(
@@ -570,7 +571,10 @@ class G1Dex1Stage6Env(DirectRLEnv):
 
     def _setup_scene(self):
         """Set up the simulation scene."""
-        # Spawn robot using config
+        # Spawn ground plane first
+        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+
+        # Spawn robot
         self.robot = Articulation(self.cfg.robot_cfg)
 
         # Add to scene
@@ -579,13 +583,8 @@ class G1Dex1Stage6Env(DirectRLEnv):
         # Clone environments
         self.scene.clone_environments(copy_from_source=False)
 
-        # Add ground plane
-        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
-        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self.terrain = self.cfg.terrain.class_type(self.cfg.terrain)
-
         # Filter collisions
-        self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
+        self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
         # Get joint indices
         self._setup_joint_indices()
@@ -595,30 +594,6 @@ class G1Dex1Stage6Env(DirectRLEnv):
         if G1_RIGHT_EE_LINK in body_names:
             self.ee_body_idx = body_names.index(G1_RIGHT_EE_LINK)
         else:
-            # Fallback
-            for i, name in enumerate(body_names):
-                if "right" in name.lower() and "wrist" in name.lower():
-                    self.ee_body_idx = i
-                    break
-            else:
-                self.ee_body_idx = -1
-                print(f"[WARNING] Could not find right EE link. Available: {body_names}")
-
-        # Add target object (only if grasping curriculum)
-        if self.cfg.target_object_cfg is not None:
-            self.target_object = self.scene.rigid_objects.get("target_object", None)
-        else:
-            self.target_object = None
-
-        # Get joint indices
-        self._setup_joint_indices()
-
-        # Get body indices for EE
-        body_names = self.robot.data.body_names
-        if G1_RIGHT_EE_LINK in body_names:
-            self.ee_body_idx = body_names.index(G1_RIGHT_EE_LINK)
-        else:
-            # Fallback - find similar name
             for i, name in enumerate(body_names):
                 if "right" in name.lower() and "wrist" in name.lower():
                     self.ee_body_idx = i
