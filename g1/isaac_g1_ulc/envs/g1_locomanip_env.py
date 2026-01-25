@@ -23,6 +23,9 @@ import math
 import torch
 from typing import Dict, Tuple, Sequence
 from dataclasses import dataclass, field
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -350,6 +353,20 @@ class RewardWeights:
 @configclass
 class G1Dex1Stage6EnvCfg(DirectRLEnvCfg):
     """Configuration for G1 + Dex1 Stage 6 Loco-Manipulation environment."""
+
+    # Observation and action spaces (required by DirectRLEnvCfg)
+    observation_space: spaces.Space = spaces.Box(
+        low=-float("inf"),
+        high=float("inf"),
+        shape=(85,),  # OBS_DIM
+        dtype=np.float32
+    )
+    action_space: spaces.Space = spaces.Box(
+        low=-1.0,
+        high=1.0,
+        shape=(21,),  # ACT_DIM
+        dtype=np.float32
+    )
 
     # Environment
     episode_length_s: float = 20.0
