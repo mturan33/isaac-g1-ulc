@@ -138,7 +138,7 @@ class G1LocoManipSceneCfg(InteractiveSceneCfg):
     # Ground plane
     ground = AssetBaseCfg(
         prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
+        spawn=sim_utils.GroundPlaneCfg(size=(10.0, 10.0)),
     )
 
     # Dome light
