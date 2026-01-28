@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Stage 5.5 Dual Policy Play Script
-==================================
+Stage 5.5 Dual Policy Play Script - ALL IN ONE
+===============================================
 
 İki ayrı policy'yi birlikte çalıştırır:
 - Stage 3 (Loco): 57 obs → 12 leg actions
 - Stage 5 (Arm): 29 obs → 5 arm actions
 
-USAGE:
+KULLANIM:
 ./isaaclab.bat -p .../play/play_ulc_stage_5.5_both.py \
     --loco_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt \
     --arm_checkpoint logs/ulc/g1_arm_reach_2026-01-22_14-06-41/model_19998.pt \
-    --num_envs 4 \
-    --vx 0.0
+    --num_envs 4 --vx 0.0
 
 Author: Turan
 Date: January 2026
@@ -21,11 +20,9 @@ Date: January 2026
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 
 # ==============================================================================
-# ARGUMENT PARSING
+# ARGUMENT PARSING (MUST BE BEFORE ISAAC IMPORTS)
 # ==============================================================================
 
 parser = argparse.ArgumentParser(description="Stage 5.5 Dual Policy Play")
@@ -47,24 +44,539 @@ args.headless = False
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
+# ==============================================================================
+# NOW WE CAN IMPORT ISAAC MODULES
+# ==============================================================================
+
 import torch
 import torch.nn as nn
 import numpy as np
 
-# Add envs dir to path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-envs_dir = os.path.join(os.path.dirname(script_dir), "envs")
-sys.path.insert(0, envs_dir)
+import isaaclab.sim as sim_utils
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim import SimulationCfg
+from isaaclab.utils import configclass
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.utils.math import quat_apply_inverse
 
-from g1_locomanip_env import G1LocoManipEnv, G1LocoManipEnvCfg
+# ==============================================================================
+# CONSTANTS
+# ==============================================================================
+
+G1_USD_PATH = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/Robots/Unitree/G1/g1.usd"
+
+LEG_JOINT_NAMES = [
+    "left_hip_pitch_joint", "right_hip_pitch_joint",
+    "left_hip_roll_joint", "right_hip_roll_joint",
+    "left_hip_yaw_joint", "right_hip_yaw_joint",
+    "left_knee_joint", "right_knee_joint",
+    "left_ankle_pitch_joint", "right_ankle_pitch_joint",
+    "left_ankle_roll_joint", "right_ankle_roll_joint",
+]
+
+ARM_JOINT_NAMES = [
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_pitch_joint",
+    "right_elbow_roll_joint",
+]
+
+ARM_JOINT_LIMITS = {
+    "right_shoulder_pitch_joint": (-2.97, 2.79),
+    "right_shoulder_roll_joint": (-2.25, 1.59),
+    "right_shoulder_yaw_joint": (-2.62, 2.62),
+    "right_elbow_pitch_joint": (-0.23, 3.42),
+    "right_elbow_roll_joint": (-2.09, 2.09),
+}
+
+DEFAULT_ARM_POSE = {
+    "right_shoulder_pitch_joint": -0.3,
+    "right_shoulder_roll_joint": 0.0,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_pitch_joint": 0.5,
+    "right_elbow_roll_joint": 0.0,
+}
+
+EE_OFFSET = 0.02
 
 
 # ==============================================================================
-# NETWORK DEFINITIONS
+# HELPER FUNCTIONS
+# ==============================================================================
+
+def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
+    """Convert quaternion (xyzw) to euler angles (roll, pitch, yaw)."""
+    x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = torch.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    sinp = torch.clamp(sinp, -1.0, 1.0)
+    pitch = torch.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = torch.atan2(siny_cosp, cosy_cosp)
+
+    return torch.stack([roll, pitch, yaw], dim=-1)
+
+
+def rotate_vector_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    """Rotate vector v by quaternion q (wxyz format)."""
+    w = q[:, 0:1]
+    xyz = q[:, 1:4]
+    t = 2.0 * torch.cross(xyz, v, dim=-1)
+    return v + w * t + torch.cross(xyz, t, dim=-1)
+
+
+def quat_diff_rad(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    """Angular difference between quaternions in radians."""
+    dot = torch.sum(q1 * q2, dim=-1).abs()
+    dot = torch.clamp(dot, -1.0, 1.0)
+    return 2.0 * torch.acos(dot)
+
+
+# ==============================================================================
+# SCENE CONFIG
+# ==============================================================================
+
+@configclass
+class DualPlaySceneCfg(InteractiveSceneCfg):
+    """Scene configuration."""
+
+    ground = AssetBaseCfg(
+        prim_path="/World/ground",
+        spawn=sim_utils.GroundPlaneCfg(size=(10.0, 10.0)),
+    )
+
+    dome_light = AssetBaseCfg(
+        prim_path="/World/DomeLight",
+        spawn=sim_utils.DomeLightCfg(intensity=2000.0, color=(0.9, 0.9, 0.9)),
+    )
+
+    robot: ArticulationCfg = ArticulationCfg(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=G1_USD_PATH,
+            activate_contact_sensors=False,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=False,
+                max_depenetration_velocity=10.0,
+            ),
+        ),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.8),
+            joint_pos={
+                "left_hip_pitch_joint": -0.2, "right_hip_pitch_joint": -0.2,
+                "left_knee_joint": 0.4, "right_knee_joint": 0.4,
+                "left_ankle_pitch_joint": -0.2, "right_ankle_pitch_joint": -0.2,
+                "right_shoulder_pitch_joint": -0.3,
+                "right_elbow_pitch_joint": 0.5,
+                "left_shoulder_pitch_joint": -0.3,
+                "left_elbow_pitch_joint": 0.5,
+            },
+        ),
+        actuators={
+            "legs": ImplicitActuatorCfg(
+                joint_names_expr=[".*hip.*", ".*knee.*", ".*ankle.*"],
+                stiffness=150.0,
+                damping=15.0,
+            ),
+            "arms": ImplicitActuatorCfg(
+                joint_names_expr=[".*shoulder.*", ".*elbow.*"],
+                stiffness=150.0,
+                damping=20.0,
+            ),
+            "torso": ImplicitActuatorCfg(
+                joint_names_expr=["torso_joint"],
+                stiffness=100.0,
+                damping=10.0,
+            ),
+        },
+    )
+
+    target: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Target",
+        spawn=sim_utils.SphereCfg(
+            radius=0.04,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.0, 1.0, 0.0),
+                emissive_color=(0.0, 0.5, 0.0),
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, -0.2, 1.0)),
+    )
+
+    ee_marker: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/EEMarker",
+        spawn=sim_utils.SphereCfg(
+            radius=0.025,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 0.5, 0.0),
+                emissive_color=(0.5, 0.25, 0.0),
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
+    )
+
+
+# ==============================================================================
+# ENV CONFIG
+# ==============================================================================
+
+@configclass
+class DualPlayEnvCfg(DirectRLEnvCfg):
+    """Environment config."""
+
+    decimation = 4
+    episode_length_s = 20.0
+
+    num_actions = 17
+    num_observations = 86
+    num_states = 0
+
+    action_space = 17
+    observation_space = 86
+    state_space = 0
+
+    sim: SimulationCfg = SimulationCfg(
+        dt=1 / 200,
+        render_interval=4,
+        device="cuda:0",
+        physx=sim_utils.PhysxCfg(
+            gpu_found_lost_pairs_capacity=2 ** 21,
+            gpu_total_aggregate_pairs_capacity=2 ** 21,
+        ),
+    )
+
+    scene: DualPlaySceneCfg = DualPlaySceneCfg(num_envs=4, env_spacing=2.5)
+
+    workspace_radius = 0.40
+    workspace_inner_radius = 0.18
+    shoulder_offset = [0.0, -0.174, 0.259]
+
+    height_target = 0.72
+    gait_frequency = 1.5
+
+    leg_action_scale = 0.4
+    arm_action_scale = 0.12
+
+
+# ==============================================================================
+# ENVIRONMENT
+# ==============================================================================
+
+class DualPlayEnv(DirectRLEnv):
+    """Dual policy play environment."""
+
+    cfg: DualPlayEnvCfg
+
+    def __init__(self, cfg: DualPlayEnvCfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+
+        self.robot = self.scene["robot"]
+        self.target_obj = self.scene["target"]
+        self.ee_marker = self.scene["ee_marker"]
+
+        self._setup_joint_indices()
+        self._setup_buffers()
+
+        print("\n" + "=" * 60)
+        print("DUAL PLAY ENVIRONMENT INITIALIZED")
+        print("=" * 60)
+        print(f"  Leg joints: {len(self.leg_indices)}")
+        print(f"  Arm joints: {len(self.arm_indices)}")
+        print(f"  Palm idx: {self.palm_idx}")
+        print("=" * 60 + "\n")
+
+    def _setup_joint_indices(self):
+        joint_names = list(self.robot.data.joint_names)
+        body_names = list(self.robot.data.body_names)
+
+        self.leg_indices = []
+        for name in LEG_JOINT_NAMES:
+            if name in joint_names:
+                self.leg_indices.append(joint_names.index(name))
+        self.leg_indices = torch.tensor(self.leg_indices, device=self.device, dtype=torch.long)
+
+        self.arm_indices = []
+        for name in ARM_JOINT_NAMES:
+            if name in joint_names:
+                self.arm_indices.append(joint_names.index(name))
+        self.arm_indices = torch.tensor(self.arm_indices, device=self.device, dtype=torch.long)
+
+        self.palm_idx = None
+        for i, name in enumerate(body_names):
+            if "right" in name.lower() and "palm" in name.lower():
+                self.palm_idx = i
+                break
+        if self.palm_idx is None:
+            for i, name in enumerate(body_names):
+                if "right" in name.lower() and ("wrist" in name.lower() or "elbow" in name.lower()):
+                    self.palm_idx = i
+                    break
+        if self.palm_idx is None:
+            self.palm_idx = len(body_names) - 1
+
+        self.arm_lower = torch.zeros(len(self.arm_indices), device=self.device)
+        self.arm_upper = torch.zeros(len(self.arm_indices), device=self.device)
+        for i, name in enumerate(ARM_JOINT_NAMES[:len(self.arm_indices)]):
+            if name in ARM_JOINT_LIMITS:
+                self.arm_lower[i], self.arm_upper[i] = ARM_JOINT_LIMITS[name]
+
+    def _setup_buffers(self):
+        self.height_cmd = torch.ones(self.num_envs, device=self.device) * self.cfg.height_target
+        self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        self.gait_phase = torch.zeros(self.num_envs, device=self.device)
+
+        self.prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
+        self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
+
+        self.default_leg = torch.tensor(
+            [-0.2, -0.2, 0, 0, 0, 0, 0.4, 0.4, -0.2, -0.2, 0, 0], device=self.device
+        )
+        self.default_arm = torch.tensor(
+            [DEFAULT_ARM_POSE[n] for n in ARM_JOINT_NAMES], device=self.device
+        )
+
+        self.target_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self.target_quat = torch.tensor(
+            [[0.707, 0.707, 0.0, 0.0]], device=self.device
+        ).expand(self.num_envs, -1).clone()
+
+        self.shoulder_offset = torch.tensor(
+            self.cfg.shoulder_offset, device=self.device
+        ).unsqueeze(0).expand(self.num_envs, -1).clone()
+
+        self.local_forward = torch.tensor(
+            [[1.0, 0.0, 0.0]], device=self.device
+        ).expand(self.num_envs, -1)
+
+        self.total_reaches = 0
+        self.reach_threshold = 0.10
+
+    def _setup_scene(self):
+        self.robot = self.scene["robot"]
+        self.target_obj = self.scene["target"]
+        self.ee_marker = self.scene["ee_marker"]
+
+    # =========================================================================
+    # DUAL OBSERVATIONS
+    # =========================================================================
+
+    def get_loco_obs(self) -> torch.Tensor:
+        """Stage 3 locomotion observation - 57 dim."""
+        robot = self.robot
+        quat = robot.data.root_quat_w
+
+        lin_vel_b = quat_apply_inverse(quat, robot.data.root_lin_vel_w)
+        ang_vel_b = quat_apply_inverse(quat, robot.data.root_ang_vel_w)
+
+        gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
+        proj_gravity = quat_apply_inverse(quat, gravity)
+
+        leg_pos = robot.data.joint_pos[:, self.leg_indices]
+        leg_vel = robot.data.joint_vel[:, self.leg_indices]
+
+        gait_phase = torch.stack([
+            torch.sin(2 * np.pi * self.gait_phase),
+            torch.cos(2 * np.pi * self.gait_phase),
+        ], dim=-1)
+
+        torso_euler = quat_to_euler_xyz(quat)
+
+        obs = torch.cat([
+            lin_vel_b,  # 3
+            ang_vel_b,  # 3
+            proj_gravity,  # 3
+            leg_pos,  # 12
+            leg_vel,  # 12
+            self.height_cmd.unsqueeze(-1),  # 1
+            self.vel_cmd,  # 3
+            gait_phase,  # 2
+            self.prev_leg_actions,  # 12
+            self.torso_cmd,  # 3
+            torso_euler,  # 3
+        ], dim=-1)  # Total: 57
+
+        return obs.clamp(-10, 10).nan_to_num()
+
+    def get_arm_obs(self) -> torch.Tensor:
+        """Stage 5 arm observation - 29 dim."""
+        robot = self.robot
+        root_pos = robot.data.root_pos_w
+
+        arm_pos = robot.data.joint_pos[:, self.arm_indices]
+        arm_vel = robot.data.joint_vel[:, self.arm_indices]
+
+        ee_pos_world = self._compute_ee_pos()
+        ee_pos = ee_pos_world - root_pos
+        ee_quat = self._compute_ee_quat()
+
+        pos_err = self.target_pos - ee_pos
+        pos_dist = pos_err.norm(dim=-1, keepdim=True)
+        ori_err = quat_diff_rad(ee_quat, self.target_quat).unsqueeze(-1)
+
+        obs = torch.cat([
+            arm_pos,  # 5
+            arm_vel * 0.1,  # 5
+            self.target_pos,  # 3
+            self.target_quat,  # 4
+            ee_pos,  # 3
+            ee_quat,  # 4
+            pos_err,  # 3
+            ori_err,  # 1
+            pos_dist / 0.5,  # 1
+        ], dim=-1)  # Total: 29
+
+        return obs.clamp(-10, 10).nan_to_num()
+
+    def _compute_ee_pos(self) -> torch.Tensor:
+        palm_pos = self.robot.data.body_pos_w[:, self.palm_idx]
+        palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
+        forward = rotate_vector_by_quat(self.local_forward, palm_quat)
+        return palm_pos + EE_OFFSET * forward
+
+    def _compute_ee_quat(self) -> torch.Tensor:
+        return self.robot.data.body_quat_w[:, self.palm_idx]
+
+    # =========================================================================
+    # STANDARD INTERFACE
+    # =========================================================================
+
+    def _get_observations(self) -> dict:
+        ee_pos = self._compute_ee_pos()
+        ee_quat = self._compute_ee_quat()
+        self.ee_marker.write_root_pose_to_sim(torch.cat([ee_pos, ee_quat], dim=-1))
+
+        loco = self.get_loco_obs()
+        arm = self.get_arm_obs()
+        return {"policy": torch.cat([loco, arm], dim=-1)}
+
+    def _get_rewards(self) -> torch.Tensor:
+        ee_pos = self._compute_ee_pos() - self.robot.data.root_pos_w
+        dist = (ee_pos - self.target_pos).norm(dim=-1)
+
+        reached = dist < self.reach_threshold
+        reached_ids = torch.where(reached)[0]
+
+        if len(reached_ids) > 0:
+            self.total_reaches += len(reached_ids)
+            self._sample_target(reached_ids)
+
+        return torch.zeros(self.num_envs, device=self.device)
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        height = self.robot.data.root_pos_w[:, 2]
+        fallen = (height < 0.3) | (height > 1.2)
+
+        quat = self.robot.data.root_quat_w
+        gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
+        proj_grav = quat_apply_inverse(quat, gravity)
+        bad_orientation = proj_grav[:, :2].abs().max(dim=-1)[0] > 0.7
+
+        terminated = fallen | bad_orientation
+        truncated = self.episode_length_buf >= self.max_episode_length
+
+        return terminated, truncated
+
+    def _reset_idx(self, env_ids: torch.Tensor):
+        super()._reset_idx(env_ids)
+        if len(env_ids) == 0:
+            return
+
+        n = len(env_ids)
+
+        default_pos = torch.tensor([[0.0, 0.0, 0.8]], device=self.device).expand(n, -1).clone()
+        default_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(n, -1)
+
+        self.robot.write_root_pose_to_sim(torch.cat([default_pos, default_quat], dim=-1), env_ids)
+        self.robot.write_root_velocity_to_sim(torch.zeros(n, 6, device=self.device), env_ids)
+
+        default_joint = self.robot.data.default_joint_pos[env_ids]
+        self.robot.write_joint_state_to_sim(default_joint, torch.zeros_like(default_joint), None, env_ids)
+
+        self.gait_phase[env_ids] = torch.rand(n, device=self.device)
+        self.prev_leg_actions[env_ids] = 0
+        self.prev_arm_actions[env_ids] = 0
+
+        self._sample_target(env_ids)
+
+    def _sample_target(self, env_ids: torch.Tensor):
+        n = len(env_ids)
+
+        azimuth = torch.empty(n, device=self.device).uniform_(-1.57, 1.57)
+        radius = torch.empty(n, device=self.device).uniform_(
+            self.cfg.workspace_inner_radius, self.cfg.workspace_radius
+        )
+        height = torch.empty(n, device=self.device).uniform_(-0.15, 0.25)
+
+        x = -radius * torch.cos(azimuth)
+        y = radius * torch.sin(azimuth)
+        z = height
+
+        self.target_pos[env_ids, 0] = x + self.shoulder_offset[0, 0]
+        self.target_pos[env_ids, 1] = y + self.shoulder_offset[0, 1]
+        self.target_pos[env_ids, 2] = z + self.shoulder_offset[0, 2]
+
+        root_pos = self.robot.data.root_pos_w[env_ids]
+        target_world = root_pos + self.target_pos[env_ids]
+        identity_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(n, -1)
+
+        self.target_obj.write_root_pose_to_sim(
+            torch.cat([target_world, identity_quat], dim=-1), env_ids
+        )
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        self.actions = actions.clone()
+
+    def _apply_action(self):
+        leg_actions = self.actions[:, :12]
+        arm_actions = self.actions[:, 12:17]
+
+        joint_targets = self.robot.data.default_joint_pos.clone()
+        joint_targets[:, self.leg_indices] = self.default_leg + leg_actions * self.cfg.leg_action_scale
+
+        cur_arm = self.robot.data.joint_pos[:, self.arm_indices]
+        new_arm = torch.clamp(
+            cur_arm + arm_actions * self.cfg.arm_action_scale,
+            self.arm_lower, self.arm_upper
+        )
+        joint_targets[:, self.arm_indices] = new_arm
+
+        self.robot.set_joint_position_target(joint_targets)
+
+        self.gait_phase = (self.gait_phase + self.cfg.gait_frequency * 0.02) % 1.0
+        self.prev_leg_actions = leg_actions.clone()
+        self.prev_arm_actions = arm_actions.clone()
+
+    def set_velocity_command(self, vx: float, vy: float = 0.0, vyaw: float = 0.0):
+        self.vel_cmd[:, 0] = vx
+        self.vel_cmd[:, 1] = vy
+        self.vel_cmd[:, 2] = vyaw
+
+    def set_torso_command(self, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0):
+        self.torso_cmd[:, 0] = roll
+        self.torso_cmd[:, 1] = pitch
+        self.torso_cmd[:, 2] = yaw
+
+
+# ==============================================================================
+# POLICY NETWORKS
 # ==============================================================================
 
 class LocoActorCritic(nn.Module):
-    """Stage 3 network: 57 obs → 12 actions, hidden=[512, 256, 128]"""
+    """Stage 3 network: 57 obs → 12 actions"""
 
     def __init__(self, num_obs=57, num_act=12, hidden=[512, 256, 128]):
         super().__init__()
@@ -96,7 +608,7 @@ class LocoActorCritic(nn.Module):
 
 
 class ArmActor(nn.Module):
-    """Stage 5 network: 29 obs → 5 actions, hidden=[256, 128, 64]"""
+    """Stage 5 network: 29 obs → 5 actions"""
 
     def __init__(self, num_obs=29, num_act=5):
         super().__init__()
@@ -123,44 +635,34 @@ def main():
     print("=" * 70)
     print(f"Loco checkpoint: {args.loco_checkpoint}")
     print(f"Arm checkpoint: {args.arm_checkpoint}")
+    print(f"Commands: vx={args.vx}, pitch={np.rad2deg(args.pitch):.1f}°")
     print("=" * 70 + "\n")
 
     # =========================================================================
-    # LOAD LOCO POLICY (Stage 3)
+    # LOAD LOCO POLICY
     # =========================================================================
     print("[1/4] Loading LOCO policy (Stage 3)...")
 
     loco_ckpt = torch.load(args.loco_checkpoint, map_location=device, weights_only=False)
-
     loco_net = LocoActorCritic(57, 12).to(device)
 
     if "actor_critic" in loco_ckpt:
         loco_net.load_state_dict(loco_ckpt["actor_critic"])
-        print("      Loaded from 'actor_critic' key")
     else:
         loco_net.load_state_dict(loco_ckpt)
-        print("      Loaded directly")
 
     loco_net.eval()
-
-    if "best_reward" in loco_ckpt:
-        print(f"      Best reward: {loco_ckpt['best_reward']:.2f}")
-    if "iteration" in loco_ckpt:
-        print(f"      Iteration: {loco_ckpt['iteration']}")
-
     print("      ✓ LOCO policy loaded!")
 
     # =========================================================================
-    # LOAD ARM POLICY (Stage 5)
+    # LOAD ARM POLICY
     # =========================================================================
     print("[2/4] Loading ARM policy (Stage 5)...")
 
     arm_ckpt = torch.load(args.arm_checkpoint, map_location=device, weights_only=False)
-
     arm_net = ArmActor(29, 5).to(device)
 
     if "model_state_dict" in arm_ckpt:
-        # Extract actor weights
         state_dict = arm_ckpt["model_state_dict"]
         actor_state = {}
         for key, value in state_dict.items():
@@ -170,12 +672,8 @@ def main():
 
         if actor_state:
             arm_net.net.load_state_dict(actor_state)
-            print(f"      Loaded {len(actor_state)} actor weights")
-        else:
-            print("      WARNING: No actor weights found!")
     else:
         arm_net.load_state_dict(arm_ckpt)
-        print("      Loaded directly")
 
     arm_net.eval()
     print("      ✓ ARM policy loaded!")
@@ -185,16 +683,14 @@ def main():
     # =========================================================================
     print("[3/4] Creating environment...")
 
-    cfg = G1LocoManipEnvCfg()
+    cfg = DualPlayEnvCfg()
     cfg.scene.num_envs = args.num_envs
 
-    env = G1LocoManipEnv(cfg)
+    env = DualPlayEnv(cfg)
 
-    # Set commands
     env.set_velocity_command(vx=args.vx)
     env.set_torso_command(pitch=args.pitch)
 
-    print(f"      Commands: vx={args.vx}, pitch={np.rad2deg(args.pitch):.1f}°")
     print("      ✓ Environment created!")
 
     # =========================================================================
@@ -205,23 +701,22 @@ def main():
 
     obs, _ = env.reset()
 
-    total_reaches = 0
     prev_reaches = 0
 
     with torch.no_grad():
         for step in range(args.steps):
             # Get separate observations
-            loco_obs = env.get_loco_obs()  # 57 dim
-            arm_obs = env.get_arm_obs()  # 29 dim
+            loco_obs = env.get_loco_obs()
+            arm_obs = env.get_arm_obs()
 
-            # Get actions from each policy
-            leg_actions = loco_net.act(loco_obs, deterministic=True)  # 12
-            arm_actions = arm_net(arm_obs)  # 5
+            # Get actions
+            leg_actions = loco_net.act(loco_obs, deterministic=True)
+            arm_actions = arm_net(arm_obs)
 
-            # Combine actions
-            combined_actions = torch.cat([leg_actions, arm_actions], dim=-1)  # 17
+            # Combine
+            combined_actions = torch.cat([leg_actions, arm_actions], dim=-1)
 
-            # Step environment
+            # Step
             obs, reward, terminated, truncated, info = env.step(combined_actions)
 
             # Check reaches
