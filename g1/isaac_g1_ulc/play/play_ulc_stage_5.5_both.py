@@ -134,32 +134,43 @@ class LocoActorCritic(nn.Module):
 
 
 class ArmActorCritic(nn.Module):
-    """Stage 5 Arm Policy - 29 obs -> 5 actions"""
+    """Stage 5 Arm Policy - 29 obs -> 5 actions
+    Checkpoint yapısına uygun: Linear + ELU (LayerNorm yok)
+    """
 
     def __init__(self, num_obs=29, num_act=5, hidden=[256, 128, 64]):
         super().__init__()
-        layers = []
-        prev = num_obs
-        for h in hidden:
-            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
-            prev = h
-        layers.append(nn.Linear(prev, num_act))
-        self.actor = nn.Sequential(*layers)
 
-        layers = []
-        prev = num_obs
-        for h in hidden:
-            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
-            prev = h
-        layers.append(nn.Linear(prev, 1))
-        self.critic = nn.Sequential(*layers)
-        self.log_std = nn.Parameter(torch.zeros(num_act))
+        # Actor: Linear -> ELU -> Linear -> ELU -> Linear -> ELU -> Linear
+        self.actor = nn.Sequential(
+            nn.Linear(num_obs, hidden[0]),  # 0
+            nn.ELU(),  # 1
+            nn.Linear(hidden[0], hidden[1]),  # 2
+            nn.ELU(),  # 3
+            nn.Linear(hidden[1], hidden[2]),  # 4
+            nn.ELU(),  # 5
+            nn.Linear(hidden[2], num_act),  # 6
+        )
+
+        # Critic: same structure -> 1 output
+        self.critic = nn.Sequential(
+            nn.Linear(num_obs, hidden[0]),
+            nn.ELU(),
+            nn.Linear(hidden[0], hidden[1]),
+            nn.ELU(),
+            nn.Linear(hidden[1], hidden[2]),
+            nn.ELU(),
+            nn.Linear(hidden[2], 1),
+        )
+
+        # std instead of log_std
+        self.std = nn.Parameter(torch.zeros(num_act))
 
     def act(self, x, deterministic=True):
         mean = self.actor(x)
         if deterministic:
             return mean
-        std = self.log_std.clamp(-2, 1).exp()
+        std = self.std.clamp(-2, 1).exp()
         return torch.distributions.Normal(mean, std).sample()
 
 
