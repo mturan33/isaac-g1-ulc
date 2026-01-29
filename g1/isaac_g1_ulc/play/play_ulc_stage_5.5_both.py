@@ -682,8 +682,16 @@ def main():
             target_world = root_pos + quat_apply(root_quat, env.target_pos_body)
             dist = torch.norm(ee_pos - target_world, dim=-1).mean().item()
 
+            # Debug coordinates
+            ee_local = ee_pos[0] - root_pos[0]
+            target_local = env.target_pos_body[0]
+
             print(
                 f"[Step {step + 1:5d}] H={height:.3f}m | Vx={vx:.2f}m/s | EE dist={dist:.3f}m | Reaches={env.reach_count}")
+            print(f"    Target (body): [{target_local[0]:.3f}, {target_local[1]:.3f}, {target_local[2]:.3f}]")
+            print(f"    EE (body):     [{ee_local[0]:.3f}, {ee_local[1]:.3f}, {ee_local[2]:.3f}]")
+            print(
+                f"    Diff:          [{(target_local[0] - ee_local[0]):.3f}, {(target_local[1] - ee_local[1]):.3f}, {(target_local[2] - ee_local[2]):.3f}]")
 
     print("=" * 70)
     print("DUAL POLICY PLAY COMPLETE - V3")
