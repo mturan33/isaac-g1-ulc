@@ -14,17 +14,6 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-# Now import from envs
-from envs.g1_locomanip_env import (
-    G1Dex1Stage6Env,
-    G1Dex1Stage6EnvCfg,
-    CURRICULUM_LEVELS,
-    G1_LEG_JOINT_NAMES,
-    G1_RIGHT_ARM_JOINT_NAMES,
-    G1_RIGHT_GRIPPER_JOINT_NAMES,
-    G1_DEFAULT_JOINT_POS,
-)
-
 import gymnasium as gym
 
 # Register environment
