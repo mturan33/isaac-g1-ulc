@@ -662,17 +662,21 @@ def create_env(num_envs, device):
         def _update_workspace_spheres(self):
             """Update workspace visualization spheres - Stage 5 style
 
-            Robot coordinate frame:
-            - +X: Forward (robot facing direction)
-            - -Y: Right side (where right arm is)
-            - +Z: Up
+            Looking at the screenshot from above:
+            - Robot faces DOWN in the image (toward -Y in world? or +X?)
+            - Right arm is on the robot's RIGHT side
 
-            Workspace should be in FRONT and to the RIGHT of the robot.
+            Let's just place spheres relative to where the target actually spawns.
+            Target spawns at: shoulder + direction where direction[:, 0] is made negative (front)
             """
             import math
 
             root_pos = self.robot.data.root_pos_w
-            shoulder_world = root_pos + quat_apply(self.robot.data.root_quat_w, self.shoulder_offset.unsqueeze(0))
+            root_quat = self.robot.data.root_quat_w
+
+            # Shoulder in world frame
+            shoulder_local = self.shoulder_offset.unsqueeze(0)
+            shoulder_world = root_pos + quat_apply(root_quat, shoulder_local)
 
             # Shoulder marker
             identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device)
@@ -681,66 +685,89 @@ def create_env(num_envs, device):
                 orientations=identity_quat
             )
 
-            # Generate wireframe points
             shoulder_0 = shoulder_world[0]
             n = self.num_wireframe_points
             angles = torch.linspace(0, 2 * math.pi, n + 1, device=self.device)[:-1]
 
-            # Outer workspace (blue) - max workspace radius
+            # The target sampling uses:
+            # direction[:, 0] = -torch.abs(direction[:, 0])  -> X is NEGATIVE (front in body frame)
+            # So in body frame: -X is front, -Y is right
+            # We need to transform these to world frame
+
+            # For now, let's draw full hemispheres and see
+            # Front = -X in body frame, Right = -Y in body frame
+
             outer_points = []
-            radius = 0.40  # max workspace
+            radius = 0.40
+
             for angle in angles:
-                # XY plane (horizontal circle) - FRONT hemisphere (+X direction)
-                x = shoulder_0[0] + radius * torch.cos(angle)
-                y = shoulder_0[1] + radius * torch.sin(angle)
-                z = shoulder_0[2]
-                # Only keep points in front (+X) and right (-Y) quadrant
-                if x >= shoulder_0[0] - 0.05:  # Front hemisphere
-                    outer_points.append([x.item(), y.item(), z.item()])
+                # Horizontal circle (XY plane at shoulder height)
+                # Front-right quadrant: -X, -Y in body frame
+                local_x = -radius * torch.abs(torch.cos(angle))  # Always negative (front)
+                local_y = -radius * torch.sin(angle)  # Can be positive or negative
+                local_z = torch.tensor(0.0, device=self.device)
 
-                # XZ plane (vertical circle in front)
-                x = shoulder_0[0] + radius * torch.cos(angle)
-                y = shoulder_0[1]
-                z = shoulder_0[2] + radius * torch.sin(angle)
-                if x >= shoulder_0[0] - 0.05:  # Front hemisphere
-                    outer_points.append([x.item(), y.item(), z.item()])
+                # Only right side (-Y)
+                if local_y <= 0.05:
+                    local_pt = torch.stack([local_x, local_y, local_z])
+                    world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
+                    outer_points.append(world_pt.tolist())
 
-                # YZ plane (vertical circle to the side) - only right side
-                x = shoulder_0[0]
-                y = shoulder_0[1] - radius * torch.cos(angle)  # -Y is right
-                z = shoulder_0[2] + radius * torch.sin(angle)
-                if y <= shoulder_0[1] + 0.05:  # Right side (-Y)
-                    outer_points.append([x.item(), y.item(), z.item()])
+                # Vertical circle (XZ plane)
+                local_x = -radius * torch.abs(torch.cos(angle))
+                local_y = torch.tensor(0.0, device=self.device)
+                local_z = radius * torch.sin(angle)
+
+                local_pt = torch.stack([local_x, local_y, local_z])
+                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
+                outer_points.append(world_pt.tolist())
+
+                # Vertical circle (YZ plane) - right side only
+                local_x = torch.tensor(0.0, device=self.device)
+                local_y = -radius * torch.abs(torch.cos(angle))  # Always -Y (right)
+                local_z = radius * torch.sin(angle)
+
+                local_pt = torch.stack([local_x, local_y, local_z])
+                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
+                outer_points.append(world_pt.tolist())
 
             if outer_points:
                 outer_pos = torch.tensor(outer_points, device=self.device)
                 outer_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(outer_points), -1)
                 self.outer_markers.visualize(translations=outer_pos, orientations=outer_quat)
 
-            # Inner exclusion zone (red) - minimum reach
+            # Inner exclusion zone (red)
             inner_points = []
-            radius = 0.18  # inner radius
+            radius = 0.18
+
             for angle in angles:
-                # XY plane - front hemisphere
-                x = shoulder_0[0] + radius * torch.cos(angle)
-                y = shoulder_0[1] + radius * torch.sin(angle)
-                z = shoulder_0[2]
-                if x >= shoulder_0[0] - 0.05:
-                    inner_points.append([x.item(), y.item(), z.item()])
+                # Horizontal - front right
+                local_x = -radius * torch.abs(torch.cos(angle))
+                local_y = -radius * torch.sin(angle)
+                local_z = torch.tensor(0.0, device=self.device)
 
-                # XZ plane - front
-                x = shoulder_0[0] + radius * torch.cos(angle)
-                y = shoulder_0[1]
-                z = shoulder_0[2] + radius * torch.sin(angle)
-                if x >= shoulder_0[0] - 0.05:
-                    inner_points.append([x.item(), y.item(), z.item()])
+                if local_y <= 0.05:
+                    local_pt = torch.stack([local_x, local_y, local_z])
+                    world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
+                    inner_points.append(world_pt.tolist())
 
-                # YZ plane - right side
-                x = shoulder_0[0]
-                y = shoulder_0[1] - radius * torch.cos(angle)
-                z = shoulder_0[2] + radius * torch.sin(angle)
-                if y <= shoulder_0[1] + 0.05:
-                    inner_points.append([x.item(), y.item(), z.item()])
+                # Vertical XZ
+                local_x = -radius * torch.abs(torch.cos(angle))
+                local_y = torch.tensor(0.0, device=self.device)
+                local_z = radius * torch.sin(angle)
+
+                local_pt = torch.stack([local_x, local_y, local_z])
+                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
+                inner_points.append(world_pt.tolist())
+
+                # Vertical YZ - right
+                local_x = torch.tensor(0.0, device=self.device)
+                local_y = -radius * torch.abs(torch.cos(angle))
+                local_z = radius * torch.sin(angle)
+
+                local_pt = torch.stack([local_x, local_y, local_z])
+                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
+                inner_points.append(world_pt.tolist())
 
             if inner_points:
                 inner_pos = torch.tensor(inner_points, device=self.device)
