@@ -39,7 +39,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -180,7 +180,7 @@ class ArmActorCritic(nn.Module):
 
 @configclass
 class PlaySceneCfg(InteractiveSceneCfg):
-    """Stage 3 ile aynı scene config"""
+    """Stage 3 ile aynı scene config + markers"""
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -236,6 +236,30 @@ class PlaySceneCfg(InteractiveSceneCfg):
                 damping=10.0,
             ),
         },
+    )
+
+    # Target marker (yellow sphere)
+    target = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/Target",
+        spawn=sim_utils.SphereCfg(
+            radius=0.05,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, -0.3, 1.0)),
+    )
+
+    # EE marker (green sphere)
+    ee_marker = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/EEMarker",
+        spawn=sim_utils.SphereCfg(
+            radius=0.03,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, -0.2, 0.8)),
     )
 
 
@@ -324,6 +348,10 @@ class DualPlayEnv(DirectRLEnv):
         print(f"[DualPlayEnv] Leg joints: {len(self.leg_idx)}")
         print(f"[DualPlayEnv] Arm joints: {len(self.arm_idx)}")
         print(f"[DualPlayEnv] Palm idx: {self.palm_idx}")
+
+        # Get marker references
+        self.target_obj = self.scene["target"]
+        self.ee_marker = self.scene["ee_marker"]
 
     @property
     def robot(self):
@@ -472,12 +500,27 @@ class DualPlayEnv(DirectRLEnv):
         target_world = root_pos + quat_apply(root_quat, self.target_pos_body)
         dist = torch.norm(ee_pos - target_world, dim=-1)
 
+        # Update visual markers
+        self._update_markers(ee_pos, target_world)
+
         reached = dist < self.reach_threshold
         if reached.any():
             reached_ids = torch.where(reached)[0]
             self.reach_count += len(reached_ids)
             self._sample_targets(reached_ids)
             print(f"[Step {self.episode_length_buf[0].item():5d}] 🎯 REACH #{self.reach_count}!")
+
+    def _update_markers(self, ee_pos, target_world):
+        """Update visual marker positions"""
+        # Target marker (yellow)
+        target_pose = torch.cat(
+            [target_world, torch.tensor([[0, 0, 0, 1]], device=self.device).expand(self.num_envs, -1)], dim=-1)
+        self.target_obj.write_root_pose_to_sim(target_pose)
+
+        # EE marker (green)
+        ee_pose = torch.cat([ee_pos, torch.tensor([[0, 0, 0, 1]], device=self.device).expand(self.num_envs, -1)],
+                            dim=-1)
+        self.ee_marker.write_root_pose_to_sim(ee_pose)
 
     def _apply_action(self):
         pass
