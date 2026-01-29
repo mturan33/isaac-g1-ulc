@@ -339,9 +339,12 @@ class DualPlayEnv(DirectRLEnv):
         self.prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
         self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
 
-        # Arm target (body frame)
+        # Arm target (body frame) - will be initialized on first reset
         self.target_pos_body = torch.zeros(self.num_envs, 3, device=self.device)
-        self._sample_targets(torch.arange(self.num_envs, device=self.device))
+        # Default target position (in front of robot)
+        self.target_pos_body[:, 0] = 0.3  # forward
+        self.target_pos_body[:, 1] = -0.2  # right
+        self.target_pos_body[:, 2] = 0.2  # up
 
         # Reach tracking
         self.reach_count = 0
@@ -364,30 +367,8 @@ class DualPlayEnv(DirectRLEnv):
         return quat_to_euler_xyz(quat)
 
     def _sample_targets(self, env_ids):
-        """Sample arm targets for locomotion robot (+X forward, -Y right)"""
-        n = len(env_ids)
-        if n == 0:
-            return
-
-        # Shoulder offset in body frame (right shoulder)
-        # For walking robot: +X is forward, -Y is right
-        shoulder_offset = torch.tensor([0.0, -0.174, 0.259], device=self.device)
-
-        # Sample in front-right hemisphere
-        # Azimuth: -30° to +60° from forward direction
-        azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)
-        radius = torch.empty(n, device=self.device).uniform_(0.20, 0.35)
-        height = torch.empty(n, device=self.device).uniform_(-0.10, 0.15)
-
-        # +X forward, -Y right (locomotion frame)
-        x = radius * torch.cos(azimuth)  # positive = forward
-        y = -radius * torch.sin(azimuth)  # negative = right side
-        z = height
-
-        # Target relative to root (shoulder + offset)
-        self.target_pos_body[env_ids, 0] = x + shoulder_offset[0]
-        self.target_pos_body[env_ids, 1] = y + shoulder_offset[1]
-        self.target_pos_body[env_ids, 2] = z + shoulder_offset[2]
+        """Sample targets and update markers (called during simulation)"""
+        self._sample_target_positions(env_ids)
 
     def _compute_ee_pos(self):
         """Get end-effector world position"""
@@ -589,8 +570,30 @@ class DualPlayEnv(DirectRLEnv):
         self.prev_leg_actions[env_ids] = 0
         self.prev_arm_actions[env_ids] = 0
 
-        # Sample new targets
-        self._sample_targets(env_ids)
+        # Sample new target positions (no marker update here - done in _pre_physics_step)
+        self._sample_target_positions(env_ids)
+
+    def _sample_target_positions(self, env_ids):
+        """Sample target positions without updating markers"""
+        n = len(env_ids)
+        if n == 0:
+            return
+
+        # Shoulder offset in body frame (right shoulder)
+        shoulder_offset = torch.tensor([0.0, -0.174, 0.259], device=self.device)
+
+        # Sample in front-right hemisphere
+        azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)
+        radius = torch.empty(n, device=self.device).uniform_(0.20, 0.35)
+        height = torch.empty(n, device=self.device).uniform_(-0.10, 0.15)
+
+        x = radius * torch.cos(azimuth)
+        y = -radius * torch.sin(azimuth)
+        z = height
+
+        self.target_pos_body[env_ids, 0] = x + shoulder_offset[0]
+        self.target_pos_body[env_ids, 1] = y + shoulder_offset[1]
+        self.target_pos_body[env_ids, 2] = z + shoulder_offset[2]
 
 
 # ==============================================================================
