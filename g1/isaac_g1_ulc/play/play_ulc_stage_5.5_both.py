@@ -242,9 +242,11 @@ class DualPlayEnvCfg(DirectRLEnvCfg):
 
     decimation = 4
     episode_length_s = 20.0
-    num_actions = 17
-    num_observations = 86
-    num_states = 0
+
+    # Gymnasium spaces (required in Isaac Lab 2.3+)
+    action_space = 17
+    observation_space = 86
+    state_space = 0
 
     sim = SimulationCfg(
         dt=1 / 200,
