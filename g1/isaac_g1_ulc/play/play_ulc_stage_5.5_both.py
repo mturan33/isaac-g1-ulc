@@ -364,32 +364,30 @@ class DualPlayEnv(DirectRLEnv):
         return quat_to_euler_xyz(quat)
 
     def _sample_targets(self, env_ids):
-        """Sample arm targets - Stage 5 compatible (shoulder-relative)"""
+        """Sample arm targets for locomotion robot (+X forward, -Y right)"""
         n = len(env_ids)
         if n == 0:
             return
 
-        # Stage 5 uses shoulder-relative coordinates
-        # shoulder_center = [0.0, -0.174, 0.259] relative to root
-        shoulder_offset = SHOULDER_OFFSET.to(self.device)
+        # Shoulder offset in body frame (right shoulder)
+        # For walking robot: +X is forward, -Y is right
+        shoulder_offset = torch.tensor([0.0, -0.174, 0.259], device=self.device)
 
-        # Random direction (front hemisphere: -X is forward in Stage 5)
-        direction = torch.randn((n, 3), device=self.device)
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-        direction[:, 0] = -torch.abs(direction[:, 0])  # -X is forward
+        # Sample in front-right hemisphere
+        # Azimuth: -30° to +60° from forward direction
+        azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)
+        radius = torch.empty(n, device=self.device).uniform_(0.20, 0.35)
+        height = torch.empty(n, device=self.device).uniform_(-0.10, 0.15)
 
-        # Random radius in workspace
-        inner = 0.18
-        outer = 0.35
-        distance = inner + torch.rand((n, 1), device=self.device) * (outer - inner)
+        # +X forward, -Y right (locomotion frame)
+        x = radius * torch.cos(azimuth)  # positive = forward
+        y = -radius * torch.sin(azimuth)  # negative = right side
+        z = height
 
-        # Target relative to shoulder
-        target_rel_shoulder = direction * distance
-        target_rel_shoulder[:, 2] = torch.clamp(target_rel_shoulder[:, 2], -0.15, 0.25)
-
-        # Store as root-relative (for observation)
-        self.target_pos_body[env_ids] = shoulder_offset + target_rel_shoulder.squeeze(
-            -1) if distance.dim() > 1 else shoulder_offset + target_rel_shoulder
+        # Target relative to root (shoulder + offset)
+        self.target_pos_body[env_ids, 0] = x + shoulder_offset[0]
+        self.target_pos_body[env_ids, 1] = y + shoulder_offset[1]
+        self.target_pos_body[env_ids, 2] = z + shoulder_offset[2]
 
     def _compute_ee_pos(self):
         """Get end-effector world position"""
@@ -433,30 +431,47 @@ class DualPlayEnv(DirectRLEnv):
         return obs.clamp(-10, 10).nan_to_num()
 
     def _get_arm_obs(self) -> torch.Tensor:
-        """Stage 5 arm observations (29 dim) - EXACT MATCH"""
+        """Stage 5 arm observations (29 dim)
+
+        Stage 5 robot havada asılı, -X forward.
+        Locomotion robot yerde, +X forward.
+
+        Observation'ı Stage 5 formatında vermemiz lazım ki trained policy çalışsın.
+        Bu yüzden koordinatları Stage 5 frame'ine dönüştürüyoruz.
+        """
         robot = self.robot
         root_pos = robot.data.root_pos_w
 
-        # Arm joint states
+        # Arm joint states (same in both frames)
         joint_pos = robot.data.joint_pos[:, self.arm_idx]
         joint_vel = robot.data.joint_vel[:, self.arm_idx]
 
-        # EE position relative to root (NOT body frame transformed)
-        ee_pos = self._compute_ee_pos() - root_pos
+        # EE position relative to root
+        ee_pos_world = self._compute_ee_pos()
+        ee_pos_local = ee_pos_world - root_pos
+
+        # Convert to Stage 5 frame: flip X axis (-X is forward in Stage 5)
+        ee_pos_stage5 = ee_pos_local.clone()
+        ee_pos_stage5[:, 0] = -ee_pos_local[:, 0]  # Flip X
+        ee_pos_stage5[:, 1] = -ee_pos_local[:, 1]  # Flip Y (right side is +Y in Stage 5)
+
+        # EE quaternion
         ee_quat = robot.data.body_quat_w[:, self.palm_idx]
 
-        # Target is in shoulder-relative local frame
-        # But for dual policy, target_pos_body is already local
-        target_pos = self.target_pos_body
+        # Target in Stage 5 frame
+        target_local = self.target_pos_body.clone()
+        target_stage5 = target_local.clone()
+        target_stage5[:, 0] = -target_local[:, 0]  # Flip X
+        target_stage5[:, 1] = -target_local[:, 1]  # Flip Y
+
+        # Target orientation (fixed for now)
         target_quat = torch.tensor([[0.707, 0.707, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
-        # Position error and distance
-        pos_err = target_pos - ee_pos
+        # Position error in Stage 5 frame
+        pos_err = target_stage5 - ee_pos_stage5
         pos_dist = pos_err.norm(dim=-1, keepdim=True)
 
-        # Orientation error (placeholder - palm vs target)
-        from isaaclab.utils.math import quat_mul, quat_conjugate
-        # Simple angular diff
+        # Orientation error
         dot = torch.sum(ee_quat * target_quat, dim=-1).abs().clamp(-1, 1)
         ori_err = (2.0 * torch.acos(dot)).unsqueeze(-1)
 
@@ -464,11 +479,11 @@ class DualPlayEnv(DirectRLEnv):
         obs = torch.cat([
             joint_pos,  # 5 - arm joint positions
             joint_vel * 0.1,  # 5 - arm joint velocities (scaled!)
-            target_pos,  # 3 - target position (local)
+            target_stage5,  # 3 - target position (Stage 5 frame)
             target_quat,  # 4 - target orientation
-            ee_pos,  # 3 - EE position (local)
+            ee_pos_stage5,  # 3 - EE position (Stage 5 frame)
             ee_quat,  # 4 - EE orientation
-            pos_err,  # 3 - position error
+            pos_err,  # 3 - position error (Stage 5 frame)
             ori_err,  # 1 - orientation error
             pos_dist / 0.5,  # 1 - normalized distance
         ], dim=-1)  # Total: 5+5+3+4+3+4+3+1+1 = 29
