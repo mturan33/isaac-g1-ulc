@@ -397,56 +397,57 @@ class DualPlayEnv(DirectRLEnv):
         Locomotion robot yerde, +X forward.
 
         Observation'ı Stage 5 formatında vermemiz lazım ki trained policy çalışsın.
-        Bu yüzden koordinatları Stage 5 frame'ine dönüştürüyoruz.
+
+        DENEY: Frame dönüşümü olmadan dene - belki policy body frame'de de çalışır.
         """
         robot = self.robot
         root_pos = robot.data.root_pos_w
         root_quat = robot.data.root_quat_w
 
-        # Arm joint states (same in both frames)
+        # Arm joint states
         joint_pos = robot.data.joint_pos[:, self.arm_idx]
         joint_vel = robot.data.joint_vel[:, self.arm_idx]
 
-        # EE position in BODY FRAME (must apply inverse rotation!)
+        # EE position in BODY FRAME (correct transformation)
         ee_pos_world = self._compute_ee_pos()
         ee_pos_body = quat_apply_inverse(root_quat, ee_pos_world - root_pos)
 
-        # Convert to Stage 5 frame: flip X and Y axes
-        # Stage 5: -X is forward, +Y is right
-        # Locomotion: +X is forward, -Y is right
-        ee_pos_stage5 = ee_pos_body.clone()
-        ee_pos_stage5[:, 0] = -ee_pos_body[:, 0]  # Flip X
-        ee_pos_stage5[:, 1] = -ee_pos_body[:, 1]  # Flip Y
-
-        # EE quaternion (keep in world for now - orientation matching is secondary)
-        ee_quat = robot.data.body_quat_w[:, self.palm_idx]
-
-        # Target is already in body frame, convert to Stage 5 frame
+        # Target is already in body frame
         target_body = self.target_pos_body.clone()
-        target_stage5 = target_body.clone()
-        target_stage5[:, 0] = -target_body[:, 0]  # Flip X
-        target_stage5[:, 1] = -target_body[:, 1]  # Flip Y
+
+        # NO FRAME FLIP - use body frame directly
+        # Locomotion: +X forward, -Y right, +Z up
+        ee_pos_obs = ee_pos_body
+        target_obs = target_body
+
+        # EE quaternion in body frame
+        ee_quat_world = robot.data.body_quat_w[:, self.palm_idx]
+        # Convert to body frame (simplified - just use world for now)
+        ee_quat = ee_quat_world
+
+        # Target orientation (fixed - palm down)
+        target_quat = torch.tensor([[0.707, 0.707, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
         # Target orientation (fixed for now)
         target_quat = torch.tensor([[0.707, 0.707, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
-        # Position error in Stage 5 frame
-        pos_err = target_stage5 - ee_pos_stage5
+        # Position error in body frame
+        pos_err = target_obs - ee_pos_obs
         pos_dist = pos_err.norm(dim=-1, keepdim=True)
 
         # Orientation error
         dot = torch.sum(ee_quat * target_quat, dim=-1).abs().clamp(-1, 1)
         ori_err = (2.0 * torch.acos(dot)).unsqueeze(-1)
 
-        # BUILD OBS - EXACT Stage 5 ORDER
+        # BUILD OBS - EXACT Stage 5 ORDER but body frame values
         obs = torch.cat([
             joint_pos,  # 5 - arm joint positions
             joint_vel * 0.1,  # 5 - arm joint velocities (scaled!)
-            target_stage5,  # 3 - target position (Stage 5 frame)
+            target_obs,  # 3 - target position (body frame)
             target_quat,  # 4 - target orientation
-            ee_pos_stage5,  # 3 - EE position (Stage 5 frame)
+            ee_pos_obs,  # 3 - EE position (body frame)
             ee_quat,  # 4 - EE orientation
-            pos_err,  # 3 - position error (Stage 5 frame)
+            pos_err,  # 3 - position error (body frame)
             ori_err,  # 1 - orientation error
             pos_dist / 0.5,  # 1 - normalized distance
         ], dim=-1)  # Total: 5+5+3+4+3+4+3+1+1 = 29
