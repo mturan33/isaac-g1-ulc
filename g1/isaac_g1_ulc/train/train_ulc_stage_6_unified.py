@@ -233,9 +233,9 @@ class LocoActor(nn.Module):
 
 
 class ArmActor(nn.Module):
-    """Arm policy: 26 obs → 5 arm actions (simplified obs)"""
+    """Arm policy: 28 obs → 5 arm actions"""
 
-    def __init__(self, num_obs=26, num_act=5, hidden=[256, 128, 64]):
+    def __init__(self, num_obs=28, num_act=5, hidden=[256, 128, 64]):
         super().__init__()
 
         layers = []
@@ -270,7 +270,7 @@ class ArmActor(nn.Module):
 class UnifiedCritic(nn.Module):
     """Unified critic for both policies"""
 
-    def __init__(self, num_obs=83, hidden=[512, 256, 128]):
+    def __init__(self, num_obs=85, hidden=[512, 256, 128]):
         super().__init__()
 
         layers = []
@@ -296,7 +296,7 @@ class UnifiedCritic(nn.Module):
 class UnifiedActorCritic(nn.Module):
     """Combined network for PPO training"""
 
-    def __init__(self, loco_obs=57, arm_obs=26, loco_act=12, arm_act=5):
+    def __init__(self, loco_obs=57, arm_obs=28, loco_act=12, arm_act=5):
         super().__init__()
 
         self.loco_actor = LocoActor(loco_obs, loco_act)
@@ -670,7 +670,10 @@ def create_env(num_envs, device):
             return obs.clamp(-10, 10).nan_to_num()
 
         def get_arm_obs(self) -> torch.Tensor:
-            """Arm observations (26 dim) - body frame"""
+            """Arm observations (28 dim) - body frame
+
+            5 joint_pos + 5 joint_vel + 3 target + 3 ee + 3 pos_err + 1 dist + 2 lin_vel + 1 ang_vel + 5 prev_actions = 28
+            """
             robot = self.robot
             root_pos = robot.data.root_pos_w
             root_quat = robot.data.root_quat_w
@@ -955,7 +958,7 @@ def train():
     env = create_env(args_cli.num_envs, device)
 
     print(f"[INFO] Creating unified network...")
-    net = UnifiedActorCritic(loco_obs=57, arm_obs=26, loco_act=12, arm_act=5).to(device)
+    net = UnifiedActorCritic(loco_obs=57, arm_obs=28, loco_act=12, arm_act=5).to(device)
 
     # Transfer Stage 3 weights
     transfer_stage3_weights(net, args_cli.stage3_checkpoint, device)
@@ -1056,7 +1059,7 @@ def train():
         # PPO update
         update_info = ppo.update(
             loco_obs_buf.view(-1, 57),
-            arm_obs_buf.view(-1, 26),
+            arm_obs_buf.view(-1, 28),
             loco_act_buf.view(-1, 12),
             arm_act_buf.view(-1, 5),
             logp_buf.view(-1),
