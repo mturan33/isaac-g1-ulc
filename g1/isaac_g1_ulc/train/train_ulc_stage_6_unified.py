@@ -660,119 +660,113 @@ def create_env(num_envs, device):
             self._markers_initialized = True
 
         def _update_workspace_spheres(self):
-            """Update workspace visualization spheres - Stage 5 style
+            """Update workspace visualization in BODY FRAME
 
-            Looking at the screenshot from above:
-            - Robot faces DOWN in the image (toward -Y in world? or +X?)
-            - Right arm is on the robot's RIGHT side
+            Body frame convention:
+            - +X = Robot FRONT (facing direction)
+            - -Y = Robot RIGHT (right arm side)
+            - +Z = Up
 
-            Let's just place spheres relative to where the target actually spawns.
-            Target spawns at: shoulder + direction where direction[:, 0] is made negative (front)
+            Draw hemisphere centered on right shoulder, in front-right quadrant.
+            All points defined in body frame, then transformed to world frame.
             """
             import math
 
-            root_pos = self.robot.data.root_pos_w
-            root_quat = self.robot.data.root_quat_w
+            root_pos = self.robot.data.root_pos_w[0]  # [3]
+            root_quat = self.robot.data.root_quat_w[0]  # [4]
 
-            # Shoulder in world frame
-            shoulder_local = self.shoulder_offset.unsqueeze(0)
-            shoulder_world = root_pos + quat_apply(root_quat, shoulder_local)
+            # Shoulder in body frame
+            shoulder_body = self.shoulder_offset  # [3] - already in body frame
 
-            # Shoulder marker
+            # Transform shoulder to world for marker
+            shoulder_world = root_pos + quat_apply(root_quat.unsqueeze(0), shoulder_body.unsqueeze(0)).squeeze(0)
+
+            # Shoulder marker (white)
             identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device)
             self.shoulder_marker_vis.visualize(
-                translations=shoulder_world[:1],
+                translations=shoulder_world.unsqueeze(0),
                 orientations=identity_quat
             )
 
-            shoulder_0 = shoulder_world[0]
-            n = self.num_wireframe_points
-            angles = torch.linspace(0, 2 * math.pi, n + 1, device=self.device)[:-1]
+            n = 16  # points per arc
 
-            # The target sampling uses:
-            # direction[:, 0] = -torch.abs(direction[:, 0])  -> X is NEGATIVE (front in body frame)
-            # So in body frame: -X is front, -Y is right
-            # We need to transform these to world frame
+            def body_to_world(local_pts):
+                """Transform body frame points to world frame"""
+                # local_pts: [N, 3] in body frame relative to shoulder
+                # Add shoulder offset, then rotate by root_quat, then add root_pos
+                pts_from_root = local_pts + shoulder_body.unsqueeze(0)  # [N, 3]
+                pts_world = root_pos.unsqueeze(0) + quat_apply(
+                    root_quat.unsqueeze(0).expand(len(local_pts), -1),
+                    pts_from_root
+                )
+                return pts_world
 
-            # For now, let's draw full hemispheres and see
-            # Front = -X in body frame, Right = -Y in body frame
+            # ===== OUTER workspace (blue) - 40cm radius =====
+            outer_local = []
+            R = 0.40
 
-            outer_points = []
-            radius = 0.40
+            # Arc 1: Horizontal half-circle in XY plane (front hemisphere, +X direction)
+            # theta: 0 to pi, so cos goes from 1 to -1, sin goes 0 to 0 via 1
+            # We want +X (front), so x = R*cos(theta) where theta from -pi/2 to pi/2
+            for i in range(n + 1):
+                theta = -math.pi/2 + math.pi * i / n  # -90° to +90°
+                x = R * math.cos(theta)  # positive = front
+                y = R * math.sin(theta)  # varies left to right
+                z = 0.0
+                outer_local.append([x, y, z])
 
-            for angle in angles:
-                # Horizontal circle (XY plane at shoulder height)
-                # Front-right quadrant: -X, -Y in body frame
-                local_x = -radius * torch.abs(torch.cos(angle))  # Always negative (front)
-                local_y = -radius * torch.sin(angle)  # Can be positive or negative
-                local_z = torch.tensor(0.0, device=self.device)
+            # Arc 2: Vertical half-circle in XZ plane (front view)
+            for i in range(n + 1):
+                theta = -math.pi/2 + math.pi * i / n
+                x = R * math.cos(theta)  # positive = front
+                y = 0.0
+                z = R * math.sin(theta)  # up/down
+                outer_local.append([x, y, z])
 
-                # Only right side (-Y)
-                if local_y <= 0.05:
-                    local_pt = torch.stack([local_x, local_y, local_z])
-                    world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
-                    outer_points.append(world_pt.tolist())
+            # Arc 3: Vertical half-circle in YZ plane (side view, right side)
+            # We want -Y (right side), so y = -R*cos(theta)
+            for i in range(n + 1):
+                theta = -math.pi/2 + math.pi * i / n
+                x = 0.0
+                y = -R * math.cos(theta)  # negative = right
+                z = R * math.sin(theta)
+                outer_local.append([x, y, z])
 
-                # Vertical circle (XZ plane)
-                local_x = -radius * torch.abs(torch.cos(angle))
-                local_y = torch.tensor(0.0, device=self.device)
-                local_z = radius * torch.sin(angle)
+            outer_local_t = torch.tensor(outer_local, device=self.device, dtype=torch.float32)
+            outer_world = body_to_world(outer_local_t)
+            outer_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(outer_local), -1)
+            self.outer_markers.visualize(translations=outer_world, orientations=outer_quat)
 
-                local_pt = torch.stack([local_x, local_y, local_z])
-                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
-                outer_points.append(world_pt.tolist())
+            # ===== INNER exclusion (red) - 18cm radius =====
+            inner_local = []
+            R = 0.18
 
-                # Vertical circle (YZ plane) - right side only
-                local_x = torch.tensor(0.0, device=self.device)
-                local_y = -radius * torch.abs(torch.cos(angle))  # Always -Y (right)
-                local_z = radius * torch.sin(angle)
+            # Same pattern, smaller radius
+            for i in range(n + 1):
+                theta = -math.pi/2 + math.pi * i / n
+                x = R * math.cos(theta)
+                y = R * math.sin(theta)
+                z = 0.0
+                inner_local.append([x, y, z])
 
-                local_pt = torch.stack([local_x, local_y, local_z])
-                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
-                outer_points.append(world_pt.tolist())
+            for i in range(n + 1):
+                theta = -math.pi/2 + math.pi * i / n
+                x = R * math.cos(theta)
+                y = 0.0
+                z = R * math.sin(theta)
+                inner_local.append([x, y, z])
 
-            if outer_points:
-                outer_pos = torch.tensor(outer_points, device=self.device)
-                outer_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(outer_points), -1)
-                self.outer_markers.visualize(translations=outer_pos, orientations=outer_quat)
+            for i in range(n + 1):
+                theta = -math.pi/2 + math.pi * i / n
+                x = 0.0
+                y = -R * math.cos(theta)
+                z = R * math.sin(theta)
+                inner_local.append([x, y, z])
 
-            # Inner exclusion zone (red)
-            inner_points = []
-            radius = 0.18
-
-            for angle in angles:
-                # Horizontal - front right
-                local_x = -radius * torch.abs(torch.cos(angle))
-                local_y = -radius * torch.sin(angle)
-                local_z = torch.tensor(0.0, device=self.device)
-
-                if local_y <= 0.05:
-                    local_pt = torch.stack([local_x, local_y, local_z])
-                    world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
-                    inner_points.append(world_pt.tolist())
-
-                # Vertical XZ
-                local_x = -radius * torch.abs(torch.cos(angle))
-                local_y = torch.tensor(0.0, device=self.device)
-                local_z = radius * torch.sin(angle)
-
-                local_pt = torch.stack([local_x, local_y, local_z])
-                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
-                inner_points.append(world_pt.tolist())
-
-                # Vertical YZ - right
-                local_x = torch.tensor(0.0, device=self.device)
-                local_y = -radius * torch.abs(torch.cos(angle))
-                local_z = radius * torch.sin(angle)
-
-                local_pt = torch.stack([local_x, local_y, local_z])
-                world_pt = shoulder_0 + quat_apply(root_quat[0:1], local_pt.unsqueeze(0)).squeeze(0)
-                inner_points.append(world_pt.tolist())
-
-            if inner_points:
-                inner_pos = torch.tensor(inner_points, device=self.device)
-                inner_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(inner_points), -1)
-                self.inner_markers.visualize(translations=inner_pos, orientations=inner_quat)
+            inner_local_t = torch.tensor(inner_local, device=self.device, dtype=torch.float32)
+            inner_world = body_to_world(inner_local_t)
+            inner_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(inner_local), -1)
+            self.inner_markers.visualize(translations=inner_world, orientations=inner_quat)
 
         def _compute_ee_pos(self) -> torch.Tensor:
             """Get end-effector world position"""
