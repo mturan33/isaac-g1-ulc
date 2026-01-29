@@ -60,6 +60,7 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.utils.math import quat_apply_inverse, quat_apply
@@ -152,15 +153,15 @@ def quat_diff_rad(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
 class DualPlaySceneCfg(InteractiveSceneCfg):
     """Scene configuration."""
 
-    ground = AssetBaseCfg(
+    # Stage 3 ile aynı terrain config - BU ÇALIŞIYOR
+    terrain = TerrainImporterCfg(
         prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(
-            size=(10.0, 10.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=1.0,
-                dynamic_friction=1.0,
-                restitution=0.0,
-            ),
+        terrain_type="plane",
+        collision_group=-1,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            static_friction=1.0,
+            dynamic_friction=1.0,
+            restitution=0.0,
         ),
     )
 
@@ -189,10 +190,6 @@ class DualPlaySceneCfg(InteractiveSceneCfg):
                 enabled_self_collisions=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=8,
-            ),
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                contact_offset=0.02,
-                rest_offset=0.005,
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
@@ -390,8 +387,11 @@ class DualPlayEnv(DirectRLEnv):
         self.target_obj = self.scene["target"]
         self.ee_marker = self.scene["ee_marker"]
 
-        # CRITICAL: Filter collisions between robot and ground
-        self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+        # Clone environments properly
+        self.scene.clone_environments(copy_from_source=False)
+
+        # CRITICAL: Filter collisions - Stage 3 pattern
+        self.scene.filter_collisions(global_prim_paths=[self.cfg.scene.terrain.prim_path])
 
     # =========================================================================
     # DUAL OBSERVATIONS
