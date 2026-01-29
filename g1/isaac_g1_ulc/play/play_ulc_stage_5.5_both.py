@@ -46,6 +46,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse, quat_apply
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 
 def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
@@ -331,7 +332,10 @@ class DualPlayEnv(DirectRLEnv):
         print(f"[DualPlayEnv] Arm joints: {len(self.arm_idx)}")
         print(f"[DualPlayEnv] Palm idx: {self.palm_idx}")
 
-        # NO MARKERS - testing without them
+        # Markers will be created lazily after simulation starts
+        self._markers_initialized = False
+        self.target_markers = None
+        self.ee_markers = None
 
     @property
     def robot(self):
@@ -491,9 +495,51 @@ class DualPlayEnv(DirectRLEnv):
             self._sample_targets(reached_ids)
             print(f"[Step {self.episode_length_buf[0].item():5d}] 🎯 REACH #{self.reach_count}!")
 
+    def _init_markers(self):
+        """Create markers AFTER simulation has started (lazy initialization)"""
+        if self._markers_initialized:
+            return
+
+        self.target_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/TargetMarkers",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.05,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 1.0, 0.0),  # Yellow
+                        ),
+                    ),
+                },
+            )
+        )
+
+        self.ee_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/EEMarkers",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.03,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(0.0, 1.0, 0.0),  # Green
+                        ),
+                    ),
+                },
+            )
+        )
+
+        self._markers_initialized = True
+        print("[DualPlayEnv] ✓ Markers initialized")
+
     def _update_markers(self, ee_pos, target_world):
-        """Markers disabled for debugging"""
-        pass
+        """Update visual marker positions - creates markers on first call"""
+        # Lazy init - create markers after simulation is stable
+        self._init_markers()
+
+        # Update positions
+        default_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(self.num_envs, -1)
+        self.target_markers.visualize(translations=target_world, orientations=default_quat)
+        self.ee_markers.visualize(translations=ee_pos, orientations=default_quat)
 
     def _apply_action(self):
         pass
