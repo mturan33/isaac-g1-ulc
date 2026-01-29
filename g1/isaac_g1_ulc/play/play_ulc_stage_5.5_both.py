@@ -154,7 +154,14 @@ class DualPlaySceneCfg(InteractiveSceneCfg):
 
     ground = AssetBaseCfg(
         prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(10.0, 10.0)),
+        spawn=sim_utils.GroundPlaneCfg(
+            size=(10.0, 10.0),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=0.0,
+            ),
+        ),
     )
 
     dome_light = AssetBaseCfg(
@@ -166,14 +173,20 @@ class DualPlaySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot",
         spawn=sim_utils.UsdFileCfg(
             usd_path=G1_USD_PATH,
-            activate_contact_sensors=False,
+            activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 max_depenetration_velocity=10.0,
+                enable_gyroscopic_forces=True,
+            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                enabled_self_collisions=False,
+                solver_position_iteration_count=8,
+                solver_velocity_iteration_count=4,
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.8),
+            pos=(0.0, 0.0, 0.85),  # Daha yüksek başlangıç
             joint_pos={
                 "left_hip_pitch_joint": -0.2, "right_hip_pitch_joint": -0.2,
                 "left_knee_joint": 0.4, "right_knee_joint": 0.4,
@@ -251,10 +264,20 @@ class DualPlayEnvCfg(DirectRLEnvCfg):
     sim = SimulationCfg(
         dt=1 / 200,
         render_interval=decimation,
+        gravity=(0.0, 0.0, -9.81),
         physics_material=sim_utils.RigidBodyMaterialCfg(
             static_friction=1.0,
             dynamic_friction=1.0,
             restitution=0.0,
+        ),
+        physx=sim_utils.PhysxCfg(
+            bounce_threshold_velocity=0.5,
+            gpu_found_lost_aggregate_pairs_capacity=1024 * 1024 * 4,
+            gpu_total_aggregate_pairs_capacity=16 * 1024,
+            friction_correlation_distance=0.00625,
+            friction_offset_threshold=0.01,
+            gpu_max_rigid_contact_count=512 * 1024,
+            gpu_max_rigid_patch_count=80 * 1024,
         ),
     )
 
@@ -484,12 +507,14 @@ class DualPlayEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         height = self.robot.data.root_pos_w[:, 2]
-        fallen = (height < 0.3) | (height > 1.2)
+        # Daha erken düşme tespiti (0.5m altında = düşmüş)
+        fallen = (height < 0.5) | (height > 1.3)
 
         quat = self.robot.data.root_quat_w
         gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
         proj_grav = quat_apply_inverse(quat, gravity)
-        bad_orientation = proj_grav[:, :2].abs().max(dim=-1)[0] > 0.7
+        # Daha hassas tilt kontrolü
+        bad_orientation = proj_grav[:, :2].abs().max(dim=-1)[0] > 0.5
 
         terminated = fallen | bad_orientation
         truncated = self.episode_length_buf >= self.max_episode_length
@@ -503,8 +528,8 @@ class DualPlayEnv(DirectRLEnv):
 
         n = len(env_ids)
 
-        # Reset robot with a bit higher starting position for safety
-        default_pos = torch.tensor([[0.0, 0.0, 0.82]], device=self.device).expand(n, -1).clone()
+        # Reset robot with higher starting position for stability
+        default_pos = torch.tensor([[0.0, 0.0, 0.85]], device=self.device).expand(n, -1).clone()
         default_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(n, -1)
 
         self.robot.write_root_pose_to_sim(torch.cat([default_pos, default_quat], dim=-1), env_ids)
