@@ -565,6 +565,10 @@ def create_env(num_envs, device):
             self._markers_initialized = False
             self.target_markers = None
             self.ee_markers = None
+            self.outer_markers = None
+            self.inner_markers = None
+            self.shoulder_marker_vis = None
+            self.num_wireframe_points = 24
 
         @property
         def robot(self):
@@ -575,6 +579,7 @@ def create_env(num_envs, device):
             if self._markers_initialized:
                 return
 
+            # Target marker (yellow)
             self.target_markers = VisualizationMarkers(
                 VisualizationMarkersCfg(
                     prim_path="/Visuals/TargetMarkers",
@@ -589,6 +594,7 @@ def create_env(num_envs, device):
                 )
             )
 
+            # EE marker (green)
             self.ee_markers = VisualizationMarkers(
                 VisualizationMarkersCfg(
                     prim_path="/Visuals/EEMarkers",
@@ -603,7 +609,118 @@ def create_env(num_envs, device):
                 )
             )
 
+            # Outer workspace boundary (blue spheres)
+            self.outer_markers = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/OuterWorkspace",
+                    markers={
+                        "sphere": sim_utils.SphereCfg(
+                            radius=0.015,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(0.0, 0.3, 1.0),
+                                emissive_color=(0.0, 0.2, 0.5),
+                            ),
+                        ),
+                    },
+                )
+            )
+
+            # Inner exclusion zone (red spheres)
+            self.inner_markers = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/InnerExclusion",
+                    markers={
+                        "sphere": sim_utils.SphereCfg(
+                            radius=0.012,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(1.0, 0.0, 0.0),
+                                emissive_color=(0.8, 0.0, 0.0),
+                            ),
+                        ),
+                    },
+                )
+            )
+
+            # Shoulder center marker (white)
+            self.shoulder_marker_vis = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/ShoulderMarker",
+                    markers={
+                        "sphere": sim_utils.SphereCfg(
+                            radius=0.025,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(1.0, 1.0, 1.0),
+                                emissive_color=(0.5, 0.5, 0.5),
+                            ),
+                        ),
+                    },
+                )
+            )
+
             self._markers_initialized = True
+
+        def _update_workspace_spheres(self):
+            """Update workspace visualization spheres - Stage 5 style"""
+            import math
+
+            root_pos = self.robot.data.root_pos_w
+            shoulder_world = root_pos + quat_apply(self.robot.data.root_quat_w, self.shoulder_offset.unsqueeze(0))
+
+            # Shoulder marker
+            identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device)
+            self.shoulder_marker_vis.visualize(
+                translations=shoulder_world[:1],
+                orientations=identity_quat
+            )
+
+            # Generate wireframe points
+            shoulder_0 = shoulder_world[0]
+            n = self.num_wireframe_points
+            angles = torch.linspace(0, 2 * math.pi, n + 1, device=self.device)[:-1]
+
+            # Outer workspace (blue) - current spawn radius
+            outer_points = []
+            radius = 0.40  # max workspace
+            for angle in angles:
+                # XY plane (horizontal circle)
+                x = shoulder_0[0] + radius * torch.cos(angle)
+                y = shoulder_0[1] - radius * torch.sin(angle)  # -Y is right side
+                z = shoulder_0[2]
+                if y <= shoulder_0[1]:  # Only right hemisphere
+                    outer_points.append([x.item(), y.item(), z.item()])
+
+                # XZ plane (vertical circle)
+                x = shoulder_0[0] + radius * torch.cos(angle)
+                y = shoulder_0[1]
+                z = shoulder_0[2] + radius * torch.sin(angle)
+                outer_points.append([x.item(), y.item(), z.item()])
+
+            if outer_points:
+                outer_pos = torch.tensor(outer_points, device=self.device)
+                outer_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(outer_points), -1)
+                self.outer_markers.visualize(translations=outer_pos, orientations=outer_quat)
+
+            # Inner exclusion zone (red) - minimum reach
+            inner_points = []
+            radius = 0.18  # inner radius
+            for angle in angles:
+                # XY plane
+                x = shoulder_0[0] + radius * torch.cos(angle)
+                y = shoulder_0[1] - radius * torch.sin(angle)
+                z = shoulder_0[2]
+                if y <= shoulder_0[1]:
+                    inner_points.append([x.item(), y.item(), z.item()])
+
+                # XZ plane
+                x = shoulder_0[0] + radius * torch.cos(angle)
+                y = shoulder_0[1]
+                z = shoulder_0[2] + radius * torch.sin(angle)
+                inner_points.append([x.item(), y.item(), z.item()])
+
+            if inner_points:
+                inner_pos = torch.tensor(inner_points, device=self.device)
+                inner_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(inner_points), -1)
+                self.inner_markers.visualize(translations=inner_pos, orientations=inner_quat)
 
         def _compute_ee_pos(self) -> torch.Tensor:
             """Get end-effector world position"""
@@ -748,6 +865,9 @@ def create_env(num_envs, device):
             self.target_markers.visualize(translations=target_world, orientations=default_quat)
             self.ee_markers.visualize(translations=ee_pos, orientations=default_quat)
 
+            # Update workspace visualization
+            self._update_workspace_spheres()
+
             # Store previous actions
             self._prev_leg_actions = self.prev_leg_actions.clone()
             self._prev_arm_actions = self.prev_arm_actions.clone()
@@ -815,8 +935,11 @@ def create_env(num_envs, device):
             arm_diff = self.prev_arm_actions - self._prev_arm_actions
             p_arm_rate = arm_diff.pow(2).sum(-1)
 
-            joint_vel = robot.data.joint_vel
-            p_energy = (joint_vel.abs() * self.actions.abs()).sum(-1)
+            # Energy penalty - sadece aktif jointler
+            leg_vel = robot.data.joint_vel[:, self.leg_idx]
+            arm_vel = robot.data.joint_vel[:, self.arm_idx]
+            p_energy = (leg_vel.abs() * self.prev_leg_actions.abs()).sum(-1) + \
+                       (arm_vel.abs() * self.prev_arm_actions.abs()).sum(-1)
 
             # === TOTAL ===
             reward = (
