@@ -401,28 +401,31 @@ class DualPlayEnv(DirectRLEnv):
         """
         robot = self.robot
         root_pos = robot.data.root_pos_w
+        root_quat = robot.data.root_quat_w
 
         # Arm joint states (same in both frames)
         joint_pos = robot.data.joint_pos[:, self.arm_idx]
         joint_vel = robot.data.joint_vel[:, self.arm_idx]
 
-        # EE position relative to root
+        # EE position in BODY FRAME (must apply inverse rotation!)
         ee_pos_world = self._compute_ee_pos()
-        ee_pos_local = ee_pos_world - root_pos
+        ee_pos_body = quat_apply_inverse(root_quat, ee_pos_world - root_pos)
 
-        # Convert to Stage 5 frame: flip X axis (-X is forward in Stage 5)
-        ee_pos_stage5 = ee_pos_local.clone()
-        ee_pos_stage5[:, 0] = -ee_pos_local[:, 0]  # Flip X
-        ee_pos_stage5[:, 1] = -ee_pos_local[:, 1]  # Flip Y (right side is +Y in Stage 5)
+        # Convert to Stage 5 frame: flip X and Y axes
+        # Stage 5: -X is forward, +Y is right
+        # Locomotion: +X is forward, -Y is right
+        ee_pos_stage5 = ee_pos_body.clone()
+        ee_pos_stage5[:, 0] = -ee_pos_body[:, 0]  # Flip X
+        ee_pos_stage5[:, 1] = -ee_pos_body[:, 1]  # Flip Y
 
-        # EE quaternion
+        # EE quaternion (keep in world for now - orientation matching is secondary)
         ee_quat = robot.data.body_quat_w[:, self.palm_idx]
 
-        # Target in Stage 5 frame
-        target_local = self.target_pos_body.clone()
-        target_stage5 = target_local.clone()
-        target_stage5[:, 0] = -target_local[:, 0]  # Flip X
-        target_stage5[:, 1] = -target_local[:, 1]  # Flip Y
+        # Target is already in body frame, convert to Stage 5 frame
+        target_body = self.target_pos_body.clone()
+        target_stage5 = target_body.clone()
+        target_stage5[:, 0] = -target_body[:, 0]  # Flip X
+        target_stage5[:, 1] = -target_body[:, 1]  # Flip Y
 
         # Target orientation (fixed for now)
         target_quat = torch.tensor([[0.707, 0.707, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
@@ -682,16 +685,16 @@ def main():
             target_world = root_pos + quat_apply(root_quat, env.target_pos_body)
             dist = torch.norm(ee_pos - target_world, dim=-1).mean().item()
 
-            # Debug coordinates
-            ee_local = ee_pos[0] - root_pos[0]
-            target_local = env.target_pos_body[0]
+            # Debug coordinates - CORRECT body frame calculation
+            ee_body = quat_apply_inverse(root_quat[0:1], ee_pos[0:1] - root_pos[0:1])[0]
+            target_body = env.target_pos_body[0]
 
             print(
                 f"[Step {step + 1:5d}] H={height:.3f}m | Vx={vx:.2f}m/s | EE dist={dist:.3f}m | Reaches={env.reach_count}")
-            print(f"    Target (body): [{target_local[0]:.3f}, {target_local[1]:.3f}, {target_local[2]:.3f}]")
-            print(f"    EE (body):     [{ee_local[0]:.3f}, {ee_local[1]:.3f}, {ee_local[2]:.3f}]")
+            print(f"    Target (body): [{target_body[0]:.3f}, {target_body[1]:.3f}, {target_body[2]:.3f}]")
+            print(f"    EE (body):     [{ee_body[0]:.3f}, {ee_body[1]:.3f}, {ee_body[2]:.3f}]")
             print(
-                f"    Diff:          [{(target_local[0] - ee_local[0]):.3f}, {(target_local[1] - ee_local[1]):.3f}, {(target_local[2] - ee_local[2]):.3f}]")
+                f"    Diff:          [{(target_body[0] - ee_body[0]):.3f}, {(target_body[1] - ee_body[1]):.3f}, {(target_body[2] - ee_body[2]):.3f}]")
 
     print("=" * 70)
     print("DUAL POLICY PLAY COMPLETE - V3")
