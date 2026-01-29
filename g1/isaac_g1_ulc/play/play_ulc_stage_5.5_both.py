@@ -95,8 +95,10 @@ ARM_JOINT_NAMES = [
     "right_elbow_roll_joint",
 ]
 
-# Shoulder offset for workspace (right shoulder in body frame)
-SHOULDER_OFFSET = torch.tensor([0.0, -0.174, 0.259])
+# Shoulder offset for workspace (right shoulder in local frame)
+# Stage 5 config: shoulder_center_offset = [0.0, 0.174, 0.259]
+# Note: Stage 5 env uses this directly for target sampling
+SHOULDER_OFFSET = torch.tensor([0.0, 0.174, 0.259])
 
 
 # ==============================================================================
@@ -362,26 +364,32 @@ class DualPlayEnv(DirectRLEnv):
         return quat_to_euler_xyz(quat)
 
     def _sample_targets(self, env_ids):
-        """Sample arm targets in body frame"""
+        """Sample arm targets - Stage 5 compatible (shoulder-relative)"""
         n = len(env_ids)
         if n == 0:
             return
 
-        # Workspace parameters (front-right hemisphere)
-        azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)  # -30° to +60°
-        radius = torch.empty(n, device=self.device).uniform_(0.20, 0.35)
-        height = torch.empty(n, device=self.device).uniform_(-0.05, 0.15)
+        # Stage 5 uses shoulder-relative coordinates
+        # shoulder_center = [0.0, -0.174, 0.259] relative to root
+        shoulder_offset = SHOULDER_OFFSET.to(self.device)
 
-        # Body frame coordinates: +X forward, -Y right
-        x = radius * torch.cos(azimuth)
-        y = -radius * torch.sin(azimuth)
-        z = height
+        # Random direction (front hemisphere: -X is forward in Stage 5)
+        direction = torch.randn((n, 3), device=self.device)
+        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+        direction[:, 0] = -torch.abs(direction[:, 0])  # -X is forward
 
-        # Apply shoulder offset
-        shoulder = SHOULDER_OFFSET.to(self.device)
-        self.target_pos_body[env_ids, 0] = x + shoulder[0]
-        self.target_pos_body[env_ids, 1] = y + shoulder[1]
-        self.target_pos_body[env_ids, 2] = z + shoulder[2]
+        # Random radius in workspace
+        inner = 0.18
+        outer = 0.35
+        distance = inner + torch.rand((n, 1), device=self.device) * (outer - inner)
+
+        # Target relative to shoulder
+        target_rel_shoulder = direction * distance
+        target_rel_shoulder[:, 2] = torch.clamp(target_rel_shoulder[:, 2], -0.15, 0.25)
+
+        # Store as root-relative (for observation)
+        self.target_pos_body[env_ids] = shoulder_offset + target_rel_shoulder.squeeze(
+            -1) if distance.dim() > 1 else shoulder_offset + target_rel_shoulder
 
     def _compute_ee_pos(self):
         """Get end-effector world position"""
@@ -425,43 +433,45 @@ class DualPlayEnv(DirectRLEnv):
         return obs.clamp(-10, 10).nan_to_num()
 
     def _get_arm_obs(self) -> torch.Tensor:
-        """Stage 5 arm observations (29 dim)"""
+        """Stage 5 arm observations (29 dim) - EXACT MATCH"""
         robot = self.robot
-        quat = robot.data.root_quat_w
         root_pos = robot.data.root_pos_w
 
-        # EE position in body frame
-        ee_pos_world = self._compute_ee_pos()
-        ee_pos_rel = ee_pos_world - root_pos
-        ee_pos_body = quat_apply_inverse(quat, ee_pos_rel)
-
-        # Target is already in body frame
-        target_body = self.target_pos_body
-
-        # Position error in body frame
-        pos_err = target_body - ee_pos_body
-        distance = torch.norm(pos_err, dim=-1, keepdim=True)
-        direction = pos_err / (distance + 1e-6)
-
         # Arm joint states
-        arm_pos = robot.data.joint_pos[:, self.arm_idx]
-        arm_vel = robot.data.joint_vel[:, self.arm_idx]
+        joint_pos = robot.data.joint_pos[:, self.arm_idx]
+        joint_vel = robot.data.joint_vel[:, self.arm_idx]
 
-        # Body state
-        lin_vel_b = quat_apply_inverse(quat, robot.data.root_lin_vel_w)
-        ang_vel_b = quat_apply_inverse(quat, robot.data.root_ang_vel_w)
+        # EE position relative to root (NOT body frame transformed)
+        ee_pos = self._compute_ee_pos() - root_pos
+        ee_quat = robot.data.body_quat_w[:, self.palm_idx]
 
+        # Target is in shoulder-relative local frame
+        # But for dual policy, target_pos_body is already local
+        target_pos = self.target_pos_body
+        target_quat = torch.tensor([[0.707, 0.707, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
+
+        # Position error and distance
+        pos_err = target_pos - ee_pos
+        pos_dist = pos_err.norm(dim=-1, keepdim=True)
+
+        # Orientation error (placeholder - palm vs target)
+        from isaaclab.utils.math import quat_mul, quat_conjugate
+        # Simple angular diff
+        dot = torch.sum(ee_quat * target_quat, dim=-1).abs().clamp(-1, 1)
+        ori_err = (2.0 * torch.acos(dot)).unsqueeze(-1)
+
+        # BUILD OBS - EXACT Stage 5 ORDER
         obs = torch.cat([
-            ee_pos_body,  # 3 - EE position in body frame
-            target_body,  # 3 - target in body frame
-            pos_err,  # 3 - error vector
-            distance,  # 1 - scalar distance
-            direction,  # 3 - unit direction
-            arm_pos,  # 5 - joint positions
-            arm_vel,  # 5 - joint velocities
-            self.prev_arm_actions,  # 5 - previous actions
-            lin_vel_b[:, :1],  # 1 - forward velocity
-        ], dim=-1)  # Total: 29
+            joint_pos,  # 5 - arm joint positions
+            joint_vel * 0.1,  # 5 - arm joint velocities (scaled!)
+            target_pos,  # 3 - target position (local)
+            target_quat,  # 4 - target orientation
+            ee_pos,  # 3 - EE position (local)
+            ee_quat,  # 4 - EE orientation
+            pos_err,  # 3 - position error
+            ori_err,  # 1 - orientation error
+            pos_dist / 0.5,  # 1 - normalized distance
+        ], dim=-1)  # Total: 5+5+3+4+3+4+3+1+1 = 29
 
         return obs.clamp(-10, 10).nan_to_num()
 
