@@ -660,7 +660,15 @@ def create_env(num_envs, device):
             self._markers_initialized = True
 
         def _update_workspace_spheres(self):
-            """Update workspace visualization spheres - Stage 5 style"""
+            """Update workspace visualization spheres - Stage 5 style
+
+            Robot coordinate frame:
+            - +X: Forward (robot facing direction)
+            - -Y: Right side (where right arm is)
+            - +Z: Up
+
+            Workspace should be in FRONT and to the RIGHT of the robot.
+            """
             import math
 
             root_pos = self.robot.data.root_pos_w
@@ -678,22 +686,31 @@ def create_env(num_envs, device):
             n = self.num_wireframe_points
             angles = torch.linspace(0, 2 * math.pi, n + 1, device=self.device)[:-1]
 
-            # Outer workspace (blue) - current spawn radius
+            # Outer workspace (blue) - max workspace radius
             outer_points = []
             radius = 0.40  # max workspace
             for angle in angles:
-                # XY plane (horizontal circle)
+                # XY plane (horizontal circle) - FRONT hemisphere (+X direction)
                 x = shoulder_0[0] + radius * torch.cos(angle)
-                y = shoulder_0[1] - radius * torch.sin(angle)  # -Y is right side
+                y = shoulder_0[1] + radius * torch.sin(angle)
                 z = shoulder_0[2]
-                if y <= shoulder_0[1]:  # Only right hemisphere
+                # Only keep points in front (+X) and right (-Y) quadrant
+                if x >= shoulder_0[0] - 0.05:  # Front hemisphere
                     outer_points.append([x.item(), y.item(), z.item()])
 
-                # XZ plane (vertical circle)
+                # XZ plane (vertical circle in front)
                 x = shoulder_0[0] + radius * torch.cos(angle)
                 y = shoulder_0[1]
                 z = shoulder_0[2] + radius * torch.sin(angle)
-                outer_points.append([x.item(), y.item(), z.item()])
+                if x >= shoulder_0[0] - 0.05:  # Front hemisphere
+                    outer_points.append([x.item(), y.item(), z.item()])
+
+                # YZ plane (vertical circle to the side) - only right side
+                x = shoulder_0[0]
+                y = shoulder_0[1] - radius * torch.cos(angle)  # -Y is right
+                z = shoulder_0[2] + radius * torch.sin(angle)
+                if y <= shoulder_0[1] + 0.05:  # Right side (-Y)
+                    outer_points.append([x.item(), y.item(), z.item()])
 
             if outer_points:
                 outer_pos = torch.tensor(outer_points, device=self.device)
@@ -704,18 +721,26 @@ def create_env(num_envs, device):
             inner_points = []
             radius = 0.18  # inner radius
             for angle in angles:
-                # XY plane
+                # XY plane - front hemisphere
                 x = shoulder_0[0] + radius * torch.cos(angle)
-                y = shoulder_0[1] - radius * torch.sin(angle)
+                y = shoulder_0[1] + radius * torch.sin(angle)
                 z = shoulder_0[2]
-                if y <= shoulder_0[1]:
+                if x >= shoulder_0[0] - 0.05:
                     inner_points.append([x.item(), y.item(), z.item()])
 
-                # XZ plane
+                # XZ plane - front
                 x = shoulder_0[0] + radius * torch.cos(angle)
                 y = shoulder_0[1]
                 z = shoulder_0[2] + radius * torch.sin(angle)
-                inner_points.append([x.item(), y.item(), z.item()])
+                if x >= shoulder_0[0] - 0.05:
+                    inner_points.append([x.item(), y.item(), z.item()])
+
+                # YZ plane - right side
+                x = shoulder_0[0]
+                y = shoulder_0[1] - radius * torch.cos(angle)
+                z = shoulder_0[2] + radius * torch.sin(angle)
+                if y <= shoulder_0[1] + 0.05:
+                    inner_points.append([x.item(), y.item(), z.item()])
 
             if inner_points:
                 inner_pos = torch.tensor(inner_points, device=self.device)
