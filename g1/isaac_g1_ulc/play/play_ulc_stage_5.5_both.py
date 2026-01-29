@@ -532,7 +532,19 @@ def main():
     print("[2/4] Loading ARM policy (Stage 5)...")
     arm_ckpt = torch.load(args_cli.arm_checkpoint, map_location=device, weights_only=False)
     arm_net = ArmActorCritic(29, 5).to(device)
-    arm_net.load_state_dict(arm_ckpt["actor_critic"])
+
+    # Try different checkpoint key formats
+    if "actor_critic" in arm_ckpt:
+        arm_net.load_state_dict(arm_ckpt["actor_critic"])
+    elif "model" in arm_ckpt:
+        arm_net.load_state_dict(arm_ckpt["model"])
+    elif "model_state_dict" in arm_ckpt:
+        arm_net.load_state_dict(arm_ckpt["model_state_dict"])
+    else:
+        # Print available keys for debugging
+        print(f"      Available keys: {list(arm_ckpt.keys())}")
+        raise KeyError("Could not find model weights in checkpoint")
+
     arm_net.eval()
     print("      ✓ ARM policy loaded!")
 
