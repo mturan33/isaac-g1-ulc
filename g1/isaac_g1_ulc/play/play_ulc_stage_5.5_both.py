@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-Stage 5.5 Dual Policy Play Script - ALL IN ONE
-===============================================
+Stage 5.5 Dual Policy Play Script - V2 (FIXED COORDINATES)
+===========================================================
 
-İki ayrı policy'yi birlikte çalıştırır:
-- Stage 3 (Loco): 57 obs → 12 leg actions
-- Stage 5 (Arm): 29 obs → 5 arm actions
+Düzeltmeler:
+1. Hedef koordinatları: +X (öne), -Y (sağa)
+2. Body frame dönüşümü eklendi
+3. Azimuth aralığı daraltıldı
+4. Ground collision koruması
 
 KULLANIM:
-./isaaclab.bat -p .../play/play_ulc_stage_5.5_both.py \
+./isaaclab.bat -p .../play/play_ulc_stage_5_5_both_v2.py \
     --loco_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt \
     --arm_checkpoint logs/ulc/g1_arm_reach_2026-01-22_14-06-41/model_19998.pt \
     --num_envs 4 --vx 0.0
 
 Author: Turan
 Date: January 2026
+Version: 2.0 - Fixed coordinate system
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import argparse
 # ARGUMENT PARSING (MUST BE BEFORE ISAAC IMPORTS)
 # ==============================================================================
 
-parser = argparse.ArgumentParser(description="Stage 5.5 Dual Policy Play")
+parser = argparse.ArgumentParser(description="Stage 5.5 Dual Policy Play V2")
 parser.add_argument("--loco_checkpoint", type=str, required=True,
                     help="Path to Stage 3 locomotion checkpoint")
 parser.add_argument("--arm_checkpoint", type=str, required=True,
@@ -59,7 +62,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply_inverse, quat_apply
 
 # ==============================================================================
 # CONSTANTS
@@ -225,48 +228,47 @@ class DualPlaySceneCfg(InteractiveSceneCfg):
                 emissive_color=(0.5, 0.25, 0.0),
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0)),
     )
 
 
 # ==============================================================================
-# ENV CONFIG
+# ENVIRONMENT CONFIG
 # ==============================================================================
 
 @configclass
 class DualPlayEnvCfg(DirectRLEnvCfg):
-    """Environment config."""
+    """Environment configuration."""
 
     decimation = 4
     episode_length_s = 20.0
-
     num_actions = 17
     num_observations = 86
     num_states = 0
 
-    action_space = 17
-    observation_space = 86
-    state_space = 0
-
-    sim: SimulationCfg = SimulationCfg(
+    sim = SimulationCfg(
         dt=1 / 200,
-        render_interval=4,
-        device="cuda:0",
-        physx=sim_utils.PhysxCfg(
-            gpu_found_lost_pairs_capacity=2 ** 21,
-            gpu_total_aggregate_pairs_capacity=2 ** 21,
+        render_interval=decimation,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            static_friction=1.0,
+            dynamic_friction=1.0,
+            restitution=0.0,
         ),
     )
 
-    scene: DualPlaySceneCfg = DualPlaySceneCfg(num_envs=4, env_spacing=2.5)
+    scene: DualPlaySceneCfg = DualPlaySceneCfg(num_envs=1, env_spacing=2.5)
 
+    # Workspace - FIXED: sağ omuz etrafında yarım küre
     workspace_radius = 0.40
-    workspace_inner_radius = 0.18
+    workspace_inner_radius = 0.15
+    # Shoulder offset: sağ omuz robotun sağında (-Y)
     shoulder_offset = [0.0, -0.174, 0.259]
 
+    # Commands
     height_target = 0.72
     gait_frequency = 1.5
 
+    # Actions
     leg_action_scale = 0.4
     arm_action_scale = 0.12
 
@@ -276,80 +278,53 @@ class DualPlayEnvCfg(DirectRLEnvCfg):
 # ==============================================================================
 
 class DualPlayEnv(DirectRLEnv):
-    """Dual policy play environment."""
+    """Stage 5.5 Dual Policy Environment."""
 
     cfg: DualPlayEnvCfg
 
-    def __init__(self, cfg: DualPlayEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: DualPlayEnvCfg, render_mode=None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self.robot = self.scene["robot"]
-        self.target_obj = self.scene["target"]
-        self.ee_marker = self.scene["ee_marker"]
+        # Joint indices
+        all_names = self.robot.joint_names
+        self.leg_indices = torch.tensor(
+            [all_names.index(n) for n in LEG_JOINT_NAMES],
+            device=self.device
+        )
+        self.arm_indices = torch.tensor(
+            [all_names.index(n) for n in ARM_JOINT_NAMES],
+            device=self.device
+        )
 
-        self._setup_joint_indices()
-        self._setup_buffers()
+        # Palm for EE
+        self.palm_idx = self.robot.body_names.index("right_palm_link")
 
-        print("\n" + "=" * 60)
-        print("DUAL PLAY ENVIRONMENT INITIALIZED")
-        print("=" * 60)
-        print(f"  Leg joints: {len(self.leg_indices)}")
-        print(f"  Arm joints: {len(self.arm_indices)}")
-        print(f"  Palm idx: {self.palm_idx}")
-        print("=" * 60 + "\n")
+        # Arm limits
+        arm_lims = torch.tensor(
+            [[ARM_JOINT_LIMITS[n][0], ARM_JOINT_LIMITS[n][1]] for n in ARM_JOINT_NAMES],
+            device=self.device
+        )
+        self.arm_lower = arm_lims[:, 0]
+        self.arm_upper = arm_lims[:, 1]
 
-    def _setup_joint_indices(self):
-        joint_names = list(self.robot.data.joint_names)
-        body_names = list(self.robot.data.body_names)
+        # Default positions
+        self.default_leg = self.robot.data.default_joint_pos[:, self.leg_indices].clone()
+        self.default_arm = self.robot.data.default_joint_pos[:, self.arm_indices].clone()
 
-        self.leg_indices = []
-        for name in LEG_JOINT_NAMES:
-            if name in joint_names:
-                self.leg_indices.append(joint_names.index(name))
-        self.leg_indices = torch.tensor(self.leg_indices, device=self.device, dtype=torch.long)
-
-        self.arm_indices = []
-        for name in ARM_JOINT_NAMES:
-            if name in joint_names:
-                self.arm_indices.append(joint_names.index(name))
-        self.arm_indices = torch.tensor(self.arm_indices, device=self.device, dtype=torch.long)
-
-        self.palm_idx = None
-        for i, name in enumerate(body_names):
-            if "right" in name.lower() and "palm" in name.lower():
-                self.palm_idx = i
-                break
-        if self.palm_idx is None:
-            for i, name in enumerate(body_names):
-                if "right" in name.lower() and ("wrist" in name.lower() or "elbow" in name.lower()):
-                    self.palm_idx = i
-                    break
-        if self.palm_idx is None:
-            self.palm_idx = len(body_names) - 1
-
-        self.arm_lower = torch.zeros(len(self.arm_indices), device=self.device)
-        self.arm_upper = torch.zeros(len(self.arm_indices), device=self.device)
-        for i, name in enumerate(ARM_JOINT_NAMES[:len(self.arm_indices)]):
-            if name in ARM_JOINT_LIMITS:
-                self.arm_lower[i], self.arm_upper[i] = ARM_JOINT_LIMITS[name]
-
-    def _setup_buffers(self):
-        self.height_cmd = torch.ones(self.num_envs, device=self.device) * self.cfg.height_target
-        self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
-        self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        # State buffers
         self.gait_phase = torch.zeros(self.num_envs, device=self.device)
-
         self.prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
         self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
 
-        self.default_leg = torch.tensor(
-            [-0.2, -0.2, 0, 0, 0, 0, 0.4, 0.4, -0.2, -0.2, 0, 0], device=self.device
-        )
-        self.default_arm = torch.tensor(
-            [DEFAULT_ARM_POSE[n] for n in ARM_JOINT_NAMES], device=self.device
+        # Commands
+        self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        self.height_cmd = torch.full(
+            (self.num_envs,), self.cfg.height_target, device=self.device
         )
 
-        self.target_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        # Target - BODY FRAME coordinates
+        self.target_pos_body = torch.zeros(self.num_envs, 3, device=self.device)
         self.target_quat = torch.tensor(
             [[0.707, 0.707, 0.0, 0.0]], device=self.device
         ).expand(self.num_envs, -1).clone()
@@ -364,6 +339,16 @@ class DualPlayEnv(DirectRLEnv):
 
         self.total_reaches = 0
         self.reach_threshold = 0.10
+
+        print("\n" + "=" * 60)
+        print("DUAL PLAY ENVIRONMENT INITIALIZED - V2")
+        print("=" * 60)
+        print(f"  Leg joints: {len(self.leg_indices)}")
+        print(f"  Arm joints: {len(self.arm_indices)}")
+        print(f"  Palm idx: {self.palm_idx}")
+        print(f"  Workspace: {self.cfg.workspace_inner_radius:.2f}m - {self.cfg.workspace_radius:.2f}m")
+        print(f"  Shoulder offset: {self.cfg.shoulder_offset}")
+        print("=" * 60 + "\n")
 
     def _setup_scene(self):
         self.robot = self.scene["robot"]
@@ -412,29 +397,41 @@ class DualPlayEnv(DirectRLEnv):
         return obs.clamp(-10, 10).nan_to_num()
 
     def get_arm_obs(self) -> torch.Tensor:
-        """Stage 5 arm observation - 29 dim."""
+        """Stage 5 arm observation - 29 dim (BODY FRAME)."""
         robot = self.robot
         root_pos = robot.data.root_pos_w
+        root_quat = robot.data.root_quat_w
 
         arm_pos = robot.data.joint_pos[:, self.arm_indices]
         arm_vel = robot.data.joint_vel[:, self.arm_indices]
 
+        # EE position in BODY FRAME
         ee_pos_world = self._compute_ee_pos()
-        ee_pos = ee_pos_world - root_pos
-        ee_quat = self._compute_ee_quat()
+        ee_pos_rel = ee_pos_world - root_pos
+        ee_pos_body = quat_apply_inverse(root_quat, ee_pos_rel)
 
-        pos_err = self.target_pos - ee_pos
+        # EE orientation in BODY FRAME
+        ee_quat_world = self._compute_ee_quat()
+        # For simplicity, just use world quat (could rotate to body frame too)
+        ee_quat = ee_quat_world
+
+        # Target is already in BODY FRAME
+        target_body = self.target_pos_body
+        target_quat = self.target_quat
+
+        # Position error in BODY FRAME
+        pos_err = target_body - ee_pos_body
         pos_dist = pos_err.norm(dim=-1, keepdim=True)
-        ori_err = quat_diff_rad(ee_quat, self.target_quat).unsqueeze(-1)
+        ori_err = quat_diff_rad(ee_quat, target_quat).unsqueeze(-1)
 
         obs = torch.cat([
             arm_pos,  # 5
             arm_vel * 0.1,  # 5
-            self.target_pos,  # 3
-            self.target_quat,  # 4
-            ee_pos,  # 3
+            target_body,  # 3  (body frame)
+            target_quat,  # 4
+            ee_pos_body,  # 3  (body frame)
             ee_quat,  # 4
-            pos_err,  # 3
+            pos_err,  # 3  (body frame)
             ori_err,  # 1
             pos_dist / 0.5,  # 1
         ], dim=-1)  # Total: 29
@@ -464,8 +461,15 @@ class DualPlayEnv(DirectRLEnv):
         return {"policy": torch.cat([loco, arm], dim=-1)}
 
     def _get_rewards(self) -> torch.Tensor:
-        ee_pos = self._compute_ee_pos() - self.robot.data.root_pos_w
-        dist = (ee_pos - self.target_pos).norm(dim=-1)
+        # Compute distance in BODY FRAME
+        root_pos = self.robot.data.root_pos_w
+        root_quat = self.robot.data.root_quat_w
+
+        ee_pos_world = self._compute_ee_pos()
+        ee_pos_rel = ee_pos_world - root_pos
+        ee_pos_body = quat_apply_inverse(root_quat, ee_pos_rel)
+
+        dist = (ee_pos_body - self.target_pos_body).norm(dim=-1)
 
         reached = dist < self.reach_threshold
         reached_ids = torch.where(reached)[0]
@@ -497,7 +501,8 @@ class DualPlayEnv(DirectRLEnv):
 
         n = len(env_ids)
 
-        default_pos = torch.tensor([[0.0, 0.0, 0.8]], device=self.device).expand(n, -1).clone()
+        # Reset robot with a bit higher starting position for safety
+        default_pos = torch.tensor([[0.0, 0.0, 0.82]], device=self.device).expand(n, -1).clone()
         default_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(n, -1)
 
         self.robot.write_root_pose_to_sim(torch.cat([default_pos, default_quat], dim=-1), env_ids)
@@ -513,28 +518,55 @@ class DualPlayEnv(DirectRLEnv):
         self._sample_target(env_ids)
 
     def _sample_target(self, env_ids: torch.Tensor):
+        """Sample target in BODY FRAME - front right of robot."""
         n = len(env_ids)
 
-        azimuth = torch.empty(n, device=self.device).uniform_(-1.57, 1.57)
+        # Azimuth: -30° to +60° (mostly forward and to the right)
+        # Positive azimuth = towards robot's right (-Y direction)
+        azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)  # ~-30° to +60°
+
         radius = torch.empty(n, device=self.device).uniform_(
             self.cfg.workspace_inner_radius, self.cfg.workspace_radius
         )
-        height = torch.empty(n, device=self.device).uniform_(-0.15, 0.25)
 
-        x = -radius * torch.cos(azimuth)
-        y = radius * torch.sin(azimuth)
+        # Height relative to shoulder
+        height = torch.empty(n, device=self.device).uniform_(-0.10, 0.20)
+
+        # FIXED: +X (forward), -Y (right side for right arm)
+        x = radius * torch.cos(azimuth)  # POSITIVE X = forward
+        y = -radius * torch.sin(azimuth)  # NEGATIVE Y = right side
         z = height
 
-        self.target_pos[env_ids, 0] = x + self.shoulder_offset[0, 0]
-        self.target_pos[env_ids, 1] = y + self.shoulder_offset[0, 1]
-        self.target_pos[env_ids, 2] = z + self.shoulder_offset[0, 2]
+        # Store in BODY FRAME (relative to shoulder)
+        self.target_pos_body[env_ids, 0] = x + self.shoulder_offset[0, 0]
+        self.target_pos_body[env_ids, 1] = y + self.shoulder_offset[0, 1]
+        self.target_pos_body[env_ids, 2] = z + self.shoulder_offset[0, 2]
 
+        # Update visual marker in WORLD FRAME
         root_pos = self.robot.data.root_pos_w[env_ids]
-        target_world = root_pos + self.target_pos[env_ids]
+        root_quat = self.robot.data.root_quat_w[env_ids]
+
+        # Transform body frame target to world frame for visualization
+        target_world = root_pos + quat_apply(root_quat, self.target_pos_body[env_ids])
+
         identity_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(n, -1)
 
         self.target_obj.write_root_pose_to_sim(
             torch.cat([target_world, identity_quat], dim=-1), env_ids
+        )
+
+    def _update_target_visuals(self):
+        """Update target marker position in world frame."""
+        root_pos = self.robot.data.root_pos_w
+        root_quat = self.robot.data.root_quat_w
+
+        # Transform body frame target to world frame
+        target_world = root_pos + quat_apply(root_quat, self.target_pos_body)
+
+        identity_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(self.num_envs, -1)
+
+        self.target_obj.write_root_pose_to_sim(
+            torch.cat([target_world, identity_quat], dim=-1)
         )
 
     def _pre_physics_step(self, actions: torch.Tensor):
@@ -559,6 +591,9 @@ class DualPlayEnv(DirectRLEnv):
         self.gait_phase = (self.gait_phase + self.cfg.gait_frequency * 0.02) % 1.0
         self.prev_leg_actions = leg_actions.clone()
         self.prev_arm_actions = arm_actions.clone()
+
+        # Update target visual to follow robot
+        self._update_target_visuals()
 
     def set_velocity_command(self, vx: float, vy: float = 0.0, vyaw: float = 0.0):
         self.vel_cmd[:, 0] = vx
@@ -631,7 +666,7 @@ def main():
     device = "cuda:0"
 
     print("\n" + "=" * 70)
-    print("STAGE 5.5 DUAL POLICY PLAY")
+    print("STAGE 5.5 DUAL POLICY PLAY - V2 (FIXED COORDINATES)")
     print("=" * 70)
     print(f"Loco checkpoint: {args.loco_checkpoint}")
     print(f"Arm checkpoint: {args.arm_checkpoint}")
@@ -729,8 +764,13 @@ def main():
                 height = env.robot.data.root_pos_w[:, 2].mean().item()
                 vx = env.robot.data.root_lin_vel_w[:, 0].mean().item()
 
-                ee_pos = env._compute_ee_pos() - env.robot.data.root_pos_w
-                dist = (ee_pos - env.target_pos).norm(dim=-1).mean().item()
+                # Distance in body frame
+                root_pos = env.robot.data.root_pos_w
+                root_quat = env.robot.data.root_quat_w
+                ee_pos_world = env._compute_ee_pos()
+                ee_pos_rel = ee_pos_world - root_pos
+                ee_pos_body = quat_apply_inverse(root_quat, ee_pos_rel)
+                dist = (ee_pos_body - env.target_pos_body).norm(dim=-1).mean().item()
 
                 print(f"[Step {step:5d}] H={height:.3f}m | Vx={vx:.2f}m/s | "
                       f"EE dist={dist:.3f}m | Reaches={env.total_reaches}")
@@ -739,7 +779,7 @@ def main():
     # SUMMARY
     # =========================================================================
     print("\n" + "=" * 70)
-    print("DUAL POLICY PLAY COMPLETE")
+    print("DUAL POLICY PLAY COMPLETE - V2")
     print("=" * 70)
     print(f"  Total reaches: {env.total_reaches}")
     print(f"  Steps: {args.steps}")
