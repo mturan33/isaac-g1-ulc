@@ -178,15 +178,25 @@ class DualPlaySceneCfg(InteractiveSceneCfg):
                 disable_gravity=False,
                 max_depenetration_velocity=10.0,
                 enable_gyroscopic_forces=True,
+                retain_accelerations=False,
+                linear_damping=0.0,
+                angular_damping=0.0,
+                max_linear_velocity=1000.0,
+                max_angular_velocity=1000.0,
+                max_contact_impulse=1e32,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False,
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=4,
+                solver_position_iteration_count=16,
+                solver_velocity_iteration_count=8,
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                contact_offset=0.02,
+                rest_offset=0.005,
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.85),  # Daha yüksek başlangıç
+            pos=(0.0, 0.0, 0.90),  # Daha da yüksek başlangıç
             joint_pos={
                 "left_hip_pitch_joint": -0.2, "right_hip_pitch_joint": -0.2,
                 "left_knee_joint": 0.4, "right_knee_joint": 0.4,
@@ -200,8 +210,8 @@ class DualPlaySceneCfg(InteractiveSceneCfg):
         actuators={
             "legs": ImplicitActuatorCfg(
                 joint_names_expr=[".*hip.*", ".*knee.*", ".*ankle.*"],
-                stiffness=150.0,
-                damping=15.0,
+                stiffness=200.0,
+                damping=20.0,
             ),
             "arms": ImplicitActuatorCfg(
                 joint_names_expr=[".*shoulder.*", ".*elbow.*"],
@@ -210,8 +220,8 @@ class DualPlaySceneCfg(InteractiveSceneCfg):
             ),
             "torso": ImplicitActuatorCfg(
                 joint_names_expr=["torso_joint"],
-                stiffness=100.0,
-                damping=10.0,
+                stiffness=150.0,
+                damping=15.0,
             ),
         },
     )
@@ -380,6 +390,9 @@ class DualPlayEnv(DirectRLEnv):
         self.target_obj = self.scene["target"]
         self.ee_marker = self.scene["ee_marker"]
 
+        # CRITICAL: Filter collisions between robot and ground
+        self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+
     # =========================================================================
     # DUAL OBSERVATIONS
     # =========================================================================
@@ -529,7 +542,7 @@ class DualPlayEnv(DirectRLEnv):
         n = len(env_ids)
 
         # Reset robot with higher starting position for stability
-        default_pos = torch.tensor([[0.0, 0.0, 0.85]], device=self.device).expand(n, -1).clone()
+        default_pos = torch.tensor([[0.0, 0.0, 0.90]], device=self.device).expand(n, -1).clone()
         default_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(n, -1)
 
         self.robot.write_root_pose_to_sim(torch.cat([default_pos, default_quat], dim=-1), env_ids)
