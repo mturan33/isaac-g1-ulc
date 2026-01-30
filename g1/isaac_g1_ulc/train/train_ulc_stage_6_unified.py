@@ -81,8 +81,10 @@ LOAD_MAX = 3.0  # kg
 GAIT_FREQUENCY = 1.5
 
 # Thresholds
-REACH_THRESHOLD = 0.05
-GRASP_THRESHOLD = 0.06
+REACH_THRESHOLD = 0.05  # Final target (Level 5+)
+REACH_THRESHOLD_EASY = 0.12  # Early levels (Level 0-2)
+REACH_THRESHOLD_MEDIUM = 0.08  # Mid levels (Level 3-4)
+GRASP_THRESHOLD = 0.08  # Gripper activation distance
 ORIENT_THRESHOLD_EASY = 0.8  # ~45 degrees
 ORIENT_THRESHOLD_HARD = 0.35  # ~20 degrees
 
@@ -106,58 +108,58 @@ def create_curriculum():
 
     # Phase 1: Reaching Only (Level 0-9)
     stage6_phase1 = [
-        # Level 0: Stationary, tiny workspace
+        # Level 0: VERY EASY - Close targets, wide threshold
         {
             "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.15, 0.20), "arm_height": (-0.02, 0.08),
+            "arm_radius": (0.08, 0.15), "arm_height": (0.0, 0.10),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.12, "orient_threshold": None,
+            "success_rate": 0.30, "min_reaches": 1500, "min_steps": 1000,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 1: Still easy, slightly larger workspace
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.10, 0.18), "arm_height": (-0.02, 0.12),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.10, "orient_threshold": None,
+            "success_rate": 0.35, "min_reaches": 2000, "min_steps": 1500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 2: Medium-easy
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.12, 0.22), "arm_height": (-0.05, 0.15),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.08, "orient_threshold": None,
-            "success_rate": 0.40, "min_reaches": 2000, "min_steps": 1500,
+            "success_rate": 0.40, "min_reaches": 3000, "min_steps": 2000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
-        # Level 1
+        # Level 3: Transition to harder threshold
         {
             "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.15, 0.24), "arm_height": (-0.05, 0.12),
-            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
-            "load_range": (0.0, 0.0),
-            "pos_threshold": 0.07, "orient_threshold": None,
-            "success_rate": 0.45, "min_reaches": 3000, "min_steps": 2000,
-            "use_orientation": False, "use_gripper": False,
-            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
-        },
-        # Level 2
-        {
-            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.18, 0.28), "arm_height": (-0.08, 0.15),
+            "arm_radius": (0.15, 0.26), "arm_height": (-0.08, 0.18),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.06, "orient_threshold": None,
-            "success_rate": 0.50, "min_reaches": 4000, "min_steps": 2500,
+            "success_rate": 0.40, "min_reaches": 4000, "min_steps": 2500,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
-        # Level 3
-        {
-            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
-            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
-            "load_range": (0.0, 0.0),
-            "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.50, "min_reaches": 5000, "min_steps": 3000,
-            "use_orientation": False, "use_gripper": False,
-            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
-        },
-        # Level 4: Very slow walking
+        # Level 4: Very slow walking + tight threshold
         {
             "vx": (0.0, 0.10), "vy": (-0.03, 0.03), "vyaw": (-0.05, 0.05),
-            "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
+            "arm_radius": (0.15, 0.30), "arm_height": (-0.10, 0.18),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3000,
+            "success_rate": 0.38, "min_reaches": 5000, "min_steps": 3000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
@@ -168,7 +170,7 @@ def create_curriculum():
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.45, "min_reaches": 6000, "min_steps": 3500,
+            "success_rate": 0.38, "min_reaches": 6000, "min_steps": 3500,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
@@ -179,7 +181,7 @@ def create_curriculum():
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.45, "min_reaches": 7000, "min_steps": 4000,
+            "success_rate": 0.35, "min_reaches": 7000, "min_steps": 4000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
@@ -190,7 +192,7 @@ def create_curriculum():
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.40, "min_reaches": 8000, "min_steps": 4500,
+            "success_rate": 0.35, "min_reaches": 8000, "min_steps": 4500,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
@@ -201,7 +203,7 @@ def create_curriculum():
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.40, "min_reaches": 9000, "min_steps": 5000,
+            "success_rate": 0.33, "min_reaches": 9000, "min_steps": 5000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
@@ -212,7 +214,7 @@ def create_curriculum():
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.40, "min_reaches": 10000, "min_steps": 5500,
+            "success_rate": 0.30, "min_reaches": 10000, "min_steps": 5500,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
         },
@@ -586,9 +588,9 @@ REWARD_WEIGHTS = {
     "loco_orientation": 2.5,
     "loco_gait": 1.5,
 
-    # Arm reaching
-    "arm_distance": 3.0,
-    "arm_reaching": 15.0,
+    # Arm reaching - INCREASED for better learning
+    "arm_distance": 4.0,   # Was 3.0
+    "arm_reaching": 20.0,  # Was 15.0
     "arm_smooth": 1.0,
 
     # Orientation
@@ -1347,12 +1349,13 @@ def create_env(num_envs, device):
             dist = torch.norm(ee_pos - target_world, dim=-1)
 
             # Success criteria based on curriculum level
+            reach_threshold = lv["pos_threshold"]
             if lv["use_orientation"]:
                 orient_err = compute_orientation_error(palm_quat)
                 orient_threshold = lv.get("orient_threshold", 0.5)
-                reached = (dist < REACH_THRESHOLD) & (orient_err < orient_threshold)
+                reached = (dist < reach_threshold) & (orient_err < orient_threshold)
             else:
-                reached = dist < lv["pos_threshold"]
+                reached = dist < reach_threshold
 
             new_reaches = reached & ~self.already_reached
 
@@ -1425,8 +1428,12 @@ def create_env(num_envs, device):
             target_world = pos + quat_apply(quat, self.target_pos_body)
             dist = torch.norm(ee_pos - target_world, dim=-1)
 
-            r_distance = torch.exp(-5.0 * dist)
-            r_reaching = (dist < REACH_THRESHOLD).float()
+            # Stronger gradient for distance reward (helps early learning)
+            r_distance = torch.exp(-4.0 * dist)
+
+            # Reaching reward uses level-specific threshold
+            reach_threshold = lv["pos_threshold"]
+            r_reaching = (dist < reach_threshold).float()
 
             # Arm smoothness
             arm_diff = self.prev_arm_actions - self._prev_arm_actions
