@@ -785,8 +785,8 @@ def create_env(num_envs, device):
             inner_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(inner_local), -1)
             self.inner_markers.visualize(translations=inner_world, orientations=inner_quat)
 
-            # ===== BODY EXCLUSION (orange) - X < 0.10 (within 10cm in front of shoulder) =====
-            x_cut = 0.10
+            # ===== BODY EXCLUSION (orange) - X < 0.05 (within 5cm in front of shoulder) =====
+            x_cut = 0.05
 
             outer_valid = []    # X >= 0.10 (valid, blue)
             outer_invalid = []  # X < 0.10 (invalid, orange)
@@ -835,8 +835,8 @@ def create_env(num_envs, device):
             y = -radius * torch.sin(azimuth)  # -Y is right side
             z = height
 
-            # Body exclusion: X must be >= 0.10 (at least 10cm in front of shoulder)
-            x_cut = 0.10
+            # Body exclusion: X must be >= 0.05 (at least 5cm in front of shoulder)
+            x_cut = 0.05
             too_close = x < x_cut
             x = torch.where(too_close, torch.full_like(x, x_cut), x)
 
