@@ -51,50 +51,50 @@ CURRICULUM = [
     {
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "arm_radius": (0.15, 0.22), "arm_height": (-0.05, 0.10),
-        "pos_threshold": 0.10, "success_rate": 0.4, "min_reaches": 500,
+        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 3000, "min_steps": 2000,
     },
     # Level 1: Sabit, orta workspace
     {
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "arm_radius": (0.18, 0.28), "arm_height": (-0.08, 0.15),
-        "pos_threshold": 0.08, "success_rate": 0.5, "min_reaches": 800,
+        "pos_threshold": 0.05, "success_rate": 0.55, "min_reaches": 5000, "min_steps": 2500,
     },
     # Level 2: Çok yavaş yürüme başlangıcı
     {
         "vx": (0.0, 0.15), "vy": (-0.05, 0.05), "vyaw": (-0.1, 0.1),
         "arm_radius": (0.18, 0.30), "arm_height": (-0.10, 0.18),
-        "pos_threshold": 0.08, "success_rate": 0.45, "min_reaches": 1000,
+        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 6000, "min_steps": 3000,
     },
     # Level 3: Yavaş yürüme
     {
         "vx": (0.0, 0.25), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
         "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.20),
-        "pos_threshold": 0.08, "success_rate": 0.45, "min_reaches": 1200,
+        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 8000, "min_steps": 3500,
     },
     # Level 4: Normal yürüme
     {
         "vx": (0.0, 0.4), "vy": (-0.1, 0.1), "vyaw": (-0.2, 0.2),
         "arm_radius": (0.18, 0.35), "arm_height": (-0.12, 0.22),
-        "pos_threshold": 0.08, "success_rate": 0.4, "min_reaches": 1500,
+        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 10000, "min_steps": 4000,
     },
     # Level 5: Hızlı yürüme
     {
         "vx": (-0.1, 0.6), "vy": (-0.15, 0.15), "vyaw": (-0.3, 0.3),
         "arm_radius": (0.18, 0.38), "arm_height": (-0.15, 0.25),
-        "pos_threshold": 0.08, "success_rate": 0.35, "min_reaches": 2000,
+        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 12000, "min_steps": 5000,
     },
     # Level 6: Full range
     {
         "vx": (-0.2, 0.8), "vy": (-0.2, 0.2), "vyaw": (-0.4, 0.4),
         "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.28),
-        "pos_threshold": 0.08, "success_rate": None, "min_reaches": None,
+        "pos_threshold": 0.05, "success_rate": None, "min_reaches": None, "min_steps": None,
     },
 ]
 
 # Default values
 HEIGHT_DEFAULT = 0.72
 GAIT_FREQUENCY = 1.5
-REACH_THRESHOLD = 0.08
+REACH_THRESHOLD = 0.05  # 8cm → 5cm (daha zor)
 
 # Shoulder offset (right shoulder relative to root)
 SHOULDER_OFFSET = torch.tensor([0.0, -0.174, 0.259])
@@ -561,6 +561,9 @@ def create_env(num_envs, device):
             self.stage_reaches = 0
             self.stage_steps = 0
 
+            # FIX: Prevent counting same reach multiple times
+            self.already_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
             # Markers (lazy init)
             self._markers_initialized = False
             self.target_markers = None
@@ -777,6 +780,9 @@ def create_env(num_envs, device):
             n = len(env_ids)
             lv = CURRICULUM[self.curr_level]
 
+            # Reset already_reached flag for new targets
+            self.already_reached[env_ids] = False
+
             # Velocity commands
             self.vel_cmd[env_ids, 0] = torch.empty(n, device=self.device).uniform_(*lv["vx"])
             self.vel_cmd[env_ids, 1] = torch.empty(n, device=self.device).uniform_(*lv["vy"])
@@ -889,7 +895,7 @@ def create_env(num_envs, device):
 
             self.phase = (self.phase + GAIT_FREQUENCY * 0.02) % 1.0
 
-            # Check reaching
+            # Check reaching - FIX: Only count NEW reaches
             ee_pos = self._compute_ee_pos()
             root_pos = self.robot.data.root_pos_w
             root_quat = self.robot.data.root_quat_w
@@ -898,11 +904,17 @@ def create_env(num_envs, device):
             dist = torch.norm(ee_pos - target_world, dim=-1)
             reached = dist < REACH_THRESHOLD
 
-            if reached.any():
-                reached_ids = torch.where(reached)[0]
+            # Only count if newly reached (wasn't reached before)
+            new_reaches = reached & ~self.already_reached
+
+            if new_reaches.any():
+                reached_ids = torch.where(new_reaches)[0]
                 self.reach_count[reached_ids] += 1
                 self.total_reaches += len(reached_ids)
                 self.stage_reaches += len(reached_ids)
+
+                # Mark as reached and sample new target
+                self.already_reached[reached_ids] = True
                 self._sample_commands(reached_ids)
 
             # Update markers
@@ -1056,13 +1068,16 @@ def create_env(num_envs, device):
             self.reach_count[env_ids] = 0
 
         def update_curriculum(self, mean_reward):
-            """Update curriculum based on reaches and steps"""
+            """Update curriculum based on reaches, success rate, AND minimum steps"""
             lv = CURRICULUM[self.curr_level]
 
             if lv["min_reaches"] is None:
                 return  # Final level
 
-            if self.stage_reaches >= lv["min_reaches"]:
+            # Check ALL criteria: min_reaches, success_rate, AND min_steps
+            min_steps = lv.get("min_steps", 0)
+
+            if self.stage_steps >= min_steps and self.stage_reaches >= lv["min_reaches"]:
                 success_rate = self.stage_reaches / max(self.stage_steps, 1)
                 if success_rate >= lv["success_rate"]:
                     if self.curr_level < len(CURRICULUM) - 1:
@@ -1071,7 +1086,7 @@ def create_env(num_envs, device):
                         print(f"🎯 LEVEL UP! Now at Level {self.curr_level}")
                         new_lv = CURRICULUM[self.curr_level]
                         print(f"   vx={new_lv['vx']}, arm_radius={new_lv['arm_radius']}")
-                        print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}")
+                        print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}, Steps: {self.stage_steps}")
                         print(f"{'='*60}\n")
                         self.stage_reaches = 0
                         self.stage_steps = 0
