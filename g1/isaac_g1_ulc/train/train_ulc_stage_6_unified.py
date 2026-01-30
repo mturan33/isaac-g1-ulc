@@ -1,20 +1,27 @@
 """
-ULC G1 Stage 6: Unified Loco-Manipulation with Palm EE + Gripper + Orientation
-===============================================================================
-20 Seviyeli Curriculum:
-- Level 0-9:   Sadece ARM REACHING (gripper açık, orientation reward yok)
-- Level 10-19: ARM REACHING + ORIENTATION + GRIPPER CONTROL
+ULC G1 Stage 6-10: Complete Low-Level Controller Training
+==========================================================
+Future-proof observation space for all low-level control stages.
 
-Yeni Özellikler:
-- Palm-based EE (avuç içi merkezi)
-- Orientation reward (el aşağı baksın)
-- 7 parmak gripper kontrolü
-- Hedefe yaklaşınca kavrama
+STAGES:
+- Stage 6 (Level 0-19):   Reaching + Orientation + Gripper
+- Stage 7 (Level 20-29):  + Height Command (Squat/Stand)
+- Stage 8 (Level 30-39):  + Load Carrying (Object Weight)
+- Stage 9 (Level 40-49):  + Object Tracking (Relative Position)
+- Stage 10 (Level 50-59): + Force Feedback (Contact Forces)
 
-KULLANIM:
-./isaaclab.bat -p train_ulc_stage6_palm_gripper.py \
+OBSERVATION SPACE:
+- Loco obs: 57 dims (Stage 3 compatible)
+- Arm obs:  52 dims (future-proof for all stages)
+
+ACTION SPACE:
+- Loco actions: 12 (leg joints)
+- Arm actions:  12 (5 arm + 7 finger)
+
+USAGE:
+./isaaclab.bat -p train_ulc_stage6_complete.py \
     --stage3_checkpoint logs/ulc/ulc_g1_stage3_.../model_best.pt \
-    --num_envs 4096 --max_iterations 15000 --headless
+    --num_envs 4096 --max_iterations 20000 --headless
 """
 
 import torch
@@ -46,7 +53,6 @@ ARM_JOINT_NAMES = [
     "right_elbow_roll_joint",
 ]
 
-# YENİ: Parmak joint isimleri (Dex3 hand)
 FINGER_JOINT_NAMES = [
     "right_zero_joint",
     "right_one_joint",
@@ -57,188 +63,526 @@ FINGER_JOINT_NAMES = [
     "right_six_joint",
 ]
 
-# Palm offset (palm_link'ten parmak ucuna)
-PALM_FORWARD_OFFSET = 0.08  # meters
-
-# ============================================================================
-# 20 SEVİYELİ CURRICULUM
-# ============================================================================
-# Level 0-9:   Sadece REACHING (gripper açık, orientation yok)
-# Level 10-19: REACHING + ORIENTATION + GRIPPER
-# ============================================================================
-
-CURRICULUM = [
-    # ===== PHASE 1: REACHING ONLY (Level 0-9) =====
-    # Level 0: Sabit duruş, çok küçük workspace
-    {
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.15, 0.20), "arm_height": (-0.02, 0.08),
-        "pos_threshold": 0.08, "success_rate": 0.40, "min_reaches": 2000, "min_steps": 1500,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 1: Sabit, küçük workspace
-    {
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.15, 0.24), "arm_height": (-0.05, 0.12),
-        "pos_threshold": 0.07, "success_rate": 0.45, "min_reaches": 3000, "min_steps": 2000,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 2: Sabit, orta workspace
-    {
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.18, 0.28), "arm_height": (-0.08, 0.15),
-        "pos_threshold": 0.06, "success_rate": 0.50, "min_reaches": 4000, "min_steps": 2500,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 3: Sabit, geniş workspace
-    {
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
-        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 5000, "min_steps": 3000,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 4: Çok yavaş yürüme başlangıcı
-    {
-        "vx": (0.0, 0.10), "vy": (-0.03, 0.03), "vyaw": (-0.05, 0.05),
-        "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
-        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3000,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 5: Yavaş yürüme
-    {
-        "vx": (0.0, 0.20), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
-        "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
-        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 6000, "min_steps": 3500,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 6: Orta hız yürüme
-    {
-        "vx": (0.0, 0.30), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
-        "arm_radius": (0.18, 0.35), "arm_height": (-0.12, 0.22),
-        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 7000, "min_steps": 4000,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 7: Normal yürüme
-    {
-        "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.20, 0.20),
-        "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.24),
-        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 8000, "min_steps": 4500,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 8: Hızlı yürüme
-    {
-        "vx": (-0.1, 0.50), "vy": (-0.12, 0.12), "vyaw": (-0.25, 0.25),
-        "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.26),
-        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 9000, "min_steps": 5000,
-        "use_orientation": False, "use_gripper": False,
-    },
-    # Level 9: Full range reaching (orientation öncesi son seviye)
-    {
-        "vx": (-0.15, 0.60), "vy": (-0.15, 0.15), "vyaw": (-0.30, 0.30),
-        "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
-        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 10000, "min_steps": 5500,
-        "use_orientation": False, "use_gripper": False,
-    },
-
-    # ===== PHASE 2: REACHING + ORIENTATION + GRIPPER (Level 10-19) =====
-    # Level 10: Sabit, orientation öğrenme başlangıcı
-    {
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.18, 0.28), "arm_height": (-0.05, 0.15),
-        "pos_threshold": 0.05, "orient_threshold": 0.8,  # ~45 derece tolerans
-        "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 11: Sabit, daha sıkı orientation
-    {
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.18, 0.32), "arm_height": (-0.08, 0.18),
-        "pos_threshold": 0.05, "orient_threshold": 0.6,  # ~35 derece
-        "success_rate": 0.40, "min_reaches": 4000, "min_steps": 3000,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 12: Sabit, sıkı orientation
-    {
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
-        "pos_threshold": 0.05, "orient_threshold": 0.5,  # ~30 derece
-        "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3500,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 13: Çok yavaş yürüme + orientation
-    {
-        "vx": (0.0, 0.15), "vy": (-0.05, 0.05), "vyaw": (-0.08, 0.08),
-        "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
-        "pos_threshold": 0.05, "orient_threshold": 0.5,
-        "success_rate": 0.40, "min_reaches": 5000, "min_steps": 3500,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 14: Yavaş yürüme + orientation
-    {
-        "vx": (0.0, 0.25), "vy": (-0.08, 0.08), "vyaw": (-0.12, 0.12),
-        "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.22),
-        "pos_threshold": 0.05, "orient_threshold": 0.5,
-        "success_rate": 0.40, "min_reaches": 6000, "min_steps": 4000,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 15: Orta hız + orientation
-    {
-        "vx": (0.0, 0.35), "vy": (-0.10, 0.10), "vyaw": (-0.18, 0.18),
-        "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.24),
-        "pos_threshold": 0.05, "orient_threshold": 0.45,
-        "success_rate": 0.38, "min_reaches": 7000, "min_steps": 4500,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 16: Normal yürüme + orientation
-    {
-        "vx": (0.0, 0.45), "vy": (-0.12, 0.12), "vyaw": (-0.22, 0.22),
-        "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.26),
-        "pos_threshold": 0.05, "orient_threshold": 0.45,
-        "success_rate": 0.35, "min_reaches": 8000, "min_steps": 5000,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 17: Hızlı yürüme + orientation
-    {
-        "vx": (-0.1, 0.55), "vy": (-0.15, 0.15), "vyaw": (-0.28, 0.28),
-        "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
-        "pos_threshold": 0.05, "orient_threshold": 0.4,
-        "success_rate": 0.35, "min_reaches": 9000, "min_steps": 5500,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 18: Çok hızlı + sıkı orientation
-    {
-        "vx": (-0.15, 0.65), "vy": (-0.18, 0.18), "vyaw": (-0.35, 0.35),
-        "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
-        "pos_threshold": 0.05, "orient_threshold": 0.35,
-        "success_rate": 0.32, "min_reaches": 10000, "min_steps": 6000,
-        "use_orientation": True, "use_gripper": True,
-    },
-    # Level 19: MASTER LEVEL - Full capabilities
-    {
-        "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
-        "arm_radius": (0.18, 0.45), "arm_height": (-0.18, 0.30),
-        "pos_threshold": 0.05, "orient_threshold": 0.35,  # ~20 derece
-        "success_rate": None, "min_reaches": None, "min_steps": None,
-        "use_orientation": True, "use_gripper": True,
-    },
-]
-
-# Default values
-HEIGHT_DEFAULT = 0.72
-GAIT_FREQUENCY = 1.5
-REACH_THRESHOLD = 0.05
-GRASP_THRESHOLD = 0.06  # Gripper kapanma mesafesi
+# Palm offset
+PALM_FORWARD_OFFSET = 0.08
 
 # Shoulder offset
 SHOULDER_OFFSET = torch.tensor([0.0, -0.174, 0.259])
 
-# Reward weights
+# Height limits
+HEIGHT_MIN = 0.35  # Full squat
+HEIGHT_MAX = 0.75  # Standing tall
+HEIGHT_DEFAULT = 0.72
+
+# Load limits
+LOAD_MAX = 3.0  # kg
+
+# Gait
+GAIT_FREQUENCY = 1.5
+
+# Thresholds
+REACH_THRESHOLD = 0.05
+GRASP_THRESHOLD = 0.06
+ORIENT_THRESHOLD_EASY = 0.8  # ~45 degrees
+ORIENT_THRESHOLD_HARD = 0.35  # ~20 degrees
+
+# ============================================================================
+# 60-LEVEL CURRICULUM (Stage 6-10)
+# ============================================================================
+# Level 0-19:   Stage 6 - Reaching + Orientation + Gripper
+# Level 20-29:  Stage 7 - + Height Command
+# Level 30-39:  Stage 8 - + Load Carrying
+# Level 40-49:  Stage 9 - + Object Tracking (placeholder)
+# Level 50-59:  Stage 10 - + Force Feedback (placeholder)
+# ============================================================================
+
+def create_curriculum():
+    """Generate full curriculum for stages 6-10"""
+    curriculum = []
+
+    # =========================================================================
+    # STAGE 6: REACHING + ORIENTATION + GRIPPER (Level 0-19)
+    # =========================================================================
+
+    # Phase 1: Reaching Only (Level 0-9)
+    stage6_phase1 = [
+        # Level 0: Stationary, tiny workspace
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.15, 0.20), "arm_height": (-0.02, 0.08),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.08, "orient_threshold": None,
+            "success_rate": 0.40, "min_reaches": 2000, "min_steps": 1500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 1
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.15, 0.24), "arm_height": (-0.05, 0.12),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.07, "orient_threshold": None,
+            "success_rate": 0.45, "min_reaches": 3000, "min_steps": 2000,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 2
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.28), "arm_height": (-0.08, 0.15),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.06, "orient_threshold": None,
+            "success_rate": 0.50, "min_reaches": 4000, "min_steps": 2500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 3
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.50, "min_reaches": 5000, "min_steps": 3000,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 4: Very slow walking
+        {
+            "vx": (0.0, 0.10), "vy": (-0.03, 0.03), "vyaw": (-0.05, 0.05),
+            "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3000,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 5: Slow walking
+        {
+            "vx": (0.0, 0.20), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
+            "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.45, "min_reaches": 6000, "min_steps": 3500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 6: Medium speed
+        {
+            "vx": (0.0, 0.30), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
+            "arm_radius": (0.18, 0.35), "arm_height": (-0.12, 0.22),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.45, "min_reaches": 7000, "min_steps": 4000,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 7: Normal walking
+        {
+            "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.20, 0.20),
+            "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.24),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.40, "min_reaches": 8000, "min_steps": 4500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 8: Fast walking
+        {
+            "vx": (-0.1, 0.50), "vy": (-0.12, 0.12), "vyaw": (-0.25, 0.25),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.26),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.40, "min_reaches": 9000, "min_steps": 5000,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 9: Full range reaching
+        {
+            "vx": (-0.15, 0.60), "vy": (-0.15, 0.15), "vyaw": (-0.30, 0.30),
+            "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.40, "min_reaches": 10000, "min_steps": 5500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+    ]
+
+    # Phase 2: + Orientation + Gripper (Level 10-19)
+    stage6_phase2 = [
+        # Level 10: Stationary, orientation learning
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.28), "arm_height": (-0.05, 0.15),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.8,
+            "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 11
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.32), "arm_height": (-0.08, 0.18),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.6,
+            "success_rate": 0.40, "min_reaches": 4000, "min_steps": 3000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 12
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.5,
+            "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 13: Very slow + orientation
+        {
+            "vx": (0.0, 0.15), "vy": (-0.05, 0.05), "vyaw": (-0.08, 0.08),
+            "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.5,
+            "success_rate": 0.40, "min_reaches": 5000, "min_steps": 3500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 14
+        {
+            "vx": (0.0, 0.25), "vy": (-0.08, 0.08), "vyaw": (-0.12, 0.12),
+            "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.22),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.5,
+            "success_rate": 0.40, "min_reaches": 6000, "min_steps": 4000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 15
+        {
+            "vx": (0.0, 0.35), "vy": (-0.10, 0.10), "vyaw": (-0.18, 0.18),
+            "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.24),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.45,
+            "success_rate": 0.38, "min_reaches": 7000, "min_steps": 4500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 16
+        {
+            "vx": (0.0, 0.45), "vy": (-0.12, 0.12), "vyaw": (-0.22, 0.22),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.26),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.45,
+            "success_rate": 0.35, "min_reaches": 8000, "min_steps": 5000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 17
+        {
+            "vx": (-0.1, 0.55), "vy": (-0.15, 0.15), "vyaw": (-0.28, 0.28),
+            "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.4,
+            "success_rate": 0.35, "min_reaches": 9000, "min_steps": 5500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 18
+        {
+            "vx": (-0.15, 0.65), "vy": (-0.18, 0.18), "vyaw": (-0.35, 0.35),
+            "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.35,
+            "success_rate": 0.32, "min_reaches": 10000, "min_steps": 6000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 19: Stage 6 Master
+        {
+            "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
+            "arm_radius": (0.18, 0.45), "arm_height": (-0.18, 0.30),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.35,
+            "success_rate": 0.30, "min_reaches": 12000, "min_steps": 7000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+        },
+    ]
+
+    # =========================================================================
+    # STAGE 7: + HEIGHT COMMAND (Level 20-29)
+    # =========================================================================
+
+    stage7_levels = [
+        # Level 20: Stationary, small height variation
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.20),
+            "height_range": (0.60, 0.75),  # Small squat
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.5,
+            "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 21: Deeper squat
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.35), "arm_height": (-0.15, 0.22),
+            "height_range": (0.50, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.5,
+            "success_rate": 0.38, "min_reaches": 4000, "min_steps": 3000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 22: Full squat range
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.38), "arm_height": (-0.20, 0.25),
+            "height_range": (0.40, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.45,
+            "success_rate": 0.40, "min_reaches": 5000, "min_steps": 3500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 23: Very slow + height
+        {
+            "vx": (0.0, 0.10), "vy": (-0.03, 0.03), "vyaw": (-0.05, 0.05),
+            "arm_radius": (0.18, 0.38), "arm_height": (-0.20, 0.25),
+            "height_range": (0.38, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.45,
+            "success_rate": 0.35, "min_reaches": 5000, "min_steps": 4000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 24: Slow walk + squat
+        {
+            "vx": (0.0, 0.20), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.25, 0.28),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.45,
+            "success_rate": 0.35, "min_reaches": 6000, "min_steps": 4500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 25: Medium speed + squat
+        {
+            "vx": (0.0, 0.30), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
+            "arm_radius": (0.18, 0.42), "arm_height": (-0.28, 0.30),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.4,
+            "success_rate": 0.35, "min_reaches": 7000, "min_steps": 5000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 26: Normal walk + squat
+        {
+            "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.20, 0.20),
+            "arm_radius": (0.18, 0.45), "arm_height": (-0.30, 0.32),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.4,
+            "success_rate": 0.33, "min_reaches": 8000, "min_steps": 5500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 27: Fast walk + squat
+        {
+            "vx": (-0.1, 0.50), "vy": (-0.12, 0.12), "vyaw": (-0.25, 0.25),
+            "arm_radius": (0.18, 0.45), "arm_height": (-0.30, 0.35),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.38,
+            "success_rate": 0.32, "min_reaches": 9000, "min_steps": 6000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 28: Very fast + squat
+        {
+            "vx": (-0.15, 0.60), "vy": (-0.15, 0.15), "vyaw": (-0.30, 0.30),
+            "arm_radius": (0.18, 0.48), "arm_height": (-0.32, 0.38),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.35,
+            "success_rate": 0.30, "min_reaches": 10000, "min_steps": 6500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+        # Level 29: Stage 7 Master
+        {
+            "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
+            "arm_radius": (0.18, 0.50), "arm_height": (-0.35, 0.40),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": 0.35,
+            "success_rate": 0.28, "min_reaches": 12000, "min_steps": 7500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+        },
+    ]
+
+    # =========================================================================
+    # STAGE 8: + LOAD CARRYING (Level 30-39)
+    # =========================================================================
+
+    stage8_levels = [
+        # Level 30: Stationary, light load
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.18, 0.35), "arm_height": (-0.20, 0.25),
+            "height_range": (0.45, 0.75),
+            "load_range": (0.0, 0.5),  # 0-500g
+            "pos_threshold": 0.06, "orient_threshold": 0.5,
+            "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 31: Light load + movement
+        {
+            "vx": (0.0, 0.15), "vy": (-0.05, 0.05), "vyaw": (-0.08, 0.08),
+            "arm_radius": (0.18, 0.38), "arm_height": (-0.25, 0.28),
+            "height_range": (0.40, 0.75),
+            "load_range": (0.0, 0.8),
+            "pos_threshold": 0.06, "orient_threshold": 0.5,
+            "success_rate": 0.35, "min_reaches": 4000, "min_steps": 3000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 32: Medium load
+        {
+            "vx": (0.0, 0.25), "vy": (-0.08, 0.08), "vyaw": (-0.12, 0.12),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.28, 0.30),
+            "height_range": (0.38, 0.75),
+            "load_range": (0.0, 1.2),
+            "pos_threshold": 0.06, "orient_threshold": 0.45,
+            "success_rate": 0.35, "min_reaches": 5000, "min_steps": 3500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 33: Medium load + faster
+        {
+            "vx": (0.0, 0.35), "vy": (-0.10, 0.10), "vyaw": (-0.15, 0.15),
+            "arm_radius": (0.18, 0.42), "arm_height": (-0.30, 0.32),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 1.5),
+            "pos_threshold": 0.06, "orient_threshold": 0.45,
+            "success_rate": 0.33, "min_reaches": 6000, "min_steps": 4000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 34: Heavy load
+        {
+            "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.18, 0.18),
+            "arm_radius": (0.18, 0.42), "arm_height": (-0.30, 0.35),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 2.0),
+            "pos_threshold": 0.07, "orient_threshold": 0.45,
+            "success_rate": 0.32, "min_reaches": 7000, "min_steps": 4500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 35: Heavy load + normal walk
+        {
+            "vx": (-0.1, 0.45), "vy": (-0.12, 0.12), "vyaw": (-0.22, 0.22),
+            "arm_radius": (0.18, 0.45), "arm_height": (-0.32, 0.38),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 2.3),
+            "pos_threshold": 0.07, "orient_threshold": 0.42,
+            "success_rate": 0.30, "min_reaches": 8000, "min_steps": 5000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 36: Max load + faster
+        {
+            "vx": (-0.1, 0.50), "vy": (-0.15, 0.15), "vyaw": (-0.25, 0.25),
+            "arm_radius": (0.18, 0.45), "arm_height": (-0.35, 0.40),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 2.5),
+            "pos_threshold": 0.08, "orient_threshold": 0.40,
+            "success_rate": 0.28, "min_reaches": 9000, "min_steps": 5500,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 37: Max load + fast walk
+        {
+            "vx": (-0.15, 0.55), "vy": (-0.18, 0.18), "vyaw": (-0.30, 0.30),
+            "arm_radius": (0.18, 0.48), "arm_height": (-0.35, 0.42),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 2.8),
+            "pos_threshold": 0.08, "orient_threshold": 0.38,
+            "success_rate": 0.27, "min_reaches": 10000, "min_steps": 6000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 38: Full challenge
+        {
+            "vx": (-0.2, 0.65), "vy": (-0.20, 0.20), "vyaw": (-0.35, 0.35),
+            "arm_radius": (0.18, 0.50), "arm_height": (-0.38, 0.45),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 3.0),
+            "pos_threshold": 0.08, "orient_threshold": 0.35,
+            "success_rate": 0.25, "min_reaches": 12000, "min_steps": 7000,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+        # Level 39: Stage 8 Master (Final low-level controller)
+        {
+            "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
+            "arm_radius": (0.18, 0.50), "arm_height": (-0.40, 0.48),
+            "height_range": (0.35, 0.75),
+            "load_range": (0.0, 3.0),
+            "pos_threshold": 0.08, "orient_threshold": 0.35,
+            "success_rate": None, "min_reaches": None, "min_steps": None,
+            "use_orientation": True, "use_gripper": True,
+            "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+        },
+    ]
+
+    # Combine all
+    curriculum = stage6_phase1 + stage6_phase2 + stage7_levels + stage8_levels
+    return curriculum
+
+
+CURRICULUM = create_curriculum()
+
+# ============================================================================
+# REWARD WEIGHTS
+# ============================================================================
+
 REWARD_WEIGHTS = {
     # Locomotion
     "loco_vx": 2.5,
     "loco_vy": 1.0,
     "loco_vyaw": 1.0,
-    "loco_height": 2.0,
+    "loco_height": 2.5,  # Increased for Stage 7
     "loco_orientation": 2.5,
     "loco_gait": 1.5,
 
@@ -247,15 +591,21 @@ REWARD_WEIGHTS = {
     "arm_reaching": 15.0,
     "arm_smooth": 1.0,
 
-    # Orientation (Level 10+ aktif)
+    # Orientation
     "palm_orientation": 2.5,
 
-    # Gripper (Level 10+ aktif)
+    # Gripper
     "gripper_grasp": 5.0,
-    "gripper_open_penalty": -0.5,  # Uzaktayken kapalıysa ceza
+
+    # Height control (Stage 7+)
+    "height_tracking": 3.0,
+
+    # Load adaptation (Stage 8+)
+    "load_stability": 2.0,
 
     # Balance
     "balance": 2.0,
+    "com_stability": 1.5,  # Center of mass tracking
 
     # Penalties
     "loco_action_rate": -0.01,
@@ -271,12 +621,12 @@ REWARD_WEIGHTS = {
 # ============================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="ULC G1 Stage 6: Palm + Gripper + Orientation")
+    parser = argparse.ArgumentParser(description="ULC G1 Stage 6-10: Complete Low-Level Controller")
     parser.add_argument("--num_envs", type=int, default=4096)
-    parser.add_argument("--max_iterations", type=int, default=15000)
+    parser.add_argument("--max_iterations", type=int, default=20000)
     parser.add_argument("--stage3_checkpoint", type=str, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage6_palm")
+    parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage6_complete")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
@@ -321,7 +671,7 @@ def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
 
 
 def get_palm_forward(quat: torch.Tensor) -> torch.Tensor:
-    """Get palm forward direction (+X in local frame) from quaternion (wxyz)"""
+    """Get palm forward direction from quaternion (wxyz format)"""
     w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
     fwd_x = 1 - 2*(y*y + z*z)
     fwd_y = 2*(x*y + w*z)
@@ -333,19 +683,23 @@ def compute_orientation_error(palm_quat: torch.Tensor) -> torch.Tensor:
     """Compute angle between palm forward and world DOWN (-Z)"""
     forward = get_palm_forward(palm_quat)
     target_dir = torch.zeros_like(forward)
-    target_dir[:, 2] = -1.0  # Down
+    target_dir[:, 2] = -1.0
     dot = (forward * target_dir).sum(dim=-1)
     dot = torch.clamp(dot, -1.0, 1.0)
-    return torch.acos(dot)  # radians
+    return torch.acos(dot)
 
 
 print("=" * 80)
-print("ULC G1 STAGE 6 - PALM EE + GRIPPER + ORIENTATION")
+print("ULC G1 STAGE 6-10: COMPLETE LOW-LEVEL CONTROLLER")
 print("=" * 80)
 print(f"Stage 3 checkpoint: {args_cli.stage3_checkpoint}")
-print("\n20 Seviyeli Curriculum:")
-print("  Level 0-9:   ARM REACHING (gripper açık)")
-print("  Level 10-19: REACHING + ORIENTATION + GRIPPER")
+print(f"\nCurriculum: {len(CURRICULUM)} levels")
+print("  Stage 6 (Level 0-19):  Reaching + Orientation + Gripper")
+print("  Stage 7 (Level 20-29): + Height Command (Squat/Stand)")
+print("  Stage 8 (Level 30-39): + Load Carrying")
+print(f"\nObservation Space:")
+print("  Loco obs: 57 dims")
+print("  Arm obs:  52 dims (future-proof)")
 print("=" * 80)
 
 
@@ -377,17 +731,10 @@ class LocoActor(nn.Module):
     def forward(self, x):
         return self.actor(x)
 
-    def act(self, x, deterministic=False):
-        mean = self.forward(x)
-        if deterministic:
-            return mean
-        std = self.log_std.clamp(-2, 1).exp()
-        return torch.distributions.Normal(mean, std).sample()
-
 
 class ArmActor(nn.Module):
-    """Arm + Gripper policy: 35 obs → 12 actions (5 arm + 7 finger)"""
-    def __init__(self, num_obs=35, num_act=12, hidden=[256, 256, 128]):
+    """Arm + Gripper policy: 52 obs → 12 actions (5 arm + 7 finger)"""
+    def __init__(self, num_obs=52, num_act=12, hidden=[256, 256, 128]):
         super().__init__()
         layers = []
         prev = num_obs
@@ -409,17 +756,10 @@ class ArmActor(nn.Module):
     def forward(self, x):
         return self.actor(x)
 
-    def act(self, x, deterministic=False):
-        mean = self.forward(x)
-        if deterministic:
-            return mean
-        std = self.log_std.clamp(-2, 1).exp()
-        return torch.distributions.Normal(mean, std).sample()
-
 
 class UnifiedCritic(nn.Module):
-    """Unified critic: 92 obs → 1 value"""
-    def __init__(self, num_obs=92, hidden=[512, 256, 128]):
+    """Unified critic: 109 obs → 1 value"""
+    def __init__(self, num_obs=109, hidden=[512, 256, 128]):
         super().__init__()
         layers = []
         prev = num_obs
@@ -441,8 +781,8 @@ class UnifiedCritic(nn.Module):
 
 
 class UnifiedActorCritic(nn.Module):
-    """Combined network: Loco(57) + Arm(35) → Loco(12) + Arm(12)"""
-    def __init__(self, loco_obs=57, arm_obs=35, loco_act=12, arm_act=12):
+    """Combined network: Loco(57) + Arm(52) → Loco(12) + Arm(12)"""
+    def __init__(self, loco_obs=57, arm_obs=52, loco_act=12, arm_act=12):
         super().__init__()
         self.loco_actor = LocoActor(loco_obs, loco_act)
         self.arm_actor = ArmActor(arm_obs, arm_act)
@@ -454,11 +794,6 @@ class UnifiedActorCritic(nn.Module):
         combined_obs = torch.cat([loco_obs, arm_obs], dim=-1)
         value = self.critic(combined_obs)
         return loco_mean, arm_mean, value
-
-    def act(self, loco_obs, arm_obs, deterministic=False):
-        loco_action = self.loco_actor.act(loco_obs, deterministic)
-        arm_action = self.arm_actor.act(arm_obs, deterministic)
-        return loco_action, arm_action
 
     def evaluate(self, loco_obs, arm_obs, loco_actions, arm_actions):
         loco_mean, arm_mean, value = self.forward(loco_obs, arm_obs)
@@ -675,19 +1010,32 @@ def create_env(num_envs, device):
             if self.palm_idx is None:
                 self.palm_idx = len(body_names) - 1
 
-            print(f"[Stage6] Leg joints: {len(self.leg_idx)}")
-            print(f"[Stage6] Arm joints: {len(self.arm_idx)}")
-            print(f"[Stage6] Finger joints: {len(self.finger_idx)}")
-            print(f"[Stage6] Palm body idx: {self.palm_idx}")
+            print(f"[Stage6+] Leg joints: {len(self.leg_idx)}")
+            print(f"[Stage6+] Arm joints: {len(self.arm_idx)}")
+            print(f"[Stage6+] Finger joints: {len(self.finger_idx)}")
+            print(f"[Stage6+] Palm body idx: {self.palm_idx}")
 
-            # Commands
-            self.height_cmd = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
+            # ================================================================
+            # COMMANDS - All stages
+            # ================================================================
+
+            # Locomotion
             self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
             self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+
+            # Height (Stage 7+)
+            self.height_cmd = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
 
             # Arm target (body frame)
             self.target_pos_body = torch.zeros(self.num_envs, 3, device=self.device)
             self.shoulder_offset = SHOULDER_OFFSET.to(self.device)
+
+            # Load (Stage 8+)
+            self.current_load = torch.zeros(self.num_envs, device=self.device)
+
+            # Object tracking placeholder (Stage 9+)
+            self.object_rel_ee = torch.zeros(self.num_envs, 3, device=self.device)
+            self.object_in_hand = torch.zeros(self.num_envs, device=self.device)
 
             # Gait phase
             self.phase = torch.zeros(self.num_envs, device=self.device)
@@ -696,6 +1044,9 @@ def create_env(num_envs, device):
             self.prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
             self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
             self.prev_finger_actions = torch.zeros(self.num_envs, 7, device=self.device)
+
+            # Previous EE position for velocity calculation
+            self.prev_ee_pos = torch.zeros(self.num_envs, 3, device=self.device)
 
             # Curriculum
             self.curr_level = 0
@@ -734,7 +1085,7 @@ def create_env(num_envs, device):
                     markers={
                         "sphere": sim_utils.SphereCfg(
                             radius=0.03,
-                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),  # Red = palm EE
+                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                         ),
                     },
                 )
@@ -761,6 +1112,18 @@ def create_env(num_envs, device):
             self.vel_cmd[env_ids, 1] = torch.empty(n, device=self.device).uniform_(*lv["vy"])
             self.vel_cmd[env_ids, 2] = torch.empty(n, device=self.device).uniform_(*lv["vyaw"])
 
+            # Height command (Stage 7+)
+            if lv["use_height_cmd"]:
+                self.height_cmd[env_ids] = torch.empty(n, device=self.device).uniform_(*lv["height_range"])
+            else:
+                self.height_cmd[env_ids] = HEIGHT_DEFAULT
+
+            # Load (Stage 8+)
+            if lv["use_load"]:
+                self.current_load[env_ids] = torch.empty(n, device=self.device).uniform_(*lv["load_range"])
+            else:
+                self.current_load[env_ids] = 0.0
+
             # Arm target
             azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)
             radius = torch.empty(n, device=self.device).uniform_(*lv["arm_radius"])
@@ -779,7 +1142,7 @@ def create_env(num_envs, device):
             self.target_pos_body[env_ids, 2] = z + self.shoulder_offset[2]
 
         def get_loco_obs(self) -> torch.Tensor:
-            """Locomotion observations (57 dim)"""
+            """Locomotion observations (57 dim) - Stage 3 compatible"""
             robot = self.robot
             quat = robot.data.root_quat_w
 
@@ -800,69 +1163,149 @@ def create_env(num_envs, device):
             torso_euler = quat_to_euler_xyz(quat)
 
             obs = torch.cat([
-                lin_vel_b,
-                ang_vel_b,
-                proj_gravity,
-                joint_pos,
-                joint_vel,
-                self.height_cmd.unsqueeze(-1),
-                self.vel_cmd,
-                gait_phase,
-                self.prev_leg_actions,
-                self.torso_cmd,
-                torso_euler,
-            ], dim=-1)
+                lin_vel_b,                       # 3
+                ang_vel_b,                       # 3
+                proj_gravity,                    # 3
+                joint_pos,                       # 12
+                joint_vel,                       # 12
+                self.height_cmd.unsqueeze(-1),   # 1
+                self.vel_cmd,                    # 3
+                gait_phase,                      # 2
+                self.prev_leg_actions,           # 12
+                self.torso_cmd,                  # 3
+                torso_euler,                     # 3
+            ], dim=-1)  # Total: 57
 
             return obs.clamp(-10, 10).nan_to_num()
 
         def get_arm_obs(self) -> torch.Tensor:
-            """Arm + Gripper observations (35 dim)
+            """
+            Arm observations (52 dim) - Future-proof for all stages
 
-            5 arm_pos + 5 arm_vel + 7 finger_pos +
-            3 target + 3 ee + 3 pos_err + 1 dist +
-            4 palm_quat + 1 orient_err +
-            2 lin_vel + 1 ang_vel = 35
+            Structure:
+            - Joint States (17): arm_pos(5) + arm_vel(5) + finger_pos(7)
+            - End-Effector State (13): ee_pos(3) + ee_vel(3) + palm_quat(4) + grip_force(1) + gripper_closed(1) + contact(1)
+            - Target Tracking (9): target_pos(3) + pos_err(3) + pos_dist(1) + orient_err(1) + target_reached(1)
+            - Height Control (3): height_cmd(1) + current_height(1) + height_err(1)
+            - Load & Object (7): estimated_load(3) + object_in_hand(1) + object_rel_ee(3)
+            - Base Motion (3): lin_vel_xy(2) + ang_vel_z(1)
             """
             robot = self.robot
             root_pos = robot.data.root_pos_w
             root_quat = robot.data.root_quat_w
 
-            # Joint states
-            arm_pos = robot.data.joint_pos[:, self.arm_idx]
-            arm_vel = robot.data.joint_vel[:, self.arm_idx]
-            finger_pos = robot.data.joint_pos[:, self.finger_idx]
+            # ================================================================
+            # 1. Joint States (17)
+            # ================================================================
+            arm_pos = robot.data.joint_pos[:, self.arm_idx]  # 5
+            arm_vel = robot.data.joint_vel[:, self.arm_idx] * 0.1  # 5
+            finger_pos = robot.data.joint_pos[:, self.finger_idx]  # 7
 
-            # EE in body frame
+            # ================================================================
+            # 2. End-Effector State (13)
+            # ================================================================
             ee_world, palm_quat = self._compute_palm_ee()
-            ee_body = quat_apply_inverse(root_quat, ee_world - root_pos)
+            ee_body = quat_apply_inverse(root_quat, ee_world - root_pos)  # 3
 
-            # Target
-            target_body = self.target_pos_body
+            # EE velocity (body frame)
+            ee_vel_world = (ee_world - self.prev_ee_pos) / 0.02  # dt = 0.02
+            ee_vel_body = quat_apply_inverse(root_quat, ee_vel_world)  # 3
 
-            # Position error
-            pos_err = target_body - ee_body
-            pos_dist = pos_err.norm(dim=-1, keepdim=True)
+            # Gripper state
+            finger_normalized = (finger_pos - self.finger_lower) / (self.finger_upper - self.finger_lower + 1e-6)
+            gripper_closed_ratio = finger_normalized.mean(dim=-1, keepdim=True)  # 1
 
-            # Orientation error (palm forward vs DOWN)
-            orient_err = compute_orientation_error(palm_quat).unsqueeze(-1)
+            # Grip force estimation (based on finger velocity and position)
+            finger_vel = robot.data.joint_vel[:, self.finger_idx]
+            grip_force = (finger_vel.abs().mean(dim=-1, keepdim=True) * gripper_closed_ratio).clamp(0, 1)  # 1
 
-            # Body velocity
+            # Contact detection (placeholder - will be improved with actual contact sensing)
+            lv = CURRICULUM[self.curr_level]
+            target_world = root_pos + quat_apply(root_quat, self.target_pos_body)
+            dist_to_target = torch.norm(ee_world - target_world, dim=-1, keepdim=True)
+            contact_detected = (dist_to_target < GRASP_THRESHOLD).float()  # 1
+
+            # ================================================================
+            # 3. Target Tracking (9)
+            # ================================================================
+            target_body = self.target_pos_body  # 3
+            pos_error = target_body - ee_body  # 3
+            pos_dist = pos_error.norm(dim=-1, keepdim=True) / 0.5  # 1 (normalized)
+
+            # Orientation error
+            orient_err = compute_orientation_error(palm_quat).unsqueeze(-1) / np.pi  # 1 (normalized)
+
+            # Target reached flag
+            orient_threshold = lv.get("orient_threshold", 1.0) if lv["use_orientation"] else 1.0
+            target_reached = ((dist_to_target < REACH_THRESHOLD) &
+                             (orient_err * np.pi < orient_threshold)).float()  # 1
+
+            # ================================================================
+            # 4. Height Control (3) - Stage 7+
+            # ================================================================
+            current_height = root_pos[:, 2:3]  # 1
+            height_cmd_obs = self.height_cmd.unsqueeze(-1)  # 1
+            height_err = (height_cmd_obs - current_height) / 0.4  # 1 (normalized by max range)
+
+            # ================================================================
+            # 5. Load & Object (7) - Stage 8+
+            # ================================================================
+            # Estimated load (placeholder - will use force estimation in Stage 8)
+            estimated_load = torch.zeros(self.num_envs, 3, device=self.device)
+            if lv["use_load"]:
+                # Simple model: load affects downward force
+                estimated_load[:, 2] = -self.current_load * 9.81 / 30.0  # Normalized
+
+            object_in_hand_obs = self.object_in_hand.unsqueeze(-1)  # 1
+            object_rel_ee_obs = self.object_rel_ee  # 3 (placeholder for Stage 9+)
+
+            # ================================================================
+            # 6. Base Motion (3)
+            # ================================================================
             lin_vel_b = quat_apply_inverse(root_quat, robot.data.root_lin_vel_w)
             ang_vel_b = quat_apply_inverse(root_quat, robot.data.root_ang_vel_w)
 
+            lin_vel_xy = lin_vel_b[:, :2]  # 2
+            ang_vel_z = ang_vel_b[:, 2:3]  # 1
+
+            # ================================================================
+            # Concatenate all observations
+            # ================================================================
             obs = torch.cat([
-                arm_pos,                  # 5
-                arm_vel * 0.1,            # 5
-                finger_pos,               # 7
-                target_body,              # 3
-                ee_body,                  # 3
-                pos_err,                  # 3
-                pos_dist / 0.5,           # 1
-                palm_quat,                # 4
-                orient_err / np.pi,       # 1 (normalized)
-                lin_vel_b[:, :2],         # 2
-                ang_vel_b[:, 2:3],        # 1
-            ], dim=-1)  # Total: 35
+                # Joint States (17)
+                arm_pos,                    # 5
+                arm_vel,                    # 5
+                finger_pos,                 # 7
+
+                # End-Effector State (13)
+                ee_body,                    # 3
+                ee_vel_body,                # 3
+                palm_quat,                  # 4
+                grip_force,                 # 1
+                gripper_closed_ratio,       # 1
+                contact_detected,           # 1
+
+                # Target Tracking (9)
+                target_body,                # 3
+                pos_error,                  # 3
+                pos_dist,                   # 1
+                orient_err,                 # 1
+                target_reached,             # 1
+
+                # Height Control (3)
+                height_cmd_obs,             # 1
+                current_height,             # 1
+                height_err,                 # 1
+
+                # Load & Object (7)
+                estimated_load,             # 3
+                object_in_hand_obs,         # 1
+                object_rel_ee_obs,          # 3
+
+                # Base Motion (3)
+                lin_vel_xy,                 # 2
+                ang_vel_z,                  # 1
+            ], dim=-1)  # Total: 52
 
             return obs.clamp(-10, 10).nan_to_num()
 
@@ -873,35 +1316,37 @@ def create_env(num_envs, device):
             arm_actions = actions[:, 12:17]
             finger_actions = actions[:, 17:24]
 
+            lv = CURRICULUM[self.curr_level]
+
             # Apply leg actions
             target_pos = self.robot.data.default_joint_pos.clone()
             target_pos[:, self.leg_idx] = self.default_leg + leg_actions * 0.4
             target_pos[:, self.arm_idx] = self.default_arm + arm_actions * 0.3
 
-            # Gripper control based on curriculum level
-            lv = CURRICULUM[self.curr_level]
+            # Gripper control
             if lv["use_gripper"]:
-                # Map [-1, 1] to [lower, upper]
                 finger_normalized = (finger_actions + 1.0) / 2.0
                 finger_targets = self.finger_lower + finger_normalized * (self.finger_upper - self.finger_lower)
                 target_pos[:, self.finger_idx] = finger_targets
             else:
-                # Gripper always open in Phase 1
                 target_pos[:, self.finger_idx] = self.finger_lower
 
             self.robot.set_joint_position_target(target_pos)
 
+            # Update phase
             self.phase = (self.phase + GAIT_FREQUENCY * 0.02) % 1.0
 
-            # Check reaching
+            # Store previous EE position for velocity calculation
             ee_pos, palm_quat = self._compute_palm_ee()
+
+            # Check reaching
             root_pos = self.robot.data.root_pos_w
             root_quat = self.robot.data.root_quat_w
             target_world = root_pos + quat_apply(root_quat, self.target_pos_body)
 
             dist = torch.norm(ee_pos - target_world, dim=-1)
 
-            # Success criteria depends on curriculum level
+            # Success criteria based on curriculum level
             if lv["use_orientation"]:
                 orient_err = compute_orientation_error(palm_quat)
                 orient_threshold = lv.get("orient_threshold", 0.5)
@@ -925,7 +1370,8 @@ def create_env(num_envs, device):
             self.target_markers.visualize(translations=target_world, orientations=default_quat)
             self.ee_markers.visualize(translations=ee_pos, orientations=default_quat)
 
-            # Store previous actions
+            # Store for next step
+            self.prev_ee_pos = ee_pos.clone()
             self._prev_leg_actions = self.prev_leg_actions.clone()
             self._prev_arm_actions = self.prev_arm_actions.clone()
             self._prev_finger_actions = self.prev_finger_actions.clone()
@@ -954,7 +1400,10 @@ def create_env(num_envs, device):
             r_vx = torch.exp(-2.0 * (lin_vel_b[:, 0] - self.vel_cmd[:, 0]) ** 2)
             r_vy = torch.exp(-3.0 * (lin_vel_b[:, 1] - self.vel_cmd[:, 1]) ** 2)
             r_vyaw = torch.exp(-2.0 * (ang_vel_b[:, 2] - self.vel_cmd[:, 2]) ** 2)
-            r_height = torch.exp(-10.0 * (pos[:, 2] - self.height_cmd) ** 2)
+
+            # Height tracking (enhanced for Stage 7)
+            height_error = pos[:, 2] - self.height_cmd
+            r_height = torch.exp(-10.0 * height_error ** 2)
 
             gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(quat, gravity_vec)
@@ -983,29 +1432,43 @@ def create_env(num_envs, device):
             arm_diff = self.prev_arm_actions - self._prev_arm_actions
             r_arm_smooth = torch.exp(-0.5 * arm_diff.pow(2).sum(-1))
 
-            # === ORIENTATION REWARD (Level 10+ only) ===
+            # === ORIENTATION REWARD ===
             if lv["use_orientation"]:
                 orient_err = compute_orientation_error(palm_quat)
                 r_palm_orient = torch.exp(-3.0 * orient_err)
             else:
                 r_palm_orient = torch.zeros(self.num_envs, device=self.device)
 
-            # === GRIPPER REWARD (Level 10+ only) ===
+            # === GRIPPER REWARD ===
             if lv["use_gripper"]:
                 finger_pos = robot.data.joint_pos[:, self.finger_idx]
                 finger_closed_ratio = ((finger_pos - self.finger_lower) /
                                        (self.finger_upper - self.finger_lower + 1e-6)).mean(dim=-1)
-
                 near_target = dist < GRASP_THRESHOLD
                 r_gripper = torch.where(
                     near_target,
-                    finger_closed_ratio * 2.0,  # Reward closing when near
-                    (1.0 - finger_closed_ratio) * 0.5  # Reward staying open when far
+                    finger_closed_ratio * 2.0,
+                    (1.0 - finger_closed_ratio) * 0.5
                 )
             else:
                 r_gripper = torch.zeros(self.num_envs, device=self.device)
 
-            # === BALANCE ===
+            # === HEIGHT TRACKING REWARD (Stage 7+) ===
+            if lv["use_height_cmd"]:
+                r_height_tracking = torch.exp(-8.0 * height_error ** 2)
+            else:
+                r_height_tracking = torch.zeros(self.num_envs, device=self.device)
+
+            # === LOAD STABILITY REWARD (Stage 8+) ===
+            if lv["use_load"]:
+                # Penalize excessive body tilting when carrying load
+                tilt_penalty = proj_gravity[:, 0]**2 + proj_gravity[:, 1]**2
+                load_factor = self.current_load / LOAD_MAX
+                r_load_stability = torch.exp(-5.0 * tilt_penalty * (1 + load_factor))
+            else:
+                r_load_stability = torch.zeros(self.num_envs, device=self.device)
+
+            # === BALANCE / COM STABILITY ===
             arm_activity = self.prev_arm_actions.abs().mean(-1)
             r_balance = torch.exp(-5.0 * (proj_gravity[:, 0]**2 + proj_gravity[:, 1]**2) * (1 + arm_activity))
 
@@ -1022,7 +1485,7 @@ def create_env(num_envs, device):
             p_energy = (leg_vel.abs() * self.prev_leg_actions.abs()).sum(-1) + \
                        (arm_vel.abs() * self.prev_arm_actions.abs()).sum(-1)
 
-            # === TOTAL ===
+            # === TOTAL REWARD ===
             reward = (
                 REWARD_WEIGHTS["loco_vx"] * r_vx +
                 REWARD_WEIGHTS["loco_vy"] * r_vy +
@@ -1035,6 +1498,8 @@ def create_env(num_envs, device):
                 REWARD_WEIGHTS["arm_smooth"] * r_arm_smooth +
                 REWARD_WEIGHTS["palm_orientation"] * r_palm_orient +
                 REWARD_WEIGHTS["gripper_grasp"] * r_gripper +
+                REWARD_WEIGHTS["height_tracking"] * r_height_tracking +
+                REWARD_WEIGHTS["load_stability"] * r_load_stability +
                 REWARD_WEIGHTS["balance"] * r_balance +
                 REWARD_WEIGHTS["loco_action_rate"] * p_leg_rate +
                 REWARD_WEIGHTS["arm_action_rate"] * p_arm_rate +
@@ -1043,6 +1508,14 @@ def create_env(num_envs, device):
                 REWARD_WEIGHTS["alive"]
             )
 
+            # Determine current stage for logging
+            if self.curr_level < 20:
+                stage_name = "S6"
+            elif self.curr_level < 30:
+                stage_name = "S7"
+            else:
+                stage_name = "S8"
+
             self.extras = {
                 "R/loco_vx": r_vx.mean().item(),
                 "R/loco_height": r_height.mean().item(),
@@ -1050,13 +1523,17 @@ def create_env(num_envs, device):
                 "R/arm_reaching": r_reaching.mean().item(),
                 "R/palm_orient": r_palm_orient.mean().item(),
                 "R/gripper": r_gripper.mean().item(),
+                "R/height_tracking": r_height_tracking.mean().item(),
+                "R/load_stability": r_load_stability.mean().item(),
                 "R/balance": r_balance.mean().item(),
                 "M/height": pos[:, 2].mean().item(),
+                "M/height_cmd": self.height_cmd.mean().item(),
                 "M/vx": lin_vel_b[:, 0].mean().item(),
                 "M/ee_dist": dist.mean().item(),
-                "M/orient_err": compute_orientation_error(palm_quat).mean().item() if lv["use_orientation"] else 0,
+                "M/load": self.current_load.mean().item(),
                 "M/reaches": self.total_reaches,
                 "curriculum_level": self.curr_level,
+                "stage": stage_name,
             }
 
             return reward.clamp(-10, 50)
@@ -1066,7 +1543,15 @@ def create_env(num_envs, device):
             gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(self.robot.data.root_quat_w, gravity_vec)
 
-            fallen = (height < 0.3) | (height > 1.2)
+            lv = CURRICULUM[self.curr_level]
+
+            # Height limits depend on whether squat is enabled
+            if lv["use_height_cmd"]:
+                min_height = 0.25  # Lower limit for squatting
+            else:
+                min_height = 0.3
+
+            fallen = (height < min_height) | (height > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
 
             terminated = fallen | bad_orientation
@@ -1095,7 +1580,10 @@ def create_env(num_envs, device):
             self.prev_leg_actions[env_ids] = 0
             self.prev_arm_actions[env_ids] = 0
             self.prev_finger_actions[env_ids] = 0
+            self.prev_ee_pos[env_ids] = 0
             self.reach_count[env_ids] = 0
+            self.object_in_hand[env_ids] = 0
+            self.object_rel_ee[env_ids] = 0
 
         def update_curriculum(self, mean_reward):
             lv = CURRICULUM[self.curr_level]
@@ -1112,15 +1600,20 @@ def create_env(num_envs, device):
                         self.curr_level += 1
                         new_lv = CURRICULUM[self.curr_level]
 
-                        phase_change = ""
+                        # Determine stage transition messages
+                        stage_msg = ""
                         if self.curr_level == 10:
-                            phase_change = " 🎯 PHASE 2 BAŞLIYOR: ORIENTATION + GRIPPER!"
+                            stage_msg = " 🎯 PHASE 2: ORIENTATION + GRIPPER!"
+                        elif self.curr_level == 20:
+                            stage_msg = " 🎯 STAGE 7: HEIGHT COMMAND (SQUAT)!"
+                        elif self.curr_level == 30:
+                            stage_msg = " 🎯 STAGE 8: LOAD CARRYING!"
 
                         print(f"\n{'='*60}")
-                        print(f"🎯 LEVEL UP! Now at Level {self.curr_level}{phase_change}")
+                        print(f"🎯 LEVEL UP! Now at Level {self.curr_level}{stage_msg}")
                         print(f"   vx={new_lv['vx']}, arm_radius={new_lv['arm_radius']}")
-                        print(f"   use_orientation={new_lv['use_orientation']}, use_gripper={new_lv['use_gripper']}")
-                        print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}, Steps: {self.stage_steps}")
+                        print(f"   height_range={new_lv['height_range']}, load_range={new_lv['load_range']}")
+                        print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}")
                         print(f"{'='*60}\n")
 
                         self.stage_reaches = 0
@@ -1171,8 +1664,8 @@ def train():
     print(f"\n[INFO] Creating environment with {args_cli.num_envs} envs...")
     env = create_env(args_cli.num_envs, device)
 
-    print(f"[INFO] Creating unified network (Arm obs=35, Arm act=12)...")
-    net = UnifiedActorCritic(loco_obs=57, arm_obs=35, loco_act=12, arm_act=12).to(device)
+    print(f"[INFO] Creating unified network (Arm obs=52, Arm act=12)...")
+    net = UnifiedActorCritic(loco_obs=57, arm_obs=52, loco_act=12, arm_act=12).to(device)
 
     transfer_stage3_weights(net, args_cli.stage3_checkpoint, device)
 
@@ -1201,9 +1694,10 @@ def train():
     obs, _ = env.reset()
 
     print("\n" + "=" * 80)
-    print("STARTING STAGE 6 TRAINING: PALM EE + GRIPPER + ORIENTATION")
-    print("  Phase 1 (Level 0-9):  ARM REACHING")
-    print("  Phase 2 (Level 10-19): + ORIENTATION + GRIPPER")
+    print("STARTING COMPLETE LOW-LEVEL CONTROLLER TRAINING")
+    print("  Stage 6 (Level 0-19):  Reaching + Orientation + Gripper")
+    print("  Stage 7 (Level 20-29): + Height Command (Squat/Stand)")
+    print("  Stage 8 (Level 30-39): + Load Carrying")
     print("=" * 80 + "\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
@@ -1267,7 +1761,7 @@ def train():
 
         update_info = ppo.update(
             loco_obs_buf.view(-1, 57),
-            arm_obs_buf.view(-1, 35),
+            arm_obs_buf.view(-1, 52),
             loco_act_buf.view(-1, 12),
             arm_act_buf.view(-1, 12),
             logp_buf.view(-1),
@@ -1304,13 +1798,14 @@ def train():
             writer.add_scalar(f"Env/{key}", val, iteration)
 
         if iteration % 10 == 0:
-            phase = "REACHING" if env.curr_level < 10 else "ORIENT+GRIP"
+            stage = env.extras.get("stage", "S6")
             print(
                 f"#{iteration:5d} | "
                 f"R={mean_reward:6.2f} | "
                 f"Best={best_reward:6.2f} | "
-                f"Lv={env.curr_level:2d} ({phase}) | "
+                f"Lv={env.curr_level:2d} ({stage}) | "
                 f"Reaches={env.total_reaches} | "
+                f"H={env.extras.get('M/height', 0):.2f}/{env.extras.get('M/height_cmd', 0):.2f} | "
                 f"EE={env.extras.get('M/ee_dist', 0):.3f}"
             )
 
@@ -1337,7 +1832,7 @@ def train():
     env.close()
 
     print("\n" + "=" * 80)
-    print("STAGE 6 TRAINING COMPLETE!")
+    print("TRAINING COMPLETE!")
     print(f"  Best Reward: {best_reward:.2f}")
     print(f"  Final Level: {env.curr_level}")
     print(f"  Total Reaches: {env.total_reaches}")
