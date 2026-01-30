@@ -1795,7 +1795,9 @@ def train():
         writer.add_scalar("Curriculum/total_reaches", env.total_reaches, iteration)
 
         for key, val in env.extras.items():
-            writer.add_scalar(f"Env/{key}", val, iteration)
+            # Skip string values (like "stage") - tensorboard only accepts numbers
+            if isinstance(val, (int, float)):
+                writer.add_scalar(f"Env/{key}", val, iteration)
 
         if iteration % 10 == 0:
             stage = env.extras.get("stage", "S6")
