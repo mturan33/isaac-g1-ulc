@@ -660,6 +660,22 @@ def create_env(num_envs, device):
                 )
             )
 
+            # Body exclusion zone (orange) - shows the "cut" plane towards robot body
+            self.body_exclusion_markers = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/BodyExclusion",
+                    markers={
+                        "sphere": sim_utils.SphereCfg(
+                            radius=0.018,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(1.0, 0.5, 0.0),  # Orange
+                                emissive_color=(0.8, 0.3, 0.0),
+                            ),
+                        ),
+                    },
+                )
+            )
+
             self._markers_initialized = True
 
         def _update_workspace_spheres(self):
@@ -771,6 +787,38 @@ def create_env(num_envs, device):
             inner_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(inner_local), -1)
             self.inner_markers.visualize(translations=inner_world, orientations=inner_quat)
 
+            # ===== BODY EXCLUSION ZONE (orange) - Y > -0.10 cut plane =====
+            # This shows the region that's too close to robot body (left/medial side)
+            # Draw a vertical plane at Y = -0.10 (10cm to the right of shoulder)
+            body_cut_local = []
+            y_cut = -0.10  # 10cm sağda - bunun solundaki (Y > -0.10) hedefler yasak
+
+            # Draw grid on the cut plane (X-Z plane at Y = y_cut)
+            for i in range(n + 1):
+                # Vertical line from -0.3 to +0.3 in Z
+                x = 0.0
+                z = -0.25 + 0.5 * i / n
+                body_cut_local.append([x, y_cut, z])
+
+            for i in range(n + 1):
+                # Horizontal line from -0.2 to +0.4 in X
+                x = -0.15 + 0.5 * i / n
+                z = 0.0
+                body_cut_local.append([x, y_cut, z])
+
+            # Add some points showing the "forbidden" area (Y > y_cut)
+            for i in range(5):
+                for j in range(5):
+                    x = -0.1 + 0.3 * i / 4
+                    y = y_cut + 0.05 + 0.10 * j / 4  # Y > y_cut (towards robot)
+                    z = -0.15 + 0.3 * j / 4
+                    body_cut_local.append([x, y, z])
+
+            body_cut_local_t = torch.tensor(body_cut_local, device=self.device, dtype=torch.float32)
+            body_cut_world = body_to_world(body_cut_local_t)
+            body_cut_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(body_cut_local), -1)
+            self.body_exclusion_markers.visualize(translations=body_cut_world, orientations=body_cut_quat)
+
         def _compute_ee_pos(self) -> torch.Tensor:
             """Get end-effector world position"""
             return self.robot.data.body_pos_w[:, self.palm_idx]
@@ -794,8 +842,16 @@ def create_env(num_envs, device):
             height = torch.empty(n, device=self.device).uniform_(*lv["arm_height"])
 
             x = radius * torch.cos(azimuth)
-            y = -radius * torch.sin(azimuth)
+            y = -radius * torch.sin(azimuth)  # -Y is right side
             z = height
+
+            # Body exclusion: Y must be < -0.10 (at least 10cm to the RIGHT of shoulder)
+            # Targets with Y > -0.10 are too close to robot body
+            y_cut = -0.10
+            too_close_to_body = y > y_cut
+
+            # Clamp Y to be at least y_cut (push away from body)
+            y = torch.where(too_close_to_body, torch.full_like(y, y_cut), y)
 
             self.target_pos_body[env_ids, 0] = x + self.shoulder_offset[0]
             self.target_pos_body[env_ids, 1] = y + self.shoulder_offset[1]
