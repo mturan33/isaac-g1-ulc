@@ -1,19 +1,20 @@
 """
-ULC G1 Stage 6: Unified Loco-Manipulation Training
-===================================================
-Loco policy + Arm policy AYNI ANDA eğitilir.
+ULC G1 Stage 6: Unified Loco-Manipulation with Palm EE + Gripper + Orientation
+===============================================================================
+20 Seviyeli Curriculum:
+- Level 0-9:   Sadece ARM REACHING (gripper açık, orientation reward yok)
+- Level 10-19: ARM REACHING + ORIENTATION + GRIPPER CONTROL
 
-Strateji:
-- Stage 3'ten loco ağırlıkları TRANSFER (frozen değil!)
-- Arm policy sıfırdan
-- Curriculum: sabit → yavaş yürüme → normal yürüme
-- Loco, kol hareketliyken denge öğrenir
-- Arm, hareket eden base ile reach öğrenir
+Yeni Özellikler:
+- Palm-based EE (avuç içi merkezi)
+- Orientation reward (el aşağı baksın)
+- 7 parmak gripper kontrolü
+- Hedefe yaklaşınca kavrama
 
 KULLANIM:
-./isaaclab.bat -p source/isaaclab_tasks/.../train/train_ulc_stage_6_unified.py \
-    --stage3_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt \
-    --num_envs 4096 --max_iterations 10000 --headless
+./isaaclab.bat -p train_ulc_stage6_palm_gripper.py \
+    --stage3_checkpoint logs/ulc/ulc_g1_stage3_.../model_best.pt \
+    --num_envs 4096 --max_iterations 15000 --headless
 """
 
 import torch
@@ -45,63 +46,195 @@ ARM_JOINT_NAMES = [
     "right_elbow_roll_joint",
 ]
 
-# Curriculum levels - sabitten hareketliye
+# YENİ: Parmak joint isimleri (Dex3 hand)
+FINGER_JOINT_NAMES = [
+    "right_zero_joint",
+    "right_one_joint",
+    "right_two_joint",
+    "right_three_joint",
+    "right_four_joint",
+    "right_five_joint",
+    "right_six_joint",
+]
+
+# Palm offset (palm_link'ten parmak ucuna)
+PALM_FORWARD_OFFSET = 0.08  # meters
+
+# ============================================================================
+# 20 SEVİYELİ CURRICULUM
+# ============================================================================
+# Level 0-9:   Sadece REACHING (gripper açık, orientation yok)
+# Level 10-19: REACHING + ORIENTATION + GRIPPER
+# ============================================================================
+
 CURRICULUM = [
-    # Level 0: Sabit duruş, küçük workspace
+    # ===== PHASE 1: REACHING ONLY (Level 0-9) =====
+    # Level 0: Sabit duruş, çok küçük workspace
     {
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "arm_radius": (0.15, 0.22), "arm_height": (-0.05, 0.10),
-        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 3000, "min_steps": 2000,
+        "arm_radius": (0.15, 0.20), "arm_height": (-0.02, 0.08),
+        "pos_threshold": 0.08, "success_rate": 0.40, "min_reaches": 2000, "min_steps": 1500,
+        "use_orientation": False, "use_gripper": False,
     },
-    # Level 1: Sabit, orta workspace
+    # Level 1: Sabit, küçük workspace
+    {
+        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+        "arm_radius": (0.15, 0.24), "arm_height": (-0.05, 0.12),
+        "pos_threshold": 0.07, "success_rate": 0.45, "min_reaches": 3000, "min_steps": 2000,
+        "use_orientation": False, "use_gripper": False,
+    },
+    # Level 2: Sabit, orta workspace
     {
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "arm_radius": (0.18, 0.28), "arm_height": (-0.08, 0.15),
-        "pos_threshold": 0.05, "success_rate": 0.55, "min_reaches": 5000, "min_steps": 2500,
+        "pos_threshold": 0.06, "success_rate": 0.50, "min_reaches": 4000, "min_steps": 2500,
+        "use_orientation": False, "use_gripper": False,
     },
-    # Level 2: Çok yavaş yürüme başlangıcı
+    # Level 3: Sabit, geniş workspace
     {
-        "vx": (0.0, 0.15), "vy": (-0.05, 0.05), "vyaw": (-0.1, 0.1),
-        "arm_radius": (0.18, 0.30), "arm_height": (-0.10, 0.18),
-        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 6000, "min_steps": 3000,
+        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+        "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
+        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 5000, "min_steps": 3000,
+        "use_orientation": False, "use_gripper": False,
     },
-    # Level 3: Yavaş yürüme
+    # Level 4: Çok yavaş yürüme başlangıcı
     {
-        "vx": (0.0, 0.25), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
-        "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.20),
-        "pos_threshold": 0.05, "success_rate": 0.50, "min_reaches": 8000, "min_steps": 3500,
+        "vx": (0.0, 0.10), "vy": (-0.03, 0.03), "vyaw": (-0.05, 0.05),
+        "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.18),
+        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3000,
+        "use_orientation": False, "use_gripper": False,
     },
-    # Level 4: Normal yürüme
+    # Level 5: Yavaş yürüme
     {
-        "vx": (0.0, 0.4), "vy": (-0.1, 0.1), "vyaw": (-0.2, 0.2),
+        "vx": (0.0, 0.20), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
+        "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
+        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 6000, "min_steps": 3500,
+        "use_orientation": False, "use_gripper": False,
+    },
+    # Level 6: Orta hız yürüme
+    {
+        "vx": (0.0, 0.30), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
         "arm_radius": (0.18, 0.35), "arm_height": (-0.12, 0.22),
-        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 10000, "min_steps": 4000,
+        "pos_threshold": 0.05, "success_rate": 0.45, "min_reaches": 7000, "min_steps": 4000,
+        "use_orientation": False, "use_gripper": False,
     },
-    # Level 5: Hızlı yürüme
+    # Level 7: Normal yürüme
     {
-        "vx": (-0.1, 0.6), "vy": (-0.15, 0.15), "vyaw": (-0.3, 0.3),
-        "arm_radius": (0.18, 0.38), "arm_height": (-0.15, 0.25),
-        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 12000, "min_steps": 5000,
+        "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.20, 0.20),
+        "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.24),
+        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 8000, "min_steps": 4500,
+        "use_orientation": False, "use_gripper": False,
     },
-    # Level 6: Full range
+    # Level 8: Hızlı yürüme
     {
-        "vx": (-0.2, 0.8), "vy": (-0.2, 0.2), "vyaw": (-0.4, 0.4),
-        "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.28),
-        "pos_threshold": 0.05, "success_rate": None, "min_reaches": None, "min_steps": None,
+        "vx": (-0.1, 0.50), "vy": (-0.12, 0.12), "vyaw": (-0.25, 0.25),
+        "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.26),
+        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 9000, "min_steps": 5000,
+        "use_orientation": False, "use_gripper": False,
+    },
+    # Level 9: Full range reaching (orientation öncesi son seviye)
+    {
+        "vx": (-0.15, 0.60), "vy": (-0.15, 0.15), "vyaw": (-0.30, 0.30),
+        "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+        "pos_threshold": 0.05, "success_rate": 0.40, "min_reaches": 10000, "min_steps": 5500,
+        "use_orientation": False, "use_gripper": False,
+    },
+
+    # ===== PHASE 2: REACHING + ORIENTATION + GRIPPER (Level 10-19) =====
+    # Level 10: Sabit, orientation öğrenme başlangıcı
+    {
+        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+        "arm_radius": (0.18, 0.28), "arm_height": (-0.05, 0.15),
+        "pos_threshold": 0.05, "orient_threshold": 0.8,  # ~45 derece tolerans
+        "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 11: Sabit, daha sıkı orientation
+    {
+        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+        "arm_radius": (0.18, 0.32), "arm_height": (-0.08, 0.18),
+        "pos_threshold": 0.05, "orient_threshold": 0.6,  # ~35 derece
+        "success_rate": 0.40, "min_reaches": 4000, "min_steps": 3000,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 12: Sabit, sıkı orientation
+    {
+        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+        "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
+        "pos_threshold": 0.05, "orient_threshold": 0.5,  # ~30 derece
+        "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3500,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 13: Çok yavaş yürüme + orientation
+    {
+        "vx": (0.0, 0.15), "vy": (-0.05, 0.05), "vyaw": (-0.08, 0.08),
+        "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
+        "pos_threshold": 0.05, "orient_threshold": 0.5,
+        "success_rate": 0.40, "min_reaches": 5000, "min_steps": 3500,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 14: Yavaş yürüme + orientation
+    {
+        "vx": (0.0, 0.25), "vy": (-0.08, 0.08), "vyaw": (-0.12, 0.12),
+        "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.22),
+        "pos_threshold": 0.05, "orient_threshold": 0.5,
+        "success_rate": 0.40, "min_reaches": 6000, "min_steps": 4000,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 15: Orta hız + orientation
+    {
+        "vx": (0.0, 0.35), "vy": (-0.10, 0.10), "vyaw": (-0.18, 0.18),
+        "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.24),
+        "pos_threshold": 0.05, "orient_threshold": 0.45,
+        "success_rate": 0.38, "min_reaches": 7000, "min_steps": 4500,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 16: Normal yürüme + orientation
+    {
+        "vx": (0.0, 0.45), "vy": (-0.12, 0.12), "vyaw": (-0.22, 0.22),
+        "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.26),
+        "pos_threshold": 0.05, "orient_threshold": 0.45,
+        "success_rate": 0.35, "min_reaches": 8000, "min_steps": 5000,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 17: Hızlı yürüme + orientation
+    {
+        "vx": (-0.1, 0.55), "vy": (-0.15, 0.15), "vyaw": (-0.28, 0.28),
+        "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+        "pos_threshold": 0.05, "orient_threshold": 0.4,
+        "success_rate": 0.35, "min_reaches": 9000, "min_steps": 5500,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 18: Çok hızlı + sıkı orientation
+    {
+        "vx": (-0.15, 0.65), "vy": (-0.18, 0.18), "vyaw": (-0.35, 0.35),
+        "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+        "pos_threshold": 0.05, "orient_threshold": 0.35,
+        "success_rate": 0.32, "min_reaches": 10000, "min_steps": 6000,
+        "use_orientation": True, "use_gripper": True,
+    },
+    # Level 19: MASTER LEVEL - Full capabilities
+    {
+        "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
+        "arm_radius": (0.18, 0.45), "arm_height": (-0.18, 0.30),
+        "pos_threshold": 0.05, "orient_threshold": 0.35,  # ~20 derece
+        "success_rate": None, "min_reaches": None, "min_steps": None,
+        "use_orientation": True, "use_gripper": True,
     },
 ]
 
 # Default values
 HEIGHT_DEFAULT = 0.72
 GAIT_FREQUENCY = 1.5
-REACH_THRESHOLD = 0.05  # 8cm → 5cm (daha zor)
+REACH_THRESHOLD = 0.05
+GRASP_THRESHOLD = 0.06  # Gripper kapanma mesafesi
 
-# Shoulder offset (right shoulder relative to root)
+# Shoulder offset
 SHOULDER_OFFSET = torch.tensor([0.0, -0.174, 0.259])
 
 # Reward weights
 REWARD_WEIGHTS = {
-    # Locomotion rewards
+    # Locomotion
     "loco_vx": 2.5,
     "loco_vy": 1.0,
     "loco_vyaw": 1.0,
@@ -109,17 +242,25 @@ REWARD_WEIGHTS = {
     "loco_orientation": 2.5,
     "loco_gait": 1.5,
 
-    # Arm rewards
+    # Arm reaching
     "arm_distance": 3.0,
     "arm_reaching": 15.0,
     "arm_smooth": 1.0,
 
-    # Joint coordination
-    "balance": 2.0,  # CoM over feet
+    # Orientation (Level 10+ aktif)
+    "palm_orientation": 2.5,
+
+    # Gripper (Level 10+ aktif)
+    "gripper_grasp": 5.0,
+    "gripper_open_penalty": -0.5,  # Uzaktayken kapalıysa ceza
+
+    # Balance
+    "balance": 2.0,
 
     # Penalties
     "loco_action_rate": -0.01,
     "arm_action_rate": -0.02,
+    "finger_action_rate": -0.005,
     "energy": -0.0005,
     "alive": 0.5,
 }
@@ -130,18 +271,17 @@ REWARD_WEIGHTS = {
 # ============================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="ULC G1 Stage 6: Unified Training")
+    parser = argparse.ArgumentParser(description="ULC G1 Stage 6: Palm + Gripper + Orientation")
     parser.add_argument("--num_envs", type=int, default=4096)
-    parser.add_argument("--max_iterations", type=int, default=10000)
-    parser.add_argument("--stage3_checkpoint", type=str, default=None,
-                        help="Optional: Transfer loco weights from Stage 3")
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Resume from Stage 6 checkpoint")
-    parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage6")
+    parser.add_argument("--max_iterations", type=int, default=15000)
+    parser.add_argument("--stage3_checkpoint", type=str, default=None)
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage6_palm")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
 args_cli = parse_args()
+
 
 # ============================================================================
 # ISAAC LAB IMPORTS
@@ -165,31 +305,47 @@ from torch.utils.tensorboard import SummaryWriter
 
 G1_USD = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
 
-def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
-    """Convert quaternion to euler angles (roll, pitch, yaw)."""
-    x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
 
+def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
+    x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
     sinr_cosp = 2.0 * (w * x + y * z)
     cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
     roll = torch.atan2(sinr_cosp, cosr_cosp)
-
     sinp = 2.0 * (w * y - z * x)
     sinp = torch.clamp(sinp, -1.0, 1.0)
     pitch = torch.asin(sinp)
-
     siny_cosp = 2.0 * (w * z + x * y)
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
     yaw = torch.atan2(siny_cosp, cosy_cosp)
-
     return torch.stack([roll, pitch, yaw], dim=-1)
 
+
+def get_palm_forward(quat: torch.Tensor) -> torch.Tensor:
+    """Get palm forward direction (+X in local frame) from quaternion (wxyz)"""
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    fwd_x = 1 - 2*(y*y + z*z)
+    fwd_y = 2*(x*y + w*z)
+    fwd_z = 2*(x*z - w*y)
+    return torch.stack([fwd_x, fwd_y, fwd_z], dim=-1)
+
+
+def compute_orientation_error(palm_quat: torch.Tensor) -> torch.Tensor:
+    """Compute angle between palm forward and world DOWN (-Z)"""
+    forward = get_palm_forward(palm_quat)
+    target_dir = torch.zeros_like(forward)
+    target_dir[:, 2] = -1.0  # Down
+    dot = (forward * target_dir).sum(dim=-1)
+    dot = torch.clamp(dot, -1.0, 1.0)
+    return torch.acos(dot)  # radians
+
+
 print("=" * 80)
-print("ULC G1 STAGE 6 - UNIFIED LOCO-MANIPULATION TRAINING")
+print("ULC G1 STAGE 6 - PALM EE + GRIPPER + ORIENTATION")
 print("=" * 80)
 print(f"Stage 3 checkpoint: {args_cli.stage3_checkpoint}")
-print("\nCurriculum Levels:")
-for i, lv in enumerate(CURRICULUM):
-    print(f"  Level {i}: vx={lv['vx']}, arm_radius={lv['arm_radius']}")
+print("\n20 Seviyeli Curriculum:")
+print("  Level 0-9:   ARM REACHING (gripper açık)")
+print("  Level 10-19: REACHING + ORIENTATION + GRIPPER")
 print("=" * 80)
 
 
@@ -198,11 +354,9 @@ print("=" * 80)
 # ============================================================================
 
 class LocoActor(nn.Module):
-    """Locomotion policy: 57 obs → 12 leg actions (Stage 3 architecture)"""
-
+    """Locomotion policy: 57 obs → 12 leg actions"""
     def __init__(self, num_obs=57, num_act=12, hidden=[512, 256, 128]):
         super().__init__()
-
         layers = []
         prev = num_obs
         for h in hidden:
@@ -210,7 +364,6 @@ class LocoActor(nn.Module):
             prev = h
         layers.append(nn.Linear(prev, num_act))
         self.actor = nn.Sequential(*layers)
-
         self.log_std = nn.Parameter(torch.zeros(num_act))
         self._init_weights()
 
@@ -233,11 +386,9 @@ class LocoActor(nn.Module):
 
 
 class ArmActor(nn.Module):
-    """Arm policy: 28 obs → 5 arm actions"""
-
-    def __init__(self, num_obs=28, num_act=5, hidden=[256, 128, 64]):
+    """Arm + Gripper policy: 35 obs → 12 actions (5 arm + 7 finger)"""
+    def __init__(self, num_obs=35, num_act=12, hidden=[256, 256, 128]):
         super().__init__()
-
         layers = []
         prev = num_obs
         for h in hidden:
@@ -245,7 +396,6 @@ class ArmActor(nn.Module):
             prev = h
         layers.append(nn.Linear(prev, num_act))
         self.actor = nn.Sequential(*layers)
-
         self.log_std = nn.Parameter(torch.zeros(num_act))
         self._init_weights()
 
@@ -268,11 +418,9 @@ class ArmActor(nn.Module):
 
 
 class UnifiedCritic(nn.Module):
-    """Unified critic for both policies"""
-
-    def __init__(self, num_obs=85, hidden=[512, 256, 128]):
+    """Unified critic: 92 obs → 1 value"""
+    def __init__(self, num_obs=92, hidden=[512, 256, 128]):
         super().__init__()
-
         layers = []
         prev = num_obs
         for h in hidden:
@@ -280,7 +428,6 @@ class UnifiedCritic(nn.Module):
             prev = h
         layers.append(nn.Linear(prev, 1))
         self.critic = nn.Sequential(*layers)
-
         self._init_weights()
 
     def _init_weights(self):
@@ -294,27 +441,18 @@ class UnifiedCritic(nn.Module):
 
 
 class UnifiedActorCritic(nn.Module):
-    """Combined network for PPO training"""
-
-    def __init__(self, loco_obs=57, arm_obs=28, loco_act=12, arm_act=5):
+    """Combined network: Loco(57) + Arm(35) → Loco(12) + Arm(12)"""
+    def __init__(self, loco_obs=57, arm_obs=35, loco_act=12, arm_act=12):
         super().__init__()
-
         self.loco_actor = LocoActor(loco_obs, loco_act)
         self.arm_actor = ArmActor(arm_obs, arm_act)
         self.critic = UnifiedCritic(loco_obs + arm_obs)
 
-        self.loco_obs_dim = loco_obs
-        self.arm_obs_dim = arm_obs
-        self.loco_act_dim = loco_act
-        self.arm_act_dim = arm_act
-
     def forward(self, loco_obs, arm_obs):
         loco_mean = self.loco_actor(loco_obs)
         arm_mean = self.arm_actor(arm_obs)
-
         combined_obs = torch.cat([loco_obs, arm_obs], dim=-1)
         value = self.critic(combined_obs)
-
         return loco_mean, arm_mean, value
 
     def act(self, loco_obs, arm_obs, deterministic=False):
@@ -324,19 +462,14 @@ class UnifiedActorCritic(nn.Module):
 
     def evaluate(self, loco_obs, arm_obs, loco_actions, arm_actions):
         loco_mean, arm_mean, value = self.forward(loco_obs, arm_obs)
-
         loco_std = self.loco_actor.log_std.clamp(-2, 1).exp()
         arm_std = self.arm_actor.log_std.clamp(-2, 1).exp()
-
         loco_dist = torch.distributions.Normal(loco_mean, loco_std)
         arm_dist = torch.distributions.Normal(arm_mean, arm_std)
-
         loco_logp = loco_dist.log_prob(loco_actions).sum(-1)
         arm_logp = arm_dist.log_prob(arm_actions).sum(-1)
-
         loco_entropy = loco_dist.entropy().sum(-1)
         arm_entropy = arm_dist.entropy().sum(-1)
-
         return value, loco_logp + arm_logp, loco_entropy + arm_entropy
 
 
@@ -357,63 +490,51 @@ class PPO:
         advantages = torch.zeros_like(rewards)
         last_gae = 0
         gamma, lam = 0.99, 0.95
-
         for t in reversed(range(len(rewards))):
             next_val = next_value if t == len(rewards) - 1 else values[t + 1]
             delta = rewards[t] + gamma * next_val * (1 - dones[t]) - values[t]
             advantages[t] = last_gae = delta + gamma * lam * (1 - dones[t]) * last_gae
-
         returns = advantages + values
         return advantages, returns
 
     def update(self, loco_obs, arm_obs, loco_actions, arm_actions,
                old_log_probs, returns, advantages, old_values):
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
         total_actor_loss = 0
         total_critic_loss = 0
         total_entropy = 0
         num_updates = 0
-
         batch_size = loco_obs.shape[0]
         minibatch_size = 4096
 
         for _ in range(5):
             indices = torch.randperm(batch_size, device=self.device)
-
             for start in range(0, batch_size, minibatch_size):
                 mb_idx = indices[start:start + minibatch_size]
-
                 values, log_probs, entropy = self.net.evaluate(
                     loco_obs[mb_idx], arm_obs[mb_idx],
                     loco_actions[mb_idx], arm_actions[mb_idx]
                 )
-
                 ratio = (log_probs - old_log_probs[mb_idx]).exp()
                 surr1 = ratio * advantages[mb_idx]
                 surr2 = ratio.clamp(0.8, 1.2) * advantages[mb_idx]
                 actor_loss = -torch.min(surr1, surr2).mean()
-
                 value_clipped = old_values[mb_idx] + (values - old_values[mb_idx]).clamp(-0.2, 0.2)
                 critic_loss = 0.5 * torch.max(
                     (values - returns[mb_idx]) ** 2,
                     (value_clipped - returns[mb_idx]) ** 2
                 ).mean()
-
                 loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy.mean()
-
                 self.opt.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.net.parameters(), 0.5)
                 self.opt.step()
-
                 total_actor_loss += actor_loss.item()
                 total_critic_loss += critic_loss.item()
                 total_entropy += entropy.mean().item()
                 num_updates += 1
 
         self.sched.step()
-
         return {
             "actor_loss": total_actor_loss / num_updates,
             "critic_loss": total_critic_loss / num_updates,
@@ -438,7 +559,6 @@ def create_env(num_envs, device):
                 static_friction=1.0, dynamic_friction=1.0, restitution=0.0
             ),
         )
-
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
             spawn=sim_utils.UsdFileCfg(
@@ -476,6 +596,11 @@ def create_env(num_envs, device):
                     stiffness=50.0,
                     damping=5.0,
                 ),
+                "hands": ImplicitActuatorCfg(
+                    joint_names_expr=[".*zero.*", ".*one.*", ".*two.*", ".*three.*", ".*four.*", ".*five.*", ".*six.*"],
+                    stiffness=20.0,
+                    damping=2.0,
+                ),
                 "torso": ImplicitActuatorCfg(
                     joint_names_expr=["torso_joint"],
                     stiffness=100.0,
@@ -488,8 +613,8 @@ def create_env(num_envs, device):
     class EnvCfg(DirectRLEnvCfg):
         decimation = 4
         episode_length_s = 15.0
-        action_space = 17  # 12 legs + 5 arm
-        observation_space = 57  # Loco obs (arm obs computed separately)
+        action_space = 24  # 12 legs + 5 arm + 7 finger
+        observation_space = 57
         state_space = 0
         sim = sim_utils.SimulationCfg(dt=1/200, render_interval=4)
         scene = SceneCfg(num_envs=num_envs, env_spacing=2.5)
@@ -500,15 +625,19 @@ def create_env(num_envs, device):
         def __init__(self, cfg, render_mode=None, **kwargs):
             super().__init__(cfg, render_mode, **kwargs)
 
-            # Joint indices
             joint_names = self.robot.joint_names
 
+            # Joint indices
             self.leg_idx = torch.tensor(
                 [joint_names.index(n) for n in LEG_JOINT_NAMES if n in joint_names],
                 device=self.device
             )
             self.arm_idx = torch.tensor(
                 [joint_names.index(n) for n in ARM_JOINT_NAMES if n in joint_names],
+                device=self.device
+            )
+            self.finger_idx = torch.tensor(
+                [joint_names.index(n) for n in FINGER_JOINT_NAMES if n in joint_names],
                 device=self.device
             )
 
@@ -518,32 +647,45 @@ def create_env(num_envs, device):
                 device=self.device
             )
             self.default_arm = self.robot.data.default_joint_pos[0, self.arm_idx].clone()
+            self.default_finger = self.robot.data.default_joint_pos[0, self.finger_idx].clone()
 
-            # Find palm body for EE tracking
+            # Finger limits
+            joint_limits = self.robot.root_physx_view.get_dof_limits()
+            self.finger_lower = torch.tensor(
+                [joint_limits[0, i, 0].item() for i in self.finger_idx],
+                device=self.device
+            )
+            self.finger_upper = torch.tensor(
+                [joint_limits[0, i, 1].item() for i in self.finger_idx],
+                device=self.device
+            )
+
+            # Find palm body
             body_names = self.robot.body_names
             self.palm_idx = None
             for i, name in enumerate(body_names):
-                if "right" in name.lower() and ("palm" in name.lower() or "hand" in name.lower() or "link6" in name.lower()):
+                if "right_palm" in name.lower():
                     self.palm_idx = i
                     break
             if self.palm_idx is None:
                 for i, name in enumerate(body_names):
-                    if "right" in name.lower() and "elbow" in name.lower():
-                        self.palm_idx = i + 1
+                    if "right" in name.lower() and ("palm" in name.lower() or "hand" in name.lower()):
+                        self.palm_idx = i
                         break
             if self.palm_idx is None:
                 self.palm_idx = len(body_names) - 1
 
             print(f"[Stage6] Leg joints: {len(self.leg_idx)}")
             print(f"[Stage6] Arm joints: {len(self.arm_idx)}")
-            print(f"[Stage6] Palm idx: {self.palm_idx}")
+            print(f"[Stage6] Finger joints: {len(self.finger_idx)}")
+            print(f"[Stage6] Palm body idx: {self.palm_idx}")
 
             # Commands
             self.height_cmd = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
             self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
             self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
 
-            # Arm target
+            # Arm target (body frame)
             self.target_pos_body = torch.zeros(self.num_envs, 3, device=self.device)
             self.shoulder_offset = SHOULDER_OFFSET.to(self.device)
 
@@ -553,6 +695,7 @@ def create_env(num_envs, device):
             # Previous actions
             self.prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
             self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
+            self.prev_finger_actions = torch.zeros(self.num_envs, 7, device=self.device)
 
             # Curriculum
             self.curr_level = 0
@@ -560,117 +703,38 @@ def create_env(num_envs, device):
             self.total_reaches = 0
             self.stage_reaches = 0
             self.stage_steps = 0
-
-            # FIX: Prevent counting same reach multiple times
             self.already_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-            # Markers (lazy init)
+            # Markers
             self._markers_initialized = False
-            self.target_markers = None
-            self.ee_markers = None
-            self.outer_markers = None
-            self.inner_markers = None
-            self.shoulder_marker_vis = None
-            self.num_wireframe_points = 24
 
         @property
         def robot(self):
             return self.scene["robot"]
 
         def _init_markers(self):
-            """Create markers after simulation starts"""
             if self._markers_initialized:
                 return
 
-            # Target marker (yellow)
             self.target_markers = VisualizationMarkers(
                 VisualizationMarkersCfg(
                     prim_path="/Visuals/TargetMarkers",
                     markers={
                         "sphere": sim_utils.SphereCfg(
                             radius=0.05,
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(1.0, 1.0, 0.0),
-                            ),
+                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
                         ),
                     },
                 )
             )
 
-            # EE marker (green)
             self.ee_markers = VisualizationMarkers(
                 VisualizationMarkersCfg(
                     prim_path="/Visuals/EEMarkers",
                     markers={
                         "sphere": sim_utils.SphereCfg(
                             radius=0.03,
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(0.0, 1.0, 0.0),
-                            ),
-                        ),
-                    },
-                )
-            )
-
-            # Outer workspace boundary (blue spheres)
-            self.outer_markers = VisualizationMarkers(
-                VisualizationMarkersCfg(
-                    prim_path="/Visuals/OuterWorkspace",
-                    markers={
-                        "sphere": sim_utils.SphereCfg(
-                            radius=0.015,
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(0.0, 0.3, 1.0),
-                                emissive_color=(0.0, 0.2, 0.5),
-                            ),
-                        ),
-                    },
-                )
-            )
-
-            # Inner exclusion zone (red spheres)
-            self.inner_markers = VisualizationMarkers(
-                VisualizationMarkersCfg(
-                    prim_path="/Visuals/InnerExclusion",
-                    markers={
-                        "sphere": sim_utils.SphereCfg(
-                            radius=0.012,
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(1.0, 0.0, 0.0),
-                                emissive_color=(0.8, 0.0, 0.0),
-                            ),
-                        ),
-                    },
-                )
-            )
-
-            # Shoulder center marker (white)
-            self.shoulder_marker_vis = VisualizationMarkers(
-                VisualizationMarkersCfg(
-                    prim_path="/Visuals/ShoulderMarker",
-                    markers={
-                        "sphere": sim_utils.SphereCfg(
-                            radius=0.025,
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(1.0, 1.0, 1.0),
-                                emissive_color=(0.5, 0.5, 0.5),
-                            ),
-                        ),
-                    },
-                )
-            )
-
-            # Body exclusion zone (orange) - shows the "cut" plane towards robot body
-            self.body_exclusion_markers = VisualizationMarkers(
-                VisualizationMarkersCfg(
-                    prim_path="/Visuals/BodyExclusion",
-                    markers={
-                        "sphere": sim_utils.SphereCfg(
-                            radius=0.018,
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(1.0, 0.5, 0.0),  # Orange
-                                emissive_color=(0.8, 0.3, 0.0),
-                            ),
+                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),  # Red = palm EE
                         ),
                     },
                 )
@@ -678,147 +742,18 @@ def create_env(num_envs, device):
 
             self._markers_initialized = True
 
-        def _update_workspace_spheres(self):
-            """Update workspace visualization in BODY FRAME
-
-            Body frame convention:
-            - +X = Robot FRONT (facing direction)
-            - -Y = Robot RIGHT (right arm side)
-            - +Z = Up
-
-            Draw hemisphere centered on right shoulder, in front-right quadrant.
-            All points defined in body frame, then transformed to world frame.
-            """
-            import math
-
-            root_pos = self.robot.data.root_pos_w[0]  # [3]
-            root_quat = self.robot.data.root_quat_w[0]  # [4]
-
-            # Shoulder in body frame
-            shoulder_body = self.shoulder_offset  # [3] - already in body frame
-
-            # Transform shoulder to world for marker
-            shoulder_world = root_pos + quat_apply(root_quat.unsqueeze(0), shoulder_body.unsqueeze(0)).squeeze(0)
-
-            # Shoulder marker (white)
-            identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device)
-            self.shoulder_marker_vis.visualize(
-                translations=shoulder_world.unsqueeze(0),
-                orientations=identity_quat
-            )
-
-            n = 16  # points per arc
-
-            def body_to_world(local_pts):
-                """Transform body frame points to world frame"""
-                # local_pts: [N, 3] in body frame relative to shoulder
-                # Add shoulder offset, then rotate by root_quat, then add root_pos
-                pts_from_root = local_pts + shoulder_body.unsqueeze(0)  # [N, 3]
-                pts_world = root_pos.unsqueeze(0) + quat_apply(
-                    root_quat.unsqueeze(0).expand(len(local_pts), -1),
-                    pts_from_root
-                )
-                return pts_world
-
-            # ===== OUTER workspace (blue) - 40cm radius =====
-            outer_local = []
-            R = 0.40
-
-            # Arc 1: Horizontal half-circle in XY plane (front hemisphere, +X direction)
-            # theta: 0 to pi, so cos goes from 1 to -1, sin goes 0 to 0 via 1
-            # We want +X (front), so x = R*cos(theta) where theta from -pi/2 to pi/2
-            for i in range(n + 1):
-                theta = -math.pi/2 + math.pi * i / n  # -90° to +90°
-                x = R * math.cos(theta)  # positive = front
-                y = R * math.sin(theta)  # varies left to right
-                z = 0.0
-                outer_local.append([x, y, z])
-
-            # Arc 2: Vertical half-circle in XZ plane (front view)
-            for i in range(n + 1):
-                theta = -math.pi/2 + math.pi * i / n
-                x = R * math.cos(theta)  # positive = front
-                y = 0.0
-                z = R * math.sin(theta)  # up/down
-                outer_local.append([x, y, z])
-
-            # Arc 3: Vertical half-circle in YZ plane (side view, right side)
-            # We want -Y (right side), so y = -R*cos(theta)
-            for i in range(n + 1):
-                theta = -math.pi/2 + math.pi * i / n
-                x = 0.0
-                y = -R * math.cos(theta)  # negative = right
-                z = R * math.sin(theta)
-                outer_local.append([x, y, z])
-
-            outer_local_t = torch.tensor(outer_local, device=self.device, dtype=torch.float32)
-            # NOT visualized here - will be split into valid (blue) and invalid (orange) below
-
-            # ===== INNER exclusion (red) - 18cm radius =====
-            inner_local = []
-            R = 0.18
-
-            # Same pattern, smaller radius
-            for i in range(n + 1):
-                theta = -math.pi/2 + math.pi * i / n
-                x = R * math.cos(theta)
-                y = R * math.sin(theta)
-                z = 0.0
-                inner_local.append([x, y, z])
-
-            for i in range(n + 1):
-                theta = -math.pi/2 + math.pi * i / n
-                x = R * math.cos(theta)
-                y = 0.0
-                z = R * math.sin(theta)
-                inner_local.append([x, y, z])
-
-            for i in range(n + 1):
-                theta = -math.pi/2 + math.pi * i / n
-                x = 0.0
-                y = -R * math.cos(theta)
-                z = R * math.sin(theta)
-                inner_local.append([x, y, z])
-
-            inner_local_t = torch.tensor(inner_local, device=self.device, dtype=torch.float32)
-            inner_world = body_to_world(inner_local_t)
-            inner_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(inner_local), -1)
-            self.inner_markers.visualize(translations=inner_world, orientations=inner_quat)
-
-            # ===== BODY EXCLUSION (orange) - X < 0.05 (within 5cm in front of shoulder) =====
-            x_cut = 0.05
-
-            outer_valid = []    # X >= 0.10 (valid, blue)
-            outer_invalid = []  # X < 0.10 (invalid, orange)
-
-            for pt in outer_local:
-                if pt[0] < x_cut:
-                    outer_invalid.append(pt)
-                else:
-                    outer_valid.append(pt)
-
-            if outer_valid:
-                outer_valid_t = torch.tensor(outer_valid, device=self.device, dtype=torch.float32)
-                outer_valid_world = body_to_world(outer_valid_t)
-                outer_valid_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(outer_valid), -1)
-                self.outer_markers.visualize(translations=outer_valid_world, orientations=outer_valid_quat)
-
-            if outer_invalid:
-                outer_invalid_t = torch.tensor(outer_invalid, device=self.device, dtype=torch.float32)
-                outer_invalid_world = body_to_world(outer_invalid_t)
-                outer_invalid_quat = torch.tensor([[1, 0, 0, 0]], device=self.device).expand(len(outer_invalid), -1)
-                self.body_exclusion_markers.visualize(translations=outer_invalid_world, orientations=outer_invalid_quat)
-
-        def _compute_ee_pos(self) -> torch.Tensor:
-            """Get end-effector world position"""
-            return self.robot.data.body_pos_w[:, self.palm_idx]
+        def _compute_palm_ee(self) -> tuple:
+            """Compute palm-based EE position and quaternion"""
+            palm_pos = self.robot.data.body_pos_w[:, self.palm_idx]
+            palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
+            palm_forward = get_palm_forward(palm_quat)
+            ee_pos = palm_pos + PALM_FORWARD_OFFSET * palm_forward
+            return ee_pos, palm_quat
 
         def _sample_commands(self, env_ids):
-            """Sample velocity and arm target commands"""
             n = len(env_ids)
             lv = CURRICULUM[self.curr_level]
 
-            # Reset already_reached flag for new targets
             self.already_reached[env_ids] = False
 
             # Velocity commands
@@ -826,16 +761,15 @@ def create_env(num_envs, device):
             self.vel_cmd[env_ids, 1] = torch.empty(n, device=self.device).uniform_(*lv["vy"])
             self.vel_cmd[env_ids, 2] = torch.empty(n, device=self.device).uniform_(*lv["vyaw"])
 
-            # Arm target - sample in front-right hemisphere
+            # Arm target
             azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)
             radius = torch.empty(n, device=self.device).uniform_(*lv["arm_radius"])
             height = torch.empty(n, device=self.device).uniform_(*lv["arm_height"])
 
             x = radius * torch.cos(azimuth)
-            y = -radius * torch.sin(azimuth)  # -Y is right side
+            y = -radius * torch.sin(azimuth)
             z = height
 
-            # Body exclusion: X must be >= 0.05 (at least 5cm in front of shoulder)
             x_cut = 0.05
             too_close = x < x_cut
             x = torch.where(too_close, torch.full_like(x, x_cut), x)
@@ -845,7 +779,7 @@ def create_env(num_envs, device):
             self.target_pos_body[env_ids, 2] = z + self.shoulder_offset[2]
 
         def get_loco_obs(self) -> torch.Tensor:
-            """Locomotion observations (57 dim) - Stage 3 format"""
+            """Locomotion observations (57 dim)"""
             robot = self.robot
             quat = robot.data.root_quat_w
 
@@ -866,88 +800,115 @@ def create_env(num_envs, device):
             torso_euler = quat_to_euler_xyz(quat)
 
             obs = torch.cat([
-                lin_vel_b,                       # 3
-                ang_vel_b,                       # 3
-                proj_gravity,                    # 3
-                joint_pos,                       # 12
-                joint_vel,                       # 12
-                self.height_cmd.unsqueeze(-1),   # 1
-                self.vel_cmd,                    # 3
-                gait_phase,                      # 2
-                self.prev_leg_actions,           # 12
-                self.torso_cmd,                  # 3
-                torso_euler,                     # 3
-            ], dim=-1)  # Total: 57
+                lin_vel_b,
+                ang_vel_b,
+                proj_gravity,
+                joint_pos,
+                joint_vel,
+                self.height_cmd.unsqueeze(-1),
+                self.vel_cmd,
+                gait_phase,
+                self.prev_leg_actions,
+                self.torso_cmd,
+                torso_euler,
+            ], dim=-1)
 
             return obs.clamp(-10, 10).nan_to_num()
 
         def get_arm_obs(self) -> torch.Tensor:
-            """Arm observations (28 dim) - body frame
+            """Arm + Gripper observations (35 dim)
 
-            5 joint_pos + 5 joint_vel + 3 target + 3 ee + 3 pos_err + 1 dist + 2 lin_vel + 1 ang_vel + 5 prev_actions = 28
+            5 arm_pos + 5 arm_vel + 7 finger_pos +
+            3 target + 3 ee + 3 pos_err + 1 dist +
+            4 palm_quat + 1 orient_err +
+            2 lin_vel + 1 ang_vel = 35
             """
             robot = self.robot
             root_pos = robot.data.root_pos_w
             root_quat = robot.data.root_quat_w
 
             # Joint states
-            joint_pos = robot.data.joint_pos[:, self.arm_idx]
-            joint_vel = robot.data.joint_vel[:, self.arm_idx]
+            arm_pos = robot.data.joint_pos[:, self.arm_idx]
+            arm_vel = robot.data.joint_vel[:, self.arm_idx]
+            finger_pos = robot.data.joint_pos[:, self.finger_idx]
 
             # EE in body frame
-            ee_world = self._compute_ee_pos()
+            ee_world, palm_quat = self._compute_palm_ee()
             ee_body = quat_apply_inverse(root_quat, ee_world - root_pos)
 
-            # Target (already in body frame)
+            # Target
             target_body = self.target_pos_body
 
             # Position error
             pos_err = target_body - ee_body
             pos_dist = pos_err.norm(dim=-1, keepdim=True)
 
-            # Body velocity (for adaptation)
+            # Orientation error (palm forward vs DOWN)
+            orient_err = compute_orientation_error(palm_quat).unsqueeze(-1)
+
+            # Body velocity
             lin_vel_b = quat_apply_inverse(root_quat, robot.data.root_lin_vel_w)
             ang_vel_b = quat_apply_inverse(root_quat, robot.data.root_ang_vel_w)
 
             obs = torch.cat([
-                joint_pos,                # 5
-                joint_vel * 0.1,          # 5
+                arm_pos,                  # 5
+                arm_vel * 0.1,            # 5
+                finger_pos,               # 7
                 target_body,              # 3
                 ee_body,                  # 3
                 pos_err,                  # 3
                 pos_dist / 0.5,           # 1
-                lin_vel_b[:, :2],         # 2 (x, y velocity)
-                ang_vel_b[:, 2:3],        # 1 (yaw rate)
-                self.prev_arm_actions,    # 5
-            ], dim=-1)  # Total: 26
+                palm_quat,                # 4
+                orient_err / np.pi,       # 1 (normalized)
+                lin_vel_b[:, :2],         # 2
+                ang_vel_b[:, 2:3],        # 1
+            ], dim=-1)  # Total: 35
 
             return obs.clamp(-10, 10).nan_to_num()
 
         def _pre_physics_step(self, actions):
-            """Apply combined actions"""
             self.actions = actions.clone()
 
             leg_actions = actions[:, :12]
             arm_actions = actions[:, 12:17]
+            finger_actions = actions[:, 17:24]
 
+            # Apply leg actions
             target_pos = self.robot.data.default_joint_pos.clone()
             target_pos[:, self.leg_idx] = self.default_leg + leg_actions * 0.4
             target_pos[:, self.arm_idx] = self.default_arm + arm_actions * 0.3
+
+            # Gripper control based on curriculum level
+            lv = CURRICULUM[self.curr_level]
+            if lv["use_gripper"]:
+                # Map [-1, 1] to [lower, upper]
+                finger_normalized = (finger_actions + 1.0) / 2.0
+                finger_targets = self.finger_lower + finger_normalized * (self.finger_upper - self.finger_lower)
+                target_pos[:, self.finger_idx] = finger_targets
+            else:
+                # Gripper always open in Phase 1
+                target_pos[:, self.finger_idx] = self.finger_lower
 
             self.robot.set_joint_position_target(target_pos)
 
             self.phase = (self.phase + GAIT_FREQUENCY * 0.02) % 1.0
 
-            # Check reaching - FIX: Only count NEW reaches
-            ee_pos = self._compute_ee_pos()
+            # Check reaching
+            ee_pos, palm_quat = self._compute_palm_ee()
             root_pos = self.robot.data.root_pos_w
             root_quat = self.robot.data.root_quat_w
             target_world = root_pos + quat_apply(root_quat, self.target_pos_body)
 
             dist = torch.norm(ee_pos - target_world, dim=-1)
-            reached = dist < REACH_THRESHOLD
 
-            # Only count if newly reached (wasn't reached before)
+            # Success criteria depends on curriculum level
+            if lv["use_orientation"]:
+                orient_err = compute_orientation_error(palm_quat)
+                orient_threshold = lv.get("orient_threshold", 0.5)
+                reached = (dist < REACH_THRESHOLD) & (orient_err < orient_threshold)
+            else:
+                reached = dist < lv["pos_threshold"]
+
             new_reaches = reached & ~self.already_reached
 
             if new_reaches.any():
@@ -955,8 +916,6 @@ def create_env(num_envs, device):
                 self.reach_count[reached_ids] += 1
                 self.total_reaches += len(reached_ids)
                 self.stage_reaches += len(reached_ids)
-
-                # Mark as reached and sample new target
                 self.already_reached[reached_ids] = True
                 self._sample_commands(reached_ids)
 
@@ -966,14 +925,13 @@ def create_env(num_envs, device):
             self.target_markers.visualize(translations=target_world, orientations=default_quat)
             self.ee_markers.visualize(translations=ee_pos, orientations=default_quat)
 
-            # Update workspace visualization
-            self._update_workspace_spheres()
-
             # Store previous actions
             self._prev_leg_actions = self.prev_leg_actions.clone()
             self._prev_arm_actions = self.prev_arm_actions.clone()
+            self._prev_finger_actions = self.prev_finger_actions.clone()
             self.prev_leg_actions = leg_actions.clone()
             self.prev_arm_actions = arm_actions.clone()
+            self.prev_finger_actions = finger_actions.clone()
 
             self.stage_steps += 1
 
@@ -987,6 +945,7 @@ def create_env(num_envs, device):
             robot = self.robot
             quat = robot.data.root_quat_w
             pos = robot.data.root_pos_w
+            lv = CURRICULUM[self.curr_level]
 
             lin_vel_b = quat_apply_inverse(quat, robot.data.root_lin_vel_w)
             ang_vel_b = quat_apply_inverse(quat, robot.data.root_ang_vel_w)
@@ -995,14 +954,13 @@ def create_env(num_envs, device):
             r_vx = torch.exp(-2.0 * (lin_vel_b[:, 0] - self.vel_cmd[:, 0]) ** 2)
             r_vy = torch.exp(-3.0 * (lin_vel_b[:, 1] - self.vel_cmd[:, 1]) ** 2)
             r_vyaw = torch.exp(-2.0 * (ang_vel_b[:, 2] - self.vel_cmd[:, 2]) ** 2)
-
             r_height = torch.exp(-10.0 * (pos[:, 2] - self.height_cmd) ** 2)
 
             gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(quat, gravity_vec)
             r_orientation = torch.exp(-3.0 * (proj_gravity[:, 0]**2 + proj_gravity[:, 1]**2))
 
-            # Gait quality
+            # Gait
             joint_pos = robot.data.joint_pos[:, self.leg_idx]
             left_knee, right_knee = joint_pos[:, 6], joint_pos[:, 7]
             left_swing = (self.phase < 0.5).float()
@@ -1014,19 +972,40 @@ def create_env(num_envs, device):
             r_gait = torch.exp(-3.0 * knee_err)
 
             # === ARM REWARDS ===
-            ee_pos = self._compute_ee_pos()
+            ee_pos, palm_quat = self._compute_palm_ee()
             target_world = pos + quat_apply(quat, self.target_pos_body)
             dist = torch.norm(ee_pos - target_world, dim=-1)
 
             r_distance = torch.exp(-5.0 * dist)
             r_reaching = (dist < REACH_THRESHOLD).float()
 
-            # Smoothness
+            # Arm smoothness
             arm_diff = self.prev_arm_actions - self._prev_arm_actions
             r_arm_smooth = torch.exp(-0.5 * arm_diff.pow(2).sum(-1))
 
+            # === ORIENTATION REWARD (Level 10+ only) ===
+            if lv["use_orientation"]:
+                orient_err = compute_orientation_error(palm_quat)
+                r_palm_orient = torch.exp(-3.0 * orient_err)
+            else:
+                r_palm_orient = torch.zeros(self.num_envs, device=self.device)
+
+            # === GRIPPER REWARD (Level 10+ only) ===
+            if lv["use_gripper"]:
+                finger_pos = robot.data.joint_pos[:, self.finger_idx]
+                finger_closed_ratio = ((finger_pos - self.finger_lower) /
+                                       (self.finger_upper - self.finger_lower + 1e-6)).mean(dim=-1)
+
+                near_target = dist < GRASP_THRESHOLD
+                r_gripper = torch.where(
+                    near_target,
+                    finger_closed_ratio * 2.0,  # Reward closing when near
+                    (1.0 - finger_closed_ratio) * 0.5  # Reward staying open when far
+                )
+            else:
+                r_gripper = torch.zeros(self.num_envs, device=self.device)
+
             # === BALANCE ===
-            # Simple CoM proxy - penalize body tilt when arm is moving
             arm_activity = self.prev_arm_actions.abs().mean(-1)
             r_balance = torch.exp(-5.0 * (proj_gravity[:, 0]**2 + proj_gravity[:, 1]**2) * (1 + arm_activity))
 
@@ -1035,8 +1014,9 @@ def create_env(num_envs, device):
             p_leg_rate = leg_diff.pow(2).sum(-1)
             arm_diff = self.prev_arm_actions - self._prev_arm_actions
             p_arm_rate = arm_diff.pow(2).sum(-1)
+            finger_diff = self.prev_finger_actions - self._prev_finger_actions
+            p_finger_rate = finger_diff.pow(2).sum(-1)
 
-            # Energy penalty - sadece aktif jointler
             leg_vel = robot.data.joint_vel[:, self.leg_idx]
             arm_vel = robot.data.joint_vel[:, self.arm_idx]
             p_energy = (leg_vel.abs() * self.prev_leg_actions.abs()).sum(-1) + \
@@ -1053,9 +1033,12 @@ def create_env(num_envs, device):
                 REWARD_WEIGHTS["arm_distance"] * r_distance +
                 REWARD_WEIGHTS["arm_reaching"] * r_reaching +
                 REWARD_WEIGHTS["arm_smooth"] * r_arm_smooth +
+                REWARD_WEIGHTS["palm_orientation"] * r_palm_orient +
+                REWARD_WEIGHTS["gripper_grasp"] * r_gripper +
                 REWARD_WEIGHTS["balance"] * r_balance +
                 REWARD_WEIGHTS["loco_action_rate"] * p_leg_rate +
                 REWARD_WEIGHTS["arm_action_rate"] * p_arm_rate +
+                REWARD_WEIGHTS["finger_action_rate"] * p_finger_rate +
                 REWARD_WEIGHTS["energy"] * p_energy +
                 REWARD_WEIGHTS["alive"]
             )
@@ -1065,10 +1048,13 @@ def create_env(num_envs, device):
                 "R/loco_height": r_height.mean().item(),
                 "R/arm_distance": r_distance.mean().item(),
                 "R/arm_reaching": r_reaching.mean().item(),
+                "R/palm_orient": r_palm_orient.mean().item(),
+                "R/gripper": r_gripper.mean().item(),
                 "R/balance": r_balance.mean().item(),
                 "M/height": pos[:, 2].mean().item(),
                 "M/vx": lin_vel_b[:, 0].mean().item(),
                 "M/ee_dist": dist.mean().item(),
+                "M/orient_err": compute_orientation_error(palm_quat).mean().item() if lv["use_orientation"] else 0,
                 "M/reaches": self.total_reaches,
                 "curriculum_level": self.curr_level,
             }
@@ -1108,16 +1094,15 @@ def create_env(num_envs, device):
             self.phase[env_ids] = torch.rand(n, device=self.device)
             self.prev_leg_actions[env_ids] = 0
             self.prev_arm_actions[env_ids] = 0
+            self.prev_finger_actions[env_ids] = 0
             self.reach_count[env_ids] = 0
 
         def update_curriculum(self, mean_reward):
-            """Update curriculum based on reaches, success rate, AND minimum steps"""
             lv = CURRICULUM[self.curr_level]
 
             if lv["min_reaches"] is None:
-                return  # Final level
+                return
 
-            # Check ALL criteria: min_reaches, success_rate, AND min_steps
             min_steps = lv.get("min_steps", 0)
 
             if self.stage_steps >= min_steps and self.stage_reaches >= lv["min_reaches"]:
@@ -1125,12 +1110,19 @@ def create_env(num_envs, device):
                 if success_rate >= lv["success_rate"]:
                     if self.curr_level < len(CURRICULUM) - 1:
                         self.curr_level += 1
-                        print(f"\n{'='*60}")
-                        print(f"🎯 LEVEL UP! Now at Level {self.curr_level}")
                         new_lv = CURRICULUM[self.curr_level]
+
+                        phase_change = ""
+                        if self.curr_level == 10:
+                            phase_change = " 🎯 PHASE 2 BAŞLIYOR: ORIENTATION + GRIPPER!"
+
+                        print(f"\n{'='*60}")
+                        print(f"🎯 LEVEL UP! Now at Level {self.curr_level}{phase_change}")
                         print(f"   vx={new_lv['vx']}, arm_radius={new_lv['arm_radius']}")
+                        print(f"   use_orientation={new_lv['use_orientation']}, use_gripper={new_lv['use_gripper']}")
                         print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}, Steps: {self.stage_steps}")
                         print(f"{'='*60}\n")
+
                         self.stage_reaches = 0
                         self.stage_steps = 0
 
@@ -1144,7 +1136,6 @@ def create_env(num_envs, device):
 # ============================================================================
 
 def transfer_stage3_weights(net, stage3_path, device):
-    """Transfer loco weights from Stage 3"""
     if stage3_path is None:
         print("[Transfer] No Stage 3 checkpoint, starting fresh")
         return
@@ -1154,7 +1145,6 @@ def transfer_stage3_weights(net, stage3_path, device):
     ckpt = torch.load(stage3_path, map_location=device, weights_only=False)
     s3_state = ckpt["actor_critic"]
 
-    # Map Stage 3 actor weights to loco_actor
     transferred = 0
     for key in s3_state:
         if key.startswith("actor."):
@@ -1170,9 +1160,6 @@ def transfer_stage3_weights(net, stage3_path, device):
 
     print(f"[Transfer] Transferred {transferred} loco parameters")
 
-    if "best_reward" in ckpt:
-        print(f"[Transfer] Stage 3 best reward: {ckpt['best_reward']:.2f}")
-
 
 # ============================================================================
 # MAIN
@@ -1184,13 +1171,11 @@ def train():
     print(f"\n[INFO] Creating environment with {args_cli.num_envs} envs...")
     env = create_env(args_cli.num_envs, device)
 
-    print(f"[INFO] Creating unified network...")
-    net = UnifiedActorCritic(loco_obs=57, arm_obs=28, loco_act=12, arm_act=5).to(device)
+    print(f"[INFO] Creating unified network (Arm obs=35, Arm act=12)...")
+    net = UnifiedActorCritic(loco_obs=57, arm_obs=35, loco_act=12, arm_act=12).to(device)
 
-    # Transfer Stage 3 weights
     transfer_stage3_weights(net, args_cli.stage3_checkpoint, device)
 
-    # Resume if checkpoint provided
     start_iter = 0
     if args_cli.checkpoint:
         print(f"\n[INFO] Resuming from: {args_cli.checkpoint}")
@@ -1201,7 +1186,6 @@ def train():
 
     ppo = PPO(net, device)
 
-    # Logging
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = f"logs/ulc/{args_cli.experiment_name}_{timestamp}"
     os.makedirs(log_dir, exist_ok=True)
@@ -1211,18 +1195,18 @@ def train():
 
     best_reward = float('-inf')
 
-    # Initial exploration
     net.loco_actor.log_std.data.fill_(np.log(0.5))
     net.arm_actor.log_std.data.fill_(np.log(0.6))
 
     obs, _ = env.reset()
 
     print("\n" + "=" * 80)
-    print("STARTING STAGE 6 UNIFIED TRAINING")
+    print("STARTING STAGE 6 TRAINING: PALM EE + GRIPPER + ORIENTATION")
+    print("  Phase 1 (Level 0-9):  ARM REACHING")
+    print("  Phase 2 (Level 10-19): + ORIENTATION + GRIPPER")
     print("=" * 80 + "\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
-        # Collect rollouts
         loco_obs_buf = []
         arm_obs_buf = []
         loco_act_buf = []
@@ -1265,7 +1249,6 @@ def train():
             rew_buf.append(reward)
             done_buf.append((terminated | truncated).float())
 
-        # Stack
         loco_obs_buf = torch.stack(loco_obs_buf)
         arm_obs_buf = torch.stack(arm_obs_buf)
         loco_act_buf = torch.stack(loco_act_buf)
@@ -1275,7 +1258,6 @@ def train():
         val_buf = torch.stack(val_buf)
         logp_buf = torch.stack(logp_buf)
 
-        # GAE
         with torch.no_grad():
             final_loco_obs = env.get_loco_obs()
             final_arm_obs = env.get_arm_obs()
@@ -1283,19 +1265,17 @@ def train():
 
         advantages, returns = ppo.gae(rew_buf, val_buf, done_buf, next_value)
 
-        # PPO update
         update_info = ppo.update(
             loco_obs_buf.view(-1, 57),
-            arm_obs_buf.view(-1, 28),
+            arm_obs_buf.view(-1, 35),
             loco_act_buf.view(-1, 12),
-            arm_act_buf.view(-1, 5),
+            arm_act_buf.view(-1, 12),
             logp_buf.view(-1),
             returns.view(-1),
             advantages.view(-1),
             val_buf.view(-1),
         )
 
-        # Anneal exploration
         progress = iteration / args_cli.max_iterations
         loco_std = 0.5 + (0.15 - 0.5) * progress
         arm_std = 0.6 + (0.2 - 0.6) * progress
@@ -1305,7 +1285,6 @@ def train():
         mean_reward = rew_buf.mean().item()
         env.update_curriculum(mean_reward)
 
-        # Save best
         if mean_reward > best_reward:
             best_reward = mean_reward
             torch.save({
@@ -1316,11 +1295,8 @@ def train():
                 "total_reaches": env.total_reaches,
             }, f"{log_dir}/model_best.pt")
 
-        # Logging
         writer.add_scalar("Train/reward", mean_reward, iteration)
         writer.add_scalar("Train/best_reward", best_reward, iteration)
-        writer.add_scalar("Train/loco_std", loco_std, iteration)
-        writer.add_scalar("Train/arm_std", arm_std, iteration)
         writer.add_scalar("Curriculum/level", env.curr_level, iteration)
         writer.add_scalar("Curriculum/total_reaches", env.total_reaches, iteration)
 
@@ -1328,13 +1304,14 @@ def train():
             writer.add_scalar(f"Env/{key}", val, iteration)
 
         if iteration % 10 == 0:
+            phase = "REACHING" if env.curr_level < 10 else "ORIENT+GRIP"
             print(
                 f"#{iteration:5d} | "
                 f"R={mean_reward:6.2f} | "
                 f"Best={best_reward:6.2f} | "
-                f"Lv={env.curr_level} | "
+                f"Lv={env.curr_level:2d} ({phase}) | "
                 f"Reaches={env.total_reaches} | "
-                f"EE_dist={env.extras.get('M/ee_dist', 0):.3f}"
+                f"EE={env.extras.get('M/ee_dist', 0):.3f}"
             )
 
         if (iteration + 1) % 500 == 0:
@@ -1348,7 +1325,6 @@ def train():
 
         writer.flush()
 
-    # Final save
     torch.save({
         "model": net.state_dict(),
         "iteration": args_cli.max_iterations,
