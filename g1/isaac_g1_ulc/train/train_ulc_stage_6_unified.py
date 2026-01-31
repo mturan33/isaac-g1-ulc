@@ -108,119 +108,138 @@ def create_curriculum():
 
     # Phase 1: Reaching Only (Level 0-9)
     stage6_phase1 = [
-        # Level 0: VERY EASY - Close targets, wide threshold
+        # Level 0: ULTRA EASY - Relative sampling (near current EE)
         {
             "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.08, 0.15), "arm_height": (0.0, 0.10),
-            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
-            "load_range": (0.0, 0.0),
-            "pos_threshold": 0.12, "orient_threshold": None,
-            "success_rate": 0.30, "min_reaches": 1500, "min_steps": 1000,
-            "use_orientation": False, "use_gripper": False,
-            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
-        },
-        # Level 1: Still easy, slightly larger workspace
-        {
-            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.10, 0.18), "arm_height": (-0.02, 0.12),
-            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
-            "load_range": (0.0, 0.0),
-            "pos_threshold": 0.10, "orient_threshold": None,
-            "success_rate": 0.35, "min_reaches": 2000, "min_steps": 1500,
-            "use_orientation": False, "use_gripper": False,
-            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
-        },
-        # Level 2: Medium-easy
-        {
-            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.12, 0.22), "arm_height": (-0.05, 0.15),
+            "arm_radius": (0.02, 0.05), "arm_height": (0.0, 0.10),  # 2-5cm offset
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.08, "orient_threshold": None,
-            "success_rate": 0.40, "min_reaches": 3000, "min_steps": 2000,
+            "success_rate": 0.25, "min_reaches": 1000, "min_steps": 800,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "relative",  # Near current EE
         },
-        # Level 3: Transition to harder threshold
+        # Level 1: Very easy - still relative
         {
             "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-            "arm_radius": (0.15, 0.26), "arm_height": (-0.08, 0.18),
+            "arm_radius": (0.03, 0.08), "arm_height": (-0.02, 0.12),  # 3-8cm
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.08, "orient_threshold": None,
+            "success_rate": 0.30, "min_reaches": 1500, "min_steps": 1000,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "relative",
+        },
+        # Level 2: Easy - mixed sampling (50% relative, 50% absolute)
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.05, 0.12), "arm_height": (-0.05, 0.15),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.07, "orient_threshold": None,
+            "success_rate": 0.35, "min_reaches": 2500, "min_steps": 1500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "mixed",  # 50/50 relative/absolute
+            "workspace_radius": (0.18, 0.28),  # Start introducing absolute workspace
+        },
+        # Level 3: Transition - mostly absolute
+        {
+            "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+            "arm_radius": (0.08, 0.15), "arm_height": (-0.08, 0.18),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.06, "orient_threshold": None,
-            "success_rate": 0.40, "min_reaches": 4000, "min_steps": 2500,
+            "success_rate": 0.35, "min_reaches": 3500, "min_steps": 2000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "mixed",
+            "workspace_radius": (0.18, 0.32),
         },
-        # Level 4: Very slow walking + tight threshold
+        # Level 4: ABSOLUTE workspace sampling begins
         {
             "vx": (0.0, 0.10), "vy": (-0.03, 0.03), "vyaw": (-0.05, 0.05),
-            "arm_radius": (0.15, 0.30), "arm_height": (-0.10, 0.18),
+            "arm_radius": (0.18, 0.32), "arm_height": (-0.10, 0.20),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.38, "min_reaches": 5000, "min_steps": 3000,
+            "success_rate": 0.35, "min_reaches": 4500, "min_steps": 2500,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",  # Full workspace!
+            "workspace_radius": (0.18, 0.35),
         },
-        # Level 5: Slow walking
+        # Level 5: Expanding workspace + slow walking
         {
             "vx": (0.0, 0.20), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
-            "arm_radius": (0.18, 0.35), "arm_height": (-0.10, 0.20),
-            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
-            "load_range": (0.0, 0.0),
-            "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.38, "min_reaches": 6000, "min_steps": 3500,
-            "use_orientation": False, "use_gripper": False,
-            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
-        },
-        # Level 6: Medium speed
-        {
-            "vx": (0.0, 0.30), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
             "arm_radius": (0.18, 0.35), "arm_height": (-0.12, 0.22),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.35, "min_reaches": 7000, "min_steps": 4000,
+            "success_rate": 0.35, "min_reaches": 5500, "min_steps": 3000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.38),
         },
-        # Level 7: Normal walking
+        # Level 6: Medium speed + full workspace
+        {
+            "vx": (0.0, 0.30), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
+            "arm_radius": (0.18, 0.38), "arm_height": (-0.15, 0.25),
+            "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+            "load_range": (0.0, 0.0),
+            "pos_threshold": 0.05, "orient_threshold": None,
+            "success_rate": 0.33, "min_reaches": 6500, "min_steps": 3500,
+            "use_orientation": False, "use_gripper": False,
+            "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
+        },
+        # Level 7: Normal walking + FULL 18-40cm workspace
         {
             "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.20, 0.20),
-            "arm_radius": (0.18, 0.38), "arm_height": (-0.12, 0.24),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.18, 0.28),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.35, "min_reaches": 8000, "min_steps": 4500,
+            "success_rate": 0.32, "min_reaches": 7500, "min_steps": 4000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
-        # Level 8: Fast walking
+        # Level 8: Fast walking + full workspace
         {
             "vx": (-0.1, 0.50), "vy": (-0.12, 0.12), "vyaw": (-0.25, 0.25),
-            "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.26),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.20, 0.30),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.33, "min_reaches": 9000, "min_steps": 5000,
+            "success_rate": 0.30, "min_reaches": 8500, "min_steps": 4500,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
-        # Level 9: Full range reaching
+        # Level 9: Full challenge - Phase 1 Master
         {
             "vx": (-0.15, 0.60), "vy": (-0.15, 0.15), "vyaw": (-0.30, 0.30),
-            "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.22, 0.32),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": None,
-            "success_rate": 0.30, "min_reaches": 10000, "min_steps": 5500,
+            "success_rate": 0.28, "min_reaches": 10000, "min_steps": 5000,
             "use_orientation": False, "use_gripper": False,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
     ]
 
     # Phase 2: + Orientation + Gripper (Level 10-19)
+    # All use ABSOLUTE workspace sampling (18-40cm hemisphere)
     stage6_phase2 = [
         # Level 10: Stationary, orientation learning
         {
@@ -232,6 +251,8 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.35),
         },
         # Level 11
         {
@@ -243,6 +264,8 @@ def create_curriculum():
             "success_rate": 0.40, "min_reaches": 4000, "min_steps": 3000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.38),
         },
         # Level 12
         {
@@ -254,6 +277,8 @@ def create_curriculum():
             "success_rate": 0.45, "min_reaches": 5000, "min_steps": 3500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 13: Very slow + orientation
         {
@@ -265,6 +290,8 @@ def create_curriculum():
             "success_rate": 0.40, "min_reaches": 5000, "min_steps": 3500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 14
         {
@@ -276,6 +303,8 @@ def create_curriculum():
             "success_rate": 0.40, "min_reaches": 6000, "min_steps": 4000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 15
         {
@@ -287,6 +316,8 @@ def create_curriculum():
             "success_rate": 0.38, "min_reaches": 7000, "min_steps": 4500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 16
         {
@@ -298,44 +329,53 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 8000, "min_steps": 5000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 17
         {
             "vx": (-0.1, 0.55), "vy": (-0.15, 0.15), "vyaw": (-0.28, 0.28),
-            "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.15, 0.28),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.4,
             "success_rate": 0.35, "min_reaches": 9000, "min_steps": 5500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 18
         {
             "vx": (-0.15, 0.65), "vy": (-0.18, 0.18), "vyaw": (-0.35, 0.35),
-            "arm_radius": (0.18, 0.42), "arm_height": (-0.15, 0.28),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.18, 0.30),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.35,
             "success_rate": 0.32, "min_reaches": 10000, "min_steps": 6000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 19: Stage 6 Master
         {
             "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
-            "arm_radius": (0.18, 0.45), "arm_height": (-0.18, 0.30),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.20, 0.32),
             "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.35,
             "success_rate": 0.30, "min_reaches": 12000, "min_steps": 7000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": False, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
     ]
 
     # =========================================================================
     # STAGE 7: + HEIGHT COMMAND (Level 20-29)
+    # All levels use ABSOLUTE workspace sampling (18-40cm)
     # =========================================================================
 
     stage7_levels = [
@@ -349,6 +389,8 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 21: Deeper squat
         {
@@ -360,6 +402,8 @@ def create_curriculum():
             "success_rate": 0.38, "min_reaches": 4000, "min_steps": 3000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 22: Full squat range
         {
@@ -371,6 +415,8 @@ def create_curriculum():
             "success_rate": 0.40, "min_reaches": 5000, "min_steps": 3500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 23: Very slow + height
         {
@@ -382,6 +428,8 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 5000, "min_steps": 4000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 24: Slow walk + squat
         {
@@ -393,66 +441,79 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 6000, "min_steps": 4500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 25: Medium speed + squat
         {
             "vx": (0.0, 0.30), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
-            "arm_radius": (0.18, 0.42), "arm_height": (-0.28, 0.30),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.28, 0.30),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.4,
             "success_rate": 0.35, "min_reaches": 7000, "min_steps": 5000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 26: Normal walk + squat
         {
             "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.20, 0.20),
-            "arm_radius": (0.18, 0.45), "arm_height": (-0.30, 0.32),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.30, 0.32),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.4,
             "success_rate": 0.33, "min_reaches": 8000, "min_steps": 5500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 27: Fast walk + squat
         {
             "vx": (-0.1, 0.50), "vy": (-0.12, 0.12), "vyaw": (-0.25, 0.25),
-            "arm_radius": (0.18, 0.45), "arm_height": (-0.30, 0.35),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.30, 0.35),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.38,
             "success_rate": 0.32, "min_reaches": 9000, "min_steps": 6000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 28: Very fast + squat
         {
             "vx": (-0.15, 0.60), "vy": (-0.15, 0.15), "vyaw": (-0.30, 0.30),
-            "arm_radius": (0.18, 0.48), "arm_height": (-0.32, 0.38),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.32, 0.38),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.35,
             "success_rate": 0.30, "min_reaches": 10000, "min_steps": 6500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 29: Stage 7 Master
         {
             "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
-            "arm_radius": (0.18, 0.50), "arm_height": (-0.35, 0.40),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.35, 0.40),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 0.0),
             "pos_threshold": 0.05, "orient_threshold": 0.35,
             "success_rate": 0.28, "min_reaches": 12000, "min_steps": 7500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": False, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
     ]
 
     # =========================================================================
     # STAGE 8: + LOAD CARRYING (Level 30-39)
+    # All levels use ABSOLUTE workspace sampling (18-40cm)
     # =========================================================================
 
     stage8_levels = [
@@ -466,6 +527,8 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 3000, "min_steps": 2500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 31: Light load + movement
         {
@@ -477,6 +540,8 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 4000, "min_steps": 3000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 32: Medium load
         {
@@ -488,83 +553,99 @@ def create_curriculum():
             "success_rate": 0.35, "min_reaches": 5000, "min_steps": 3500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 33: Medium load + faster
         {
             "vx": (0.0, 0.35), "vy": (-0.10, 0.10), "vyaw": (-0.15, 0.15),
-            "arm_radius": (0.18, 0.42), "arm_height": (-0.30, 0.32),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.30, 0.32),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 1.5),
             "pos_threshold": 0.06, "orient_threshold": 0.45,
             "success_rate": 0.33, "min_reaches": 6000, "min_steps": 4000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 34: Heavy load
         {
             "vx": (0.0, 0.40), "vy": (-0.10, 0.10), "vyaw": (-0.18, 0.18),
-            "arm_radius": (0.18, 0.42), "arm_height": (-0.30, 0.35),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.30, 0.35),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 2.0),
             "pos_threshold": 0.07, "orient_threshold": 0.45,
             "success_rate": 0.32, "min_reaches": 7000, "min_steps": 4500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 35: Heavy load + normal walk
         {
             "vx": (-0.1, 0.45), "vy": (-0.12, 0.12), "vyaw": (-0.22, 0.22),
-            "arm_radius": (0.18, 0.45), "arm_height": (-0.32, 0.38),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.32, 0.38),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 2.3),
             "pos_threshold": 0.07, "orient_threshold": 0.42,
             "success_rate": 0.30, "min_reaches": 8000, "min_steps": 5000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 36: Max load + faster
         {
             "vx": (-0.1, 0.50), "vy": (-0.15, 0.15), "vyaw": (-0.25, 0.25),
-            "arm_radius": (0.18, 0.45), "arm_height": (-0.35, 0.40),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.35, 0.40),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 2.5),
             "pos_threshold": 0.08, "orient_threshold": 0.40,
             "success_rate": 0.28, "min_reaches": 9000, "min_steps": 5500,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 37: Max load + fast walk
         {
             "vx": (-0.15, 0.55), "vy": (-0.18, 0.18), "vyaw": (-0.30, 0.30),
-            "arm_radius": (0.18, 0.48), "arm_height": (-0.35, 0.42),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.35, 0.42),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 2.8),
             "pos_threshold": 0.08, "orient_threshold": 0.38,
             "success_rate": 0.27, "min_reaches": 10000, "min_steps": 6000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 38: Full challenge
         {
             "vx": (-0.2, 0.65), "vy": (-0.20, 0.20), "vyaw": (-0.35, 0.35),
-            "arm_radius": (0.18, 0.50), "arm_height": (-0.38, 0.45),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.38, 0.45),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 3.0),
             "pos_threshold": 0.08, "orient_threshold": 0.35,
             "success_rate": 0.25, "min_reaches": 12000, "min_steps": 7000,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
         # Level 39: Stage 8 Master (Final low-level controller)
         {
             "vx": (-0.2, 0.8), "vy": (-0.20, 0.20), "vyaw": (-0.40, 0.40),
-            "arm_radius": (0.18, 0.50), "arm_height": (-0.40, 0.48),
+            "arm_radius": (0.18, 0.40), "arm_height": (-0.40, 0.48),
             "height_range": (0.35, 0.75),
             "load_range": (0.0, 3.0),
             "pos_threshold": 0.08, "orient_threshold": 0.35,
             "success_rate": None, "min_reaches": None, "min_steps": None,
             "use_orientation": True, "use_gripper": True,
             "use_height_cmd": True, "use_load": True, "use_object_tracking": False,
+            "sampling_mode": "absolute",
+            "workspace_radius": (0.18, 0.40),
         },
     ]
 
@@ -1126,22 +1207,97 @@ def create_env(num_envs, device):
             else:
                 self.current_load[env_ids] = 0.0
 
-            # Arm target
-            azimuth = torch.empty(n, device=self.device).uniform_(-0.5, 1.0)
-            radius = torch.empty(n, device=self.device).uniform_(*lv["arm_radius"])
-            height = torch.empty(n, device=self.device).uniform_(*lv["arm_height"])
+            # ================================================================
+            # ARM TARGET SAMPLING - Three modes
+            # ================================================================
+            sampling_mode = lv.get("sampling_mode", "absolute")
 
-            x = radius * torch.cos(azimuth)
-            y = -radius * torch.sin(azimuth)
-            z = height
+            # Get current state
+            root_pos = self.robot.data.root_pos_w[env_ids]
+            root_quat = self.robot.data.root_quat_w[env_ids]
+            ee_world, _ = self._compute_palm_ee()
+            ee_world = ee_world[env_ids]
+            current_ee_body = quat_apply_inverse(root_quat, ee_world - root_pos)
 
-            x_cut = 0.05
-            too_close = x < x_cut
-            x = torch.where(too_close, torch.full_like(x, x_cut), x)
+            if sampling_mode == "relative":
+                # ============================================================
+                # RELATIVE: Sample offset from CURRENT EE position
+                # For early learning - targets are near where the hand already is
+                # ============================================================
+                azimuth = torch.empty(n, device=self.device).uniform_(-0.8, 0.8)
+                elevation = torch.empty(n, device=self.device).uniform_(-0.5, 0.5)
+                radius = torch.empty(n, device=self.device).uniform_(*lv["arm_radius"])
 
-            self.target_pos_body[env_ids, 0] = x + self.shoulder_offset[0]
-            self.target_pos_body[env_ids, 1] = y + self.shoulder_offset[1]
-            self.target_pos_body[env_ids, 2] = z + self.shoulder_offset[2]
+                offset_x = radius * torch.cos(elevation) * torch.cos(azimuth)
+                offset_y = radius * torch.cos(elevation) * torch.sin(azimuth)
+                offset_z = radius * torch.sin(elevation)
+
+                target_x = current_ee_body[:, 0] + offset_x
+                target_y = current_ee_body[:, 1] + offset_y
+                target_z = current_ee_body[:, 2] + offset_z
+
+            elif sampling_mode == "mixed":
+                # ============================================================
+                # MIXED: 50% relative, 50% absolute
+                # Transition phase - learn both nearby and full workspace
+                # ============================================================
+                use_absolute = torch.rand(n, device=self.device) > 0.5
+                workspace_radius = lv.get("workspace_radius", (0.18, 0.35))
+
+                # Relative targets
+                rel_azimuth = torch.empty(n, device=self.device).uniform_(-0.8, 0.8)
+                rel_elevation = torch.empty(n, device=self.device).uniform_(-0.5, 0.5)
+                rel_radius = torch.empty(n, device=self.device).uniform_(*lv["arm_radius"])
+
+                rel_x = current_ee_body[:, 0] + rel_radius * torch.cos(rel_elevation) * torch.cos(rel_azimuth)
+                rel_y = current_ee_body[:, 1] + rel_radius * torch.cos(rel_elevation) * torch.sin(rel_azimuth)
+                rel_z = current_ee_body[:, 2] + rel_radius * torch.sin(rel_elevation)
+
+                # Absolute targets (hemisphere in front of right shoulder)
+                abs_azimuth = torch.empty(n, device=self.device).uniform_(-0.3, 1.2)  # Right side bias
+                abs_elevation = torch.empty(n, device=self.device).uniform_(-0.4, 0.6)
+                abs_radius = torch.empty(n, device=self.device).uniform_(*workspace_radius)
+
+                abs_x = abs_radius * torch.cos(abs_elevation) * torch.cos(abs_azimuth) + self.shoulder_offset[0]
+                abs_y = -abs_radius * torch.cos(abs_elevation) * torch.sin(abs_azimuth) + self.shoulder_offset[1]
+                abs_z = abs_radius * torch.sin(abs_elevation) + self.shoulder_offset[2]
+
+                # Mix based on random selection
+                target_x = torch.where(use_absolute, abs_x, rel_x)
+                target_y = torch.where(use_absolute, abs_y, rel_y)
+                target_z = torch.where(use_absolute, abs_z, rel_z)
+
+            else:  # "absolute"
+                # ============================================================
+                # ABSOLUTE: Sample from FULL WORKSPACE (18-40cm hemisphere)
+                # Final mode - any point in workspace, regardless of current EE
+                # ============================================================
+                workspace_radius = lv.get("workspace_radius", (0.18, 0.40))
+
+                # Sample hemisphere in front of right shoulder
+                # Azimuth: -0.3 to 1.2 radians (mostly right side, some center)
+                # Elevation: -0.4 to 0.6 radians (below to above shoulder)
+                azimuth = torch.empty(n, device=self.device).uniform_(-0.3, 1.2)
+                elevation = torch.empty(n, device=self.device).uniform_(-0.4, 0.6)
+                radius = torch.empty(n, device=self.device).uniform_(*workspace_radius)
+
+                # Convert spherical to Cartesian (relative to shoulder)
+                target_x = radius * torch.cos(elevation) * torch.cos(azimuth) + self.shoulder_offset[0]
+                target_y = -radius * torch.cos(elevation) * torch.sin(azimuth) + self.shoulder_offset[1]  # Right side
+                target_z = radius * torch.sin(elevation) + self.shoulder_offset[2]
+
+            # Store targets
+            self.target_pos_body[env_ids, 0] = target_x
+            self.target_pos_body[env_ids, 1] = target_y
+            self.target_pos_body[env_ids, 2] = target_z
+
+            # Clamp to valid workspace (body frame bounds)
+            # X: 0.05 to 0.55 (forward)
+            # Y: -0.55 to 0.10 (right side to slightly past center)
+            # Z: -0.25 to 0.55 (below to above shoulder)
+            self.target_pos_body[env_ids, 0] = self.target_pos_body[env_ids, 0].clamp(0.05, 0.55)
+            self.target_pos_body[env_ids, 1] = self.target_pos_body[env_ids, 1].clamp(-0.55, 0.10)
+            self.target_pos_body[env_ids, 2] = self.target_pos_body[env_ids, 2].clamp(-0.25, 0.55)
 
         def get_loco_obs(self) -> torch.Tensor:
             """Locomotion observations (57 dim) - Stage 3 compatible"""
@@ -1323,7 +1479,7 @@ def create_env(num_envs, device):
             # Apply leg actions
             target_pos = self.robot.data.default_joint_pos.clone()
             target_pos[:, self.leg_idx] = self.default_leg + leg_actions * 0.4
-            target_pos[:, self.arm_idx] = self.default_arm + arm_actions * 0.3
+            target_pos[:, self.arm_idx] = self.default_arm + arm_actions * 0.5  # Increased from 0.3
 
             # Gripper control
             if lv["use_gripper"]:
@@ -1808,6 +1964,8 @@ def train():
 
         if iteration % 10 == 0:
             stage = env.extras.get("stage", "S6")
+            # Get actual reach threshold for current level
+            reach_thresh = CURRICULUM[env.curr_level]["pos_threshold"]
             print(
                 f"#{iteration:5d} | "
                 f"R={mean_reward:6.2f} | "
@@ -1815,7 +1973,7 @@ def train():
                 f"Lv={env.curr_level:2d} ({stage}) | "
                 f"Reaches={env.total_reaches} | "
                 f"H={env.extras.get('M/height', 0):.2f}/{env.extras.get('M/height_cmd', 0):.2f} | "
-                f"EE={env.extras.get('M/ee_dist', 0):.3f}"
+                f"EE={env.extras.get('M/ee_dist', 0):.3f} (th={reach_thresh:.2f})"
             )
 
         if (iteration + 1) % 500 == 0:
