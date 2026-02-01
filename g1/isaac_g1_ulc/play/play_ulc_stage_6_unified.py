@@ -368,20 +368,26 @@ class PlayEnv(DirectRLEnv):
     def _compute_palm_ee(self):
         """Compute palm end-effector position and forward direction.
 
-        Palm link is at the wrist, so we add an offset to get to palm center.
+        MUST MATCH TRAINING:
+        - Palm forward = LOCAL +X axis (not +Z!)
+        - EE = palm_pos + 0.08 * palm_forward
         """
         palm_pos = self.robot.data.body_pos_w[:, self.palm_idx]
         palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
 
-        # Palm forward is local +Z axis
-        forward_local = torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, -1)
-        palm_forward = quat_apply(palm_quat, forward_local)
+        # Palm forward is LOCAL +X axis (matches training get_palm_forward function)
+        # get_palm_forward extracts first column of rotation matrix = local +X in world
+        w, x, y, z = palm_quat[:, 0], palm_quat[:, 1], palm_quat[:, 2], palm_quat[:, 3]
+        fwd_x = 1 - 2 * (y * y + z * z)
+        fwd_y = 2 * (x * y + w * z)
+        fwd_z = 2 * (x * z - w * y)
+        palm_forward = torch.stack([fwd_x, fwd_y, fwd_z], dim=-1)
 
-        # Add offset from palm_link to actual palm center (~8cm along forward direction)
-        palm_offset = torch.tensor([0.0, 0.0, 0.08], device=self.device).expand(self.num_envs, -1)
-        palm_center = palm_pos + quat_apply(palm_quat, palm_offset)
+        # EE position = palm_pos + offset along forward direction (matches training)
+        PALM_FORWARD_OFFSET = 0.08
+        ee_pos = palm_pos + PALM_FORWARD_OFFSET * palm_forward
 
-        return palm_center, palm_forward
+        return ee_pos, palm_forward
 
     def _sample_targets(self, env_ids):
         """Sample new arm targets in body frame."""
@@ -498,8 +504,12 @@ class PlayEnv(DirectRLEnv):
         pos_error = self.target_pos_body - ee_pos_body
         pos_dist = pos_error.norm(dim=-1, keepdim=True)
 
+        # Orientation error: angle between palm forward and world DOWN (-Z)
+        # MUST MATCH TRAINING: acos(dot) / pi, NOT 1-dot!
         down_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
-        orient_error = 1.0 - (palm_forward * down_vec).sum(dim=-1, keepdim=True)
+        dot = (palm_forward * down_vec).sum(dim=-1)
+        angle = torch.acos(torch.clamp(dot, -1.0, 1.0))
+        orient_error = (angle / np.pi).unsqueeze(-1)  # Normalized [0, 1]
 
         # Check reaches
         reached = pos_dist.squeeze(-1) < self.reach_threshold
