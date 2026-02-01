@@ -101,7 +101,7 @@ MODE_CONFIGS = {
 # ============================================================================
 
 class LocoActor(nn.Module):
-    """Locomotion actor - matches Stage 3 architecture"""
+    """Locomotion actor - MUST match training architecture exactly!"""
 
     def __init__(self, num_obs=57, num_act=12, hidden=[512, 256, 128]):
         super().__init__()
@@ -111,31 +111,33 @@ class LocoActor(nn.Module):
             layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
             prev = h
         layers.append(nn.Linear(prev, num_act))
-        self.net = nn.Sequential(*layers)
+        self.actor = nn.Sequential(*layers)  # FIXED: was self.net
+        self.log_std = nn.Parameter(torch.zeros(num_act))  # FIXED: was missing
 
     def forward(self, x):
-        return self.net(x)
+        return self.actor(x)
 
 
 class ArmActor(nn.Module):
-    """Arm actor for reaching + gripper - MUST match training architecture!"""
+    """Arm actor - MUST match training architecture exactly!"""
 
-    def __init__(self, num_obs=52, num_act=12, hidden=[256, 256, 128]):  # FIXED: was [256, 128, 64]
+    def __init__(self, num_obs=52, num_act=12, hidden=[256, 256, 128]):
         super().__init__()
         layers = []
         prev = num_obs
         for h in hidden:
-            layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
+            layers += [nn.Linear(prev, h), nn.ELU()]  # FIXED: NO LayerNorm in training!
             prev = h
         layers.append(nn.Linear(prev, num_act))
-        self.net = nn.Sequential(*layers)
+        self.actor = nn.Sequential(*layers)  # FIXED: was self.net
+        self.log_std = nn.Parameter(torch.zeros(num_act))  # FIXED: was missing
 
     def forward(self, x):
-        return self.net(x)
+        return self.actor(x)
 
 
 class UnifiedCritic(nn.Module):
-    """Unified critic"""
+    """Unified critic - MUST match training architecture exactly!"""
 
     def __init__(self, num_obs=109, hidden=[512, 256, 128]):
         super().__init__()
@@ -145,30 +147,30 @@ class UnifiedCritic(nn.Module):
             layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
             prev = h
         layers.append(nn.Linear(prev, 1))
-        self.net = nn.Sequential(*layers)
+        self.critic = nn.Sequential(*layers)  # FIXED: was self.net
 
     def forward(self, x):
-        return self.net(x)
+        return self.critic(x)
 
 
 class UnifiedActorCritic(nn.Module):
-    """Complete unified network"""
+    """Complete unified network - MUST match training architecture exactly!"""
 
     def __init__(self, loco_obs=57, arm_obs=52, loco_act=12, arm_act=12):
         super().__init__()
         self.loco_actor = LocoActor(loco_obs, loco_act)
         self.arm_actor = ArmActor(arm_obs, arm_act)
         self.critic = UnifiedCritic(loco_obs + arm_obs)
-        self.loco_log_std = nn.Parameter(torch.zeros(loco_act))
-        self.arm_log_std = nn.Parameter(torch.zeros(arm_act))
+        # NOTE: log_std is inside each Actor, not here!
 
     def act(self, loco_obs, arm_obs, deterministic=True):
         loco_mean = self.loco_actor(loco_obs)
         arm_mean = self.arm_actor(arm_obs)
         if deterministic:
             return loco_mean, arm_mean
-        loco_std = self.loco_log_std.clamp(-2, 1).exp()
-        arm_std = self.arm_log_std.clamp(-2, 1).exp()
+        # Use log_std from actors
+        loco_std = self.loco_actor.log_std.clamp(-2, 1).exp()
+        arm_std = self.arm_actor.log_std.clamp(-2, 1).exp()
         loco_act = torch.distributions.Normal(loco_mean, loco_std).sample()
         arm_act = torch.distributions.Normal(arm_mean, arm_std).sample()
         return loco_act, arm_act
@@ -704,19 +706,42 @@ def main():
     net = UnifiedActorCritic(57, 52, 12, 12).to(device)
 
     # Handle different checkpoint formats
-    if "model_state_dict" in checkpoint:
+    if "model" in checkpoint:
+        state_dict = checkpoint["model"]
+    elif "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
-        net.load_state_dict(state_dict, strict=False)
-        print(f"[INFO] Loaded model_state_dict with {len(state_dict)} parameters")
     elif "actor_critic" in checkpoint:
-        # Old format compatibility
         state_dict = checkpoint["actor_critic"]
-        net.load_state_dict(state_dict, strict=False)
-        print(f"[INFO] Loaded actor_critic with {len(state_dict)} parameters")
     else:
-        # Direct state dict
-        net.load_state_dict(checkpoint, strict=False)
-        print("[INFO] Loaded checkpoint directly")
+        state_dict = checkpoint
+
+    # Verify key matching
+    model_keys = set(net.state_dict().keys())
+    ckpt_keys = set(state_dict.keys())
+
+    missing = model_keys - ckpt_keys
+    unexpected = ckpt_keys - model_keys
+
+    if missing:
+        print(f"\n⚠️  MISSING KEYS (not in checkpoint):")
+        for k in sorted(missing):
+            print(f"    {k}")
+    if unexpected:
+        print(f"\n⚠️  UNEXPECTED KEYS (in checkpoint but not in model):")
+        for k in sorted(unexpected):
+            print(f"    {k}")
+
+    if not missing and not unexpected:
+        print(f"\n✓ All {len(model_keys)} keys match perfectly!")
+
+    # Load with strict=True to catch errors
+    try:
+        net.load_state_dict(state_dict, strict=True)
+        print(f"[INFO] Loaded checkpoint successfully")
+    except RuntimeError as e:
+        print(f"\n❌ STRICT LOADING FAILED: {e}")
+        print(f"   Falling back to strict=False...")
+        net.load_state_dict(state_dict, strict=False)
 
     net.eval()
 
