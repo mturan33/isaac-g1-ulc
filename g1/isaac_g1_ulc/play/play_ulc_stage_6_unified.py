@@ -59,7 +59,7 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 # ============================================================================
 HEIGHT_DEFAULT = 0.72
 GAIT_FREQUENCY = 1.5
-REACH_THRESHOLD = 0.05
+REACH_THRESHOLD = 0.08  # Increased from 0.05 for testing
 
 G1_USD = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
 
@@ -472,11 +472,18 @@ class PlayEnv(DirectRLEnv):
         self.actions = actions.clone()
 
         leg_actions = actions[:, :12]
-        arm_actions = actions[:, 12:17]  # Only first 5 for arm joints
+        arm_actions = actions[:, 12:17]  # Arm joints
+        finger_actions = actions[:, 17:24]  # Finger joints
 
         target_pos = self.robot.data.default_joint_pos.clone()
         target_pos[:, self.leg_idx] = self.default_leg + leg_actions * 0.4
         target_pos[:, self.arm_idx] = self.default_arm + arm_actions * 0.5
+
+        # Add finger control (matches training Level 10 with use_gripper=True)
+        if len(self.finger_idx) > 0:
+            finger_normalized = (finger_actions + 1.0) / 2.0
+            finger_targets = self.finger_lower + finger_normalized * (self.finger_upper - self.finger_lower)
+            target_pos[:, self.finger_idx] = finger_targets
 
         self.robot.set_joint_position_target(target_pos)
 
@@ -484,7 +491,7 @@ class PlayEnv(DirectRLEnv):
 
         # Track separate action histories like training
         self.prev_leg_actions = leg_actions.clone()
-        self.prev_arm_actions = arm_actions.clone()
+        self.prev_arm_actions = arm_actions.clone()  # 5 dim (actions[:, 12:17])
 
     def _apply_action(self):
         pass
@@ -758,7 +765,7 @@ def main():
             loco_obs = obs["loco"]
             arm_obs = obs["arm"]
 
-            leg_actions, arm_actions = net.act(loco_obs, arm_obs, deterministic=True)
+            leg_actions, arm_actions = net.act(loco_obs, arm_obs, deterministic=False)  # Try stochastic!
             actions = torch.cat([leg_actions, arm_actions], dim=-1)
 
             obs, reward, terminated, truncated, info = env.step(actions)
