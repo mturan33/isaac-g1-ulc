@@ -36,6 +36,7 @@ parser.add_argument("--mode", type=str, default="walking",
                     help="Test mode")
 
 from isaaclab.app import AppLauncher
+
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = False
@@ -51,7 +52,6 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse, quat_apply
-
 
 # ============================================================================
 # CONSTANTS
@@ -101,6 +101,7 @@ MODE_CONFIGS = {
 
 class LocoActor(nn.Module):
     """Locomotion actor - matches Stage 3 architecture"""
+
     def __init__(self, num_obs=57, num_act=12, hidden=[512, 256, 128]):
         super().__init__()
         layers = []
@@ -117,6 +118,7 @@ class LocoActor(nn.Module):
 
 class ArmActor(nn.Module):
     """Arm actor for reaching + gripper"""
+
     def __init__(self, num_obs=52, num_act=12, hidden=[256, 128, 64]):
         super().__init__()
         layers = []
@@ -133,6 +135,7 @@ class ArmActor(nn.Module):
 
 class UnifiedCritic(nn.Module):
     """Unified critic"""
+
     def __init__(self, num_obs=109, hidden=[512, 256, 128]):
         super().__init__()
         layers = []
@@ -149,6 +152,7 @@ class UnifiedCritic(nn.Module):
 
 class UnifiedActorCritic(nn.Module):
     """Complete unified network"""
+
     def __init__(self, loco_obs=57, arm_obs=52, loco_act=12, arm_act=12):
         super().__init__()
         self.loco_actor = LocoActor(loco_obs, loco_act)
@@ -212,18 +216,20 @@ class PlaySceneCfg(InteractiveSceneCfg):
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.8),
+            pos=(0.0, 0.0, 0.85),  # Higher initial position
             joint_pos={
+                # Legs - slightly bent for stability
                 "left_hip_pitch_joint": -0.2, "right_hip_pitch_joint": -0.2,
                 "left_hip_roll_joint": 0.0, "right_hip_roll_joint": 0.0,
                 "left_hip_yaw_joint": 0.0, "right_hip_yaw_joint": 0.0,
                 "left_knee_joint": 0.4, "right_knee_joint": 0.4,
                 "left_ankle_pitch_joint": -0.2, "right_ankle_pitch_joint": -0.2,
                 "left_ankle_roll_joint": 0.0, "right_ankle_roll_joint": 0.0,
-                "left_shoulder_pitch_joint": 0.0, "right_shoulder_pitch_joint": 0.0,
-                "left_shoulder_roll_joint": 0.3, "right_shoulder_roll_joint": -0.3,
+                # Arms - natural position
+                "left_shoulder_pitch_joint": 0.3, "right_shoulder_pitch_joint": 0.3,
+                "left_shoulder_roll_joint": 0.2, "right_shoulder_roll_joint": -0.2,
                 "left_shoulder_yaw_joint": 0.0, "right_shoulder_yaw_joint": 0.0,
-                "left_elbow_pitch_joint": 0.5, "right_elbow_pitch_joint": 0.5,
+                "left_elbow_pitch_joint": 0.6, "right_elbow_pitch_joint": 0.6,
                 "left_elbow_roll_joint": 0.0, "right_elbow_roll_joint": 0.0,
                 "torso_joint": 0.0,
             },
@@ -315,7 +321,7 @@ class PlayEnv(DirectRLEnv):
             [-0.2, -0.2, 0, 0, 0, 0, 0.4, 0.4, -0.2, -0.2, 0, 0],
             device=self.device
         )
-        self.default_arm = torch.tensor([0.0, -0.3, 0.0, 0.5, 0.0], device=self.device)
+        self.default_arm = torch.tensor([0.3, -0.2, 0.0, 0.6, 0.0], device=self.device)
 
         # Find palm body for EE
         body_names = self.robot.body_names
@@ -359,12 +365,22 @@ class PlayEnv(DirectRLEnv):
         return self.scene["ee_marker"]
 
     def _compute_palm_ee(self):
-        """Compute palm end-effector position and forward direction."""
+        """Compute palm end-effector position and forward direction.
+
+        Palm link is at the wrist, so we add an offset to get to palm center.
+        """
         palm_pos = self.robot.data.body_pos_w[:, self.palm_idx]
         palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
+
+        # Palm forward is local +Z axis
         forward_local = torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, -1)
         palm_forward = quat_apply(palm_quat, forward_local)
-        return palm_pos, palm_forward
+
+        # Add offset from palm_link to actual palm center (~8cm along forward direction)
+        palm_offset = torch.tensor([0.0, 0.0, 0.08], device=self.device).expand(self.num_envs, -1)
+        palm_center = palm_pos + quat_apply(palm_quat, palm_offset)
+
+        return palm_center, palm_forward
 
     def _sample_targets(self, env_ids):
         """Sample new arm targets in body frame."""
@@ -559,7 +575,8 @@ class PlayEnv(DirectRLEnv):
         if len(env_ids) == 0:
             return
 
-        default_pos = torch.tensor([[0.0, 0.0, 0.8]], device=self.device).expand(len(env_ids), -1).clone()
+        # Higher spawn position to prevent sinking
+        default_pos = torch.tensor([[0.0, 0.0, 0.85]], device=self.device).expand(len(env_ids), -1).clone()
         default_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(len(env_ids), -1)
 
         self.robot.write_root_pose_to_sim(torch.cat([default_pos, default_quat], dim=-1), env_ids)
@@ -582,22 +599,30 @@ def main():
     device = "cuda:0"
 
     # Load checkpoint
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("ULC G1 STAGE 6 UNIFIED - PLAY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Checkpoint: {args.checkpoint}")
     print(f"  Mode: {args.mode}")
     print(f"  Description: {MODE_CONFIGS[args.mode]['description']}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
 
+    # Show checkpoint info
+    print(f"\n[Checkpoint Info]")
     if "best_reward" in checkpoint:
-        print(f"[INFO] Best reward: {checkpoint['best_reward']:.2f}")
+        print(f"  Best reward: {checkpoint['best_reward']:.2f}")
     if "iteration" in checkpoint:
-        print(f"[INFO] Iteration: {checkpoint['iteration']}")
+        print(f"  Iteration: {checkpoint['iteration']}")
     if "curriculum_level" in checkpoint:
-        print(f"[INFO] Curriculum level: {checkpoint['curriculum_level']}")
+        print(f"  Curriculum level: {checkpoint['curriculum_level']}")
+
+    # Warn if using early checkpoint
+    if checkpoint.get("iteration", 0) < 1000:
+        print(f"\n⚠️  WARNING: This checkpoint is from iteration {checkpoint.get('iteration', 'unknown')}!")
+        print(f"   Consider using a later checkpoint like model_19998.pt or model_final.pt")
+        print(f"   for better performance.\n")
 
     # Create environment
     cfg = PlayEnvCfg()
@@ -607,10 +632,18 @@ def main():
     # Create network and load weights
     net = UnifiedActorCritic(57, 52, 12, 12).to(device)
 
+    # Handle different checkpoint formats
     if "model_state_dict" in checkpoint:
-        net.load_state_dict(checkpoint["model_state_dict"], strict=False)
-        print("[INFO] Loaded model_state_dict")
+        state_dict = checkpoint["model_state_dict"]
+        net.load_state_dict(state_dict, strict=False)
+        print(f"[INFO] Loaded model_state_dict with {len(state_dict)} parameters")
+    elif "actor_critic" in checkpoint:
+        # Old format compatibility
+        state_dict = checkpoint["actor_critic"]
+        net.load_state_dict(state_dict, strict=False)
+        print(f"[INFO] Loaded actor_critic with {len(state_dict)} parameters")
     else:
+        # Direct state dict
         net.load_state_dict(checkpoint, strict=False)
         print("[INFO] Loaded checkpoint directly")
 
@@ -662,12 +695,12 @@ def main():
                     f"Reaches={env.total_reaches}"
                 )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("PLAY COMPLETE")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Total reaches: {env.total_reaches}")
     print(f"  Total reward: {total_reward:.1f}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     env.close()
     simulation_app.close()
