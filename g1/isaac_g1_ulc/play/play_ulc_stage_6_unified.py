@@ -118,9 +118,9 @@ class LocoActor(nn.Module):
 
 
 class ArmActor(nn.Module):
-    """Arm actor for reaching + gripper"""
+    """Arm actor for reaching + gripper - MUST match training architecture!"""
 
-    def __init__(self, num_obs=52, num_act=12, hidden=[256, 128, 64]):
+    def __init__(self, num_obs=52, num_act=12, hidden=[256, 256, 128]):  # FIXED: was [256, 128, 64]
         super().__init__()
         layers = []
         prev = num_obs
@@ -296,6 +296,32 @@ class PlayEnv(DirectRLEnv):
         self.leg_idx = torch.tensor([joint_names.index(n) for n in leg_names], device=self.device)
         self.arm_idx = torch.tensor([joint_names.index(n) for n in arm_names], device=self.device)
 
+        # Finger joint indices (7 finger joints for right hand)
+        finger_names = [
+            "right_zero_joint", "right_one_joint", "right_two_joint",
+            "right_three_joint", "right_four_joint", "right_five_joint", "right_six_joint"
+        ]
+        self.finger_idx = torch.tensor(
+            [joint_names.index(n) for n in finger_names if n in joint_names],
+            device=self.device
+        )
+
+        # Finger limits for gripper normalization
+        joint_limits = self.robot.data.joint_limits
+        if len(self.finger_idx) > 0:
+            self.finger_lower = torch.tensor(
+                [joint_limits[0, i, 0].item() for i in self.finger_idx],
+                device=self.device
+            )
+            self.finger_upper = torch.tensor(
+                [joint_limits[0, i, 1].item() for i in self.finger_idx],
+                device=self.device
+            )
+        else:
+            # Fallback if no finger joints found
+            self.finger_lower = torch.zeros(7, device=self.device)
+            self.finger_upper = torch.ones(7, device=self.device)
+
         self.default_leg = torch.tensor(
             [-0.2, -0.2, 0, 0, 0, 0, 0.4, 0.4, -0.2, -0.2, 0, 0],
             device=self.device
@@ -318,9 +344,11 @@ class PlayEnv(DirectRLEnv):
         self.target_pos_body = torch.zeros(self.num_envs, 3, device=self.device)
         self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
 
-        # State
+        # State - SEPARATE leg and arm actions like training!
         self.phase = torch.zeros(self.num_envs, device=self.device)
-        self.prev_actions = torch.zeros(self.num_envs, 24, device=self.device)
+        self.prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
+        self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
+        self.prev_ee_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.total_reaches = 0
         self.reach_threshold = REACH_THRESHOLD
 
@@ -329,6 +357,7 @@ class PlayEnv(DirectRLEnv):
 
         print(f"[PlayEnv] Leg joints: {len(self.leg_idx)}")
         print(f"[PlayEnv] Arm joints: {len(self.arm_idx)}")
+        print(f"[PlayEnv] Finger joints: {len(self.finger_idx)}")
         print(f"[PlayEnv] Palm body idx: {self.palm_idx}")
 
         # Create visualization markers (no physics impact!)
@@ -450,7 +479,10 @@ class PlayEnv(DirectRLEnv):
         self.robot.set_joint_position_target(target_pos)
 
         self.phase = (self.phase + GAIT_FREQUENCY * 0.02) % 1.0
-        self.prev_actions = actions.clone()
+
+        # Track separate action histories like training
+        self.prev_leg_actions = leg_actions.clone()
+        self.prev_arm_actions = arm_actions.clone()
 
     def _apply_action(self):
         pass
@@ -475,7 +507,7 @@ class PlayEnv(DirectRLEnv):
 
         torso_euler = quat_to_euler_xyz(quat)
 
-        # Loco obs (57)
+        # Loco obs (57) - MUST MATCH TRAINING EXACTLY
         loco_obs = torch.cat([
             lin_vel_b,  # 3
             ang_vel_b,  # 3
@@ -485,24 +517,27 @@ class PlayEnv(DirectRLEnv):
             self.height_cmd.unsqueeze(-1),  # 1
             self.vel_cmd,  # 3
             gait_phase,  # 2
-            self.prev_actions[:, :12],  # 12
+            self.prev_leg_actions,  # 12 (FIXED: was prev_actions[:, :12])
             self.torso_cmd,  # 3
             torso_euler,  # 3
         ], dim=-1)
 
-        # Arm obs (52)
+        # Arm obs (52) - MUST MATCH TRAINING EXACTLY
         arm_pos = robot.data.joint_pos[:, self.arm_idx]
-        arm_vel = robot.data.joint_vel[:, self.arm_idx]
+        arm_vel = robot.data.joint_vel[:, self.arm_idx] * 0.1  # FIXED: scale by 0.1
 
         ee_pos_world, palm_forward = self._compute_palm_ee()
         root_pos = robot.data.root_pos_w
         ee_pos_body = quat_apply_inverse(quat, ee_pos_world - root_pos)
-        ee_vel_body = quat_apply_inverse(quat, robot.data.body_lin_vel_w[:, self.palm_idx])
+
+        # EE velocity from previous position (matches training)
+        ee_vel_world = (ee_pos_world - self.prev_ee_pos) / 0.02  # dt = 0.02
+        ee_vel_body = quat_apply_inverse(quat, ee_vel_world)
 
         palm_quat = robot.data.body_quat_w[:, self.palm_idx]
 
         pos_error = self.target_pos_body - ee_pos_body
-        pos_dist = pos_error.norm(dim=-1, keepdim=True)
+        pos_dist = pos_error.norm(dim=-1, keepdim=True) / 0.5  # FIXED: normalize by 0.5
 
         # Orientation error: angle between palm forward and world DOWN (-Z)
         # MUST MATCH TRAINING: acos(dot) / pi, NOT 1-dot!
@@ -511,22 +546,37 @@ class PlayEnv(DirectRLEnv):
         angle = torch.acos(torch.clamp(dot, -1.0, 1.0))
         orient_error = (angle / np.pi).unsqueeze(-1)  # Normalized [0, 1]
 
-        # Check reaches
-        reached = pos_dist.squeeze(-1) < self.reach_threshold
+        # Check reaches (use unnormalized distance for threshold check)
+        actual_dist = pos_error.norm(dim=-1)
+        reached = actual_dist < self.reach_threshold
         new_reaches = reached.sum().item()
         if new_reaches > 0:
             self.total_reaches += new_reaches
             self._sample_targets(reached.nonzero(as_tuple=True)[0])
 
-        finger_pos = torch.zeros(self.num_envs, 7, device=self.device)
-        grip_force = torch.zeros(self.num_envs, 1, device=self.device)
-        gripper_closed = torch.zeros(self.num_envs, 1, device=self.device)
-        contact = torch.zeros(self.num_envs, 1, device=self.device)
+        # Actual finger positions (FIXED: was zeros)
+        if len(self.finger_idx) > 0:
+            finger_pos = robot.data.joint_pos[:, self.finger_idx]
+        else:
+            finger_pos = torch.zeros(self.num_envs, 7, device=self.device)
+
+        # Gripper state calculations
+        if len(self.finger_idx) > 0:
+            finger_normalized = (finger_pos - self.finger_lower) / (self.finger_upper - self.finger_lower + 1e-6)
+            gripper_closed = finger_normalized.mean(dim=-1, keepdim=True)
+            finger_vel = robot.data.joint_vel[:, self.finger_idx]
+            grip_force = (finger_vel.abs().mean(dim=-1, keepdim=True) * gripper_closed).clamp(0, 1)
+        else:
+            grip_force = torch.zeros(self.num_envs, 1, device=self.device)
+            gripper_closed = torch.zeros(self.num_envs, 1, device=self.device)
+
+        # Contact detection
+        contact = (actual_dist < 0.05).float().unsqueeze(-1)  # GRASP_THRESHOLD
         target_reached = reached.float().unsqueeze(-1)
 
         height_cmd = self.height_cmd.unsqueeze(-1)
         current_height = robot.data.root_pos_w[:, 2:3]
-        height_err = height_cmd - current_height
+        height_err = (height_cmd - current_height) / 0.4  # FIXED: normalize by 0.4
 
         estimated_load = torch.zeros(self.num_envs, 3, device=self.device)
         object_in_hand = torch.zeros(self.num_envs, 1, device=self.device)
@@ -561,6 +611,9 @@ class PlayEnv(DirectRLEnv):
         ], dim=-1)
 
         self._update_markers()
+
+        # Update prev_ee_pos for next frame velocity calculation
+        self.prev_ee_pos = ee_pos_world.clone()
 
         return {
             "policy": torch.cat([loco_obs, arm_obs], dim=-1).clamp(-10, 10).nan_to_num(),
@@ -600,7 +653,11 @@ class PlayEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(default_joint_pos, torch.zeros_like(default_joint_pos), None, env_ids)
 
         self.phase[env_ids] = torch.rand(len(env_ids), device=self.device)
-        self.prev_actions[env_ids] = 0
+
+        # Reset action histories (FIXED: separate leg/arm tracking)
+        self.prev_leg_actions[env_ids] = 0
+        self.prev_arm_actions[env_ids] = 0
+        self.prev_ee_pos[env_ids] = 0
 
         self._sample_commands(env_ids)
 
