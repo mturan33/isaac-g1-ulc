@@ -45,13 +45,14 @@ app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse, quat_apply
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 # ============================================================================
 # CONSTANTS
@@ -249,30 +250,8 @@ class PlaySceneCfg(InteractiveSceneCfg):
             ),
         },
     )
-
-    # Target marker (green sphere)
-    target_marker = RigidObjectCfg(
-        prim_path="/World/envs/env_.*/TargetMarker",
-        spawn=sim_utils.SphereCfg(
-            radius=0.03,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.3, -0.2, 0.8)),
-    )
-
-    # EE marker (red sphere)
-    ee_marker = RigidObjectCfg(
-        prim_path="/World/envs/env_.*/EEMarker",
-        spawn=sim_utils.SphereCfg(
-            radius=0.025,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 0.7)),
-    )
+    # NO RigidObjectCfg markers - they break physics!
+    # Using VisualizationMarkers instead (created in environment __init__)
 
 
 @configclass
@@ -352,17 +331,39 @@ class PlayEnv(DirectRLEnv):
         print(f"[PlayEnv] Arm joints: {len(self.arm_idx)}")
         print(f"[PlayEnv] Palm body idx: {self.palm_idx}")
 
+        # Create visualization markers (no physics impact!)
+        self.target_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/TargetMarkers",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.03,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(0.0, 1.0, 0.0),  # Green
+                        ),
+                    ),
+                },
+            )
+        )
+
+        self.ee_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/EEMarkers",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.025,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 0.0, 0.0),  # Red
+                        ),
+                    ),
+                },
+            )
+        )
+        print("[PlayEnv] VisualizationMarkers created")
+
     @property
     def robot(self):
         return self.scene["robot"]
-
-    @property
-    def target_marker(self):
-        return self.scene["target_marker"]
-
-    @property
-    def ee_marker(self):
-        return self.scene["ee_marker"]
 
     def _compute_palm_ee(self):
         """Compute palm end-effector position and forward direction.
@@ -415,17 +416,20 @@ class PlayEnv(DirectRLEnv):
         self._sample_targets(env_ids)
 
     def _update_markers(self):
-        """Update target and EE marker positions."""
+        """Update target and EE marker positions using VisualizationMarkers."""
         # Target marker: body frame -> world frame
         root_pos = self.robot.data.root_pos_w
         root_quat = self.robot.data.root_quat_w
         target_world = root_pos + quat_apply(root_quat, self.target_pos_body)
-        target_quat = torch.tensor([[0, 0, 0, 1]], device=self.device).expand(self.num_envs, -1)
-        self.target_marker.write_root_pose_to_sim(torch.cat([target_world, target_quat], dim=-1))
+
+        # VisualizationMarkers use wxyz quaternion format
+        target_quat = torch.tensor([[1, 0, 0, 0]], device=self.device, dtype=torch.float32).expand(self.num_envs, -1)
+        self.target_markers.visualize(translations=target_world, orientations=target_quat)
 
         # EE marker
         ee_pos, _ = self._compute_palm_ee()
-        self.ee_marker.write_root_pose_to_sim(torch.cat([ee_pos, target_quat], dim=-1))
+        ee_quat = torch.tensor([[1, 0, 0, 0]], device=self.device, dtype=torch.float32).expand(self.num_envs, -1)
+        self.ee_markers.visualize(translations=ee_pos, orientations=ee_quat)
 
     def _pre_physics_step(self, actions):
         self.actions = actions.clone()
