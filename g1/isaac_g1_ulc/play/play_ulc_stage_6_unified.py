@@ -59,7 +59,7 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 # ============================================================================
 HEIGHT_DEFAULT = 0.72
 GAIT_FREQUENCY = 1.5
-REACH_THRESHOLD = 0.05  # Original training threshold
+REACH_THRESHOLD = 0.07  # Policy reaches ~6cm reliably, 5cm is too tight
 
 G1_USD = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Unitree/G1/g1.usd"
 
