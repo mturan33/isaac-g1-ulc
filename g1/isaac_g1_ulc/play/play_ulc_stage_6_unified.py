@@ -328,7 +328,13 @@ class PlayEnv(DirectRLEnv):
             [-0.2, -0.2, 0, 0, 0, 0, 0.4, 0.4, -0.2, -0.2, 0, 0],
             device=self.device
         )
-        self.default_arm = torch.tensor([0.3, -0.2, 0.0, 0.6, 0.0], device=self.device)
+        # Use robot's actual default positions (matches training!)
+        self.default_arm = self.robot.data.default_joint_pos[0, self.arm_idx].clone()
+        if len(self.finger_idx) > 0:
+            self.default_finger = self.robot.data.default_joint_pos[0, self.finger_idx].clone()
+        else:
+            self.default_finger = torch.zeros(7, device=self.device)
+        print(f"[PlayEnv] default_arm from robot: {self.default_arm.tolist()}")
 
         # Find palm body for EE
         body_names = self.robot.body_names
