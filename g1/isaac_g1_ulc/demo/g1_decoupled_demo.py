@@ -113,7 +113,7 @@ class State(Enum):
 @dataclass
 class CoordinatorConfig:
     walk_speed: float = 0.4
-    reach_threshold: float = 0.05  # 5cm threshold
+    reach_threshold: float = 0.08  # 8cm - achievable with limited Z control
     yaw_gain: float = 1.5
     reverse_vx: bool = False  # G1: positive vx = forward (-X direction)
     min_reaching_steps: int = 100  # At least 100 steps in REACHING before SUCCESS  # G1 might need negative vx to go forward
@@ -313,7 +313,7 @@ class EnvCfg(DirectRLEnvCfg):
     state_space = 0
     sim: SimulationCfg = SimulationCfg(
         dt=1/200,
-        render_interval=4,
+        render_interval=8,  # Increased from 4 to reduce rendering load
         device="cuda:0",
     )
     scene: SceneCfg = SceneCfg(num_envs=1, env_spacing=4.0)
@@ -452,15 +452,18 @@ class DemoEnv(DirectRLEnv):
         +X = BACK
         +Y = RIGHT
         -Y = LEFT
+
+        NOTE: Stage 5 was trained with gravity OFF, so EE naturally sits higher.
+        Target Z should be ~0.40m to match EE's natural height with gravity ON.
         """
         target_rel = torch.zeros(3, device=self.device)
-        target_rel[0] = -0.20  # -X = FRONT (20cm forward, closer)
-        target_rel[1] = +0.25  # +Y = RIGHT (25cm to the right, near shoulder)
-        target_rel[2] = 0.30   # 30cm up (slightly lower, easier reach)
+        target_rel[0] = -0.15  # -X = FRONT (15cm forward, easier reach)
+        target_rel[1] = +0.25  # +Y = RIGHT (25cm to the right)
+        target_rel[2] = 0.42   # Higher Z to match EE natural position with gravity
 
         self.target_body[0] = target_rel
         print(f"[Env] Arm target (body frame): [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
-        print(f"      G1 coords: FRONT(-X)={-target_rel[0]:.2f}m, RIGHT(+Y)={target_rel[1]:.2f}m")
+        print(f"      G1 coords: FRONT(-X)={-target_rel[0]:.2f}m, RIGHT(+Y)={target_rel[1]:.2f}m, UP(Z)={target_rel[2]:.2f}m")
 
     def get_ee_pos(self) -> torch.Tensor:
         """Get EE position in world frame"""
@@ -781,14 +784,27 @@ def main():
     env_cfg.scene.num_envs = args.num_envs
     env = DemoEnv(cfg=env_cfg)
 
-    # Set camera to view robot from front
+    # Set camera to front view after environment is ready
     try:
         from omni.isaac.core.utils.viewports import set_camera_view
-        # Robot faces -X, so camera should be at -X side looking at robot
-        set_camera_view(eye=[-3.0, 2.0, 2.0], target=[0.0, 0.0, 0.7])
-        print("[Camera] Set to front view")
-    except Exception as e:
-        print(f"[Camera] Could not set view: {e}")
+        # Robot faces -X direction, so put camera at negative X to see the front
+        set_camera_view(
+            eye=np.array([-3.5, 1.0, 1.8]),   # Front-right of robot
+            target=np.array([0.0, 0.0, 0.7])   # Robot center
+        )
+        print("[Camera] Front view set")
+    except:
+        try:
+            # Alternative method
+            import omni.kit.commands
+            omni.kit.commands.execute(
+                "SetCameraViewCommand",
+                eye=[-3.5, 1.0, 1.8],
+                target=[0.0, 0.0, 0.7]
+            )
+            print("[Camera] Front view set (alt)")
+        except Exception as e:
+            print(f"[Camera] Manual adjustment needed: {e}")
 
     # Create coordinator
     coord_cfg = CoordinatorConfig(walk_speed=0.4)  # reach_threshold=0.05 (default)
