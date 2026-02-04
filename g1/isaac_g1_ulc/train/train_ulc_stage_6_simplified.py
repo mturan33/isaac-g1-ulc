@@ -66,9 +66,9 @@ GAIT_FREQUENCY = 1.5
 # SIMPLIFIED REWARD WEIGHTS - NO GRIPPER
 # ============================================================================
 
-# LOCOMOTION REWARDS
+# LOCOMOTION REWARDS - VX WEIGHT INCREASED FOR BETTER TRACKING
 LOCO_REWARD_WEIGHTS = {
-    "vx": 3.0,
+    "vx": 5.0,           # 3.0 → 5.0 - Velocity tracking kritik!
     "vy": 1.5,
     "vyaw": 1.5,
     "height": 3.0,
@@ -136,6 +136,7 @@ def create_simplified_curriculum():
         "min_reaches": 2000,
         "min_steps": 1000,
         "use_orientation": False,
+        "variable_orientation": False,
         "use_gripper": False,
         "sampling_mode": "relative",
         "workspace_radius": (0.18, 0.28),
@@ -152,6 +153,7 @@ def create_simplified_curriculum():
         "min_reaches": 3000,
         "min_steps": 1500,
         "use_orientation": False,
+        "variable_orientation": False,
         "use_gripper": False,
         "sampling_mode": "mixed",
         "workspace_radius": (0.18, 0.30),
@@ -168,6 +170,7 @@ def create_simplified_curriculum():
         "min_reaches": 4000,
         "min_steps": 2000,
         "use_orientation": False,
+        "variable_orientation": False,
         "use_gripper": False,
         "sampling_mode": "mixed",
         "workspace_radius": (0.18, 0.32),
@@ -184,6 +187,7 @@ def create_simplified_curriculum():
         "min_reaches": 5000,
         "min_steps": 2500,
         "use_orientation": False,
+        "variable_orientation": False,
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.35),
@@ -200,91 +204,162 @@ def create_simplified_curriculum():
         "min_reaches": 6000,
         "min_steps": 3000,
         "use_orientation": False,
+        "variable_orientation": False,
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.38),
     })
 
     # ═══════════════════════════════════════════════════════════════════════
-    # PHASE 2: WALKING + REACHING (Level 5-6) → + ORIENTATION (Level 7-9)
-    # Önce yürürken reaching öğren, SONRA orientation ekle
+    # PHASE 2: WALKING + REACHING (Level 5-6)
+    # PHASE 3: FIXED ORIENT (Level 7-8)
+    # PHASE 4: VARIABLE ORIENT (Level 9-11) → ARBITRARY ORIENTATION CONTROL!
     # ═══════════════════════════════════════════════════════════════════════
 
-    # Level 5: Yavaş yürüyüş + reach, ORIENTATION KAPALI
+    # Level 5: Yavaş yürüyüş + reach - NO ORIENTATION
     curriculum.append({
         "vx": (0.0, 0.2), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
         "arm_radius": (0.18, 0.35),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.06,
-        "orient_threshold": None,  # KAPALI
+        "orient_threshold": None,
         "success_rate": 0.28,
-        "min_reaches": 4000,  # Düşürüldü
+        "min_reaches": 4000,
         "min_steps": 2000,
-        "use_orientation": False,  # ❌ KAPALI
+        "use_orientation": False,
+        "variable_orientation": False,
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.38),
     })
 
-    # Level 6: Orta hız + reach, ORIENTATION HALA KAPALI
+    # Level 6: Orta hız + reach - NO ORIENTATION
     curriculum.append({
         "vx": (0.0, 0.3), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
         "arm_radius": (0.18, 0.37),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.05,
-        "orient_threshold": None,  # KAPALI
+        "orient_threshold": None,
         "success_rate": 0.26,
         "min_reaches": 5000,
         "min_steps": 2500,
-        "use_orientation": False,  # ❌ KAPALI
+        "use_orientation": False,
+        "variable_orientation": False,
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
     })
 
-    # Level 7: Normal hız + reach, ORIENTATION BAŞLIYOR (çok gevşek: 1.5 rad = ~86°)
+    # ═══════════════════════════════════════════════════════════════════════
+    # PHASE 3: FIXED ORIENTATION (palm down)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Level 7: Normal hız + FIXED orientation (palm down, gevşek: 1.5 rad = ~86°)
+    curriculum.append({
+        "vx": (0.0, 0.35), "vy": (-0.08, 0.08), "vyaw": (-0.14, 0.14),
+        "arm_radius": (0.18, 0.38),
+        "arm_height": (-0.15, 0.25),
+        "pos_threshold": 0.05,
+        "orient_threshold": 1.5,  # ~86° - çok gevşek
+        "success_rate": 0.24,
+        "min_reaches": 4000,
+        "min_steps": 2000,
+        "use_orientation": True,
+        "variable_orientation": False,  # Sabit: palm down
+        "use_gripper": False,
+        "sampling_mode": "absolute",
+        "workspace_radius": (0.18, 0.40),
+    })
+
+    # Level 8: Orta hız + FIXED orientation (sıkılaştır: 1.0 rad = ~57°)
     curriculum.append({
         "vx": (0.0, 0.4), "vy": (-0.09, 0.09), "vyaw": (-0.16, 0.16),
         "arm_radius": (0.18, 0.38),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.05,
-        "orient_threshold": 1.5,  # ~86 derece - neredeyse her şey geçer
+        "orient_threshold": 1.0,  # ~57° - orta
         "success_rate": 0.24,
         "min_reaches": 5000,
         "min_steps": 2500,
-        "use_orientation": True,  # ✅ AÇIK
+        "use_orientation": True,
+        "variable_orientation": False,  # Hala sabit: palm down
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
     })
 
-    # Level 8: Hızlı yürüyüş + reach, orientation biraz sıkılaşıyor (1.2 rad = ~69°)
+    # ═══════════════════════════════════════════════════════════════════════
+    # PHASE 4: VARIABLE ORIENTATION → ARBITRARY EE ORIENTATION CONTROL! 🎯
+    # Robot artık istediğimiz herhangi bir yöne bakabilecek
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Level 9: Variable orientation - SMALL CONE (~20° from down)
+    curriculum.append({
+        "vx": (0.0, 0.45), "vy": (-0.10, 0.10), "vyaw": (-0.17, 0.17),
+        "arm_radius": (0.18, 0.40),
+        "arm_height": (-0.18, 0.28),
+        "pos_threshold": 0.05,
+        "orient_threshold": 1.0,  # ~57° tolerance
+        "success_rate": 0.22,
+        "min_reaches": 5000,
+        "min_steps": 2500,
+        "use_orientation": True,
+        "variable_orientation": True,   # 🎯 VARIABLE başlıyor!
+        "orient_sample_range": 0.35,    # ~20° cone around down
+        "use_gripper": False,
+        "sampling_mode": "absolute",
+        "workspace_radius": (0.18, 0.40),
+    })
+
+    # Level 10: Variable orientation - MEDIUM CONE (~40° from down)
     curriculum.append({
         "vx": (0.0, 0.5), "vy": (-0.11, 0.11), "vyaw": (-0.19, 0.19),
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.18, 0.28),
-        "pos_threshold": 0.04,
-        "orient_threshold": 1.2,  # ~69 derece
-        "success_rate": 0.22,
-        "min_reaches": 6000,
-        "min_steps": 3000,
-        "use_orientation": True,  # ✅ AÇIK
+        "pos_threshold": 0.05,
+        "orient_threshold": 0.9,  # ~52° tolerance (sıkılaşıyor)
+        "success_rate": 0.20,
+        "min_reaches": 5000,
+        "min_steps": 2500,
+        "use_orientation": True,
+        "variable_orientation": True,
+        "orient_sample_range": 0.7,     # ~40° cone - daha geniş!
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
     })
 
-    # Level 9: FINAL - En hızlı + orientation orta-sıkı (0.9 rad = ~52°)
+    # Level 11: Variable orientation - LARGE CONE (~60° from down)
+    curriculum.append({
+        "vx": (0.0, 0.55), "vy": (-0.12, 0.12), "vyaw": (-0.20, 0.20),
+        "arm_radius": (0.18, 0.40),
+        "arm_height": (-0.20, 0.30),
+        "pos_threshold": 0.04,
+        "orient_threshold": 0.8,  # ~46° tolerance
+        "success_rate": 0.18,
+        "min_reaches": 6000,
+        "min_steps": 3000,
+        "use_orientation": True,
+        "variable_orientation": True,
+        "orient_sample_range": 1.05,    # ~60° cone - çok geniş!
+        "use_gripper": False,
+        "sampling_mode": "absolute",
+        "workspace_radius": (0.18, 0.40),
+    })
+
+    # Level 12: FINAL - FULL HEMISPHERE (~80° from down) - ARBITRARY ORIENTATION!
     curriculum.append({
         "vx": (0.0, 0.6), "vy": (-0.13, 0.13), "vyaw": (-0.22, 0.22),
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.20, 0.30),
         "pos_threshold": 0.04,
-        "orient_threshold": 0.9,  # ~52 derece - makul sıkılık
+        "orient_threshold": 0.7,  # ~40° tolerance - final quality
         "success_rate": None,  # Final level - no graduation
         "min_reaches": None,
         "min_steps": None,
-        "use_orientation": True,  # ✅ AÇIK
+        "use_orientation": True,
+        "variable_orientation": True,
+        "orient_sample_range": 1.4,     # ~80° = near hemisphere! 🎯
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
@@ -362,10 +437,21 @@ def get_palm_forward(quat: torch.Tensor) -> torch.Tensor:
     return torch.stack([fwd_x, fwd_y, fwd_z], dim=-1)
 
 
-def compute_orientation_error(palm_quat: torch.Tensor) -> torch.Tensor:
+def compute_orientation_error(palm_quat: torch.Tensor, target_dir: torch.Tensor = None) -> torch.Tensor:
+    """
+    Compute orientation error between palm forward direction and target direction.
+
+    Args:
+        palm_quat: Palm quaternion [N, 4]
+        target_dir: Target direction in body frame [N, 3]. If None, uses -Z (down).
+
+    Returns:
+        Angle error in radians [N]
+    """
     forward = get_palm_forward(palm_quat)
-    target_dir = torch.zeros_like(forward)
-    target_dir[:, 2] = -1.0
+    if target_dir is None:
+        target_dir = torch.zeros_like(forward)
+        target_dir[:, 2] = -1.0
     dot = (forward * target_dir).sum(dim=-1)
     dot = torch.clamp(dot, -1.0, 1.0)
     return torch.acos(dot)
@@ -797,6 +883,7 @@ def create_env(num_envs, device):
             self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
             self.height_cmd = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
             self.target_pos_body = torch.zeros(self.num_envs, 3, device=self.device)
+            self.target_orient_body = torch.zeros(self.num_envs, 3, device=self.device)  # Target palm direction (unit vector)
             self.shoulder_offset = SHOULDER_OFFSET.to(self.device)
 
             self.phase = torch.zeros(self.num_envs, device=self.device)
@@ -925,6 +1012,29 @@ def create_env(num_envs, device):
             self.target_pos_body[env_ids, 1] = target_y.clamp(-0.55, 0.10)
             self.target_pos_body[env_ids, 2] = target_z.clamp(-0.25, 0.55)
 
+            # Sample target orientation (palm direction in body frame)
+            variable_orient = lv.get("variable_orientation", False)
+            if variable_orient:
+                # Sample random palm direction within a cone
+                orient_range = lv.get("orient_sample_range", 0.5)  # radians from down
+                # Spherical sampling around -Z (down)
+                theta = torch.empty(n, device=self.device).uniform_(0, orient_range)  # angle from down
+                phi = torch.empty(n, device=self.device).uniform_(0, 2 * np.pi)  # azimuth
+
+                # Convert to direction vector (target palm should point this way)
+                dir_x = torch.sin(theta) * torch.cos(phi)
+                dir_y = torch.sin(theta) * torch.sin(phi)
+                dir_z = -torch.cos(theta)  # negative because down is -Z
+
+                self.target_orient_body[env_ids, 0] = dir_x
+                self.target_orient_body[env_ids, 1] = dir_y
+                self.target_orient_body[env_ids, 2] = dir_z
+            else:
+                # Fixed: palm down (-Z direction)
+                self.target_orient_body[env_ids, 0] = 0.0
+                self.target_orient_body[env_ids, 1] = 0.0
+                self.target_orient_body[env_ids, 2] = -1.0
+
         def get_loco_obs(self) -> torch.Tensor:
             robot = self.robot
             quat = robot.data.root_quat_w
@@ -973,7 +1083,9 @@ def create_env(num_envs, device):
             target_body = self.target_pos_body
             pos_error = target_body - ee_body
             pos_dist = pos_error.norm(dim=-1, keepdim=True) / 0.5
-            orient_err = compute_orientation_error(palm_quat).unsqueeze(-1) / np.pi
+
+            # Variable orientation support
+            orient_err = compute_orientation_error(palm_quat, self.target_orient_body).unsqueeze(-1) / np.pi
 
             orient_threshold = lv.get("orient_threshold", 1.0) if lv["use_orientation"] else 1.0
             pos_threshold = lv["pos_threshold"]
@@ -986,7 +1098,8 @@ def create_env(num_envs, device):
 
             estimated_load = torch.zeros(self.num_envs, 3, device=self.device)
             object_in_hand_obs = torch.zeros(self.num_envs, 1, device=self.device)
-            object_rel_ee_obs = torch.zeros(self.num_envs, 3, device=self.device)
+            # target_orient_body replaces unused object_rel_ee_obs
+            target_orient_obs = self.target_orient_body  # [N, 3] - target palm direction
 
             lin_vel_b = quat_apply_inverse(root_quat, robot.data.root_lin_vel_w)
             ang_vel_b = quat_apply_inverse(root_quat, robot.data.root_ang_vel_w)
@@ -998,7 +1111,7 @@ def create_env(num_envs, device):
                 ee_body, ee_vel_body, palm_quat, grip_force, gripper_closed_ratio, contact_detected,
                 target_body, pos_error, pos_dist, orient_err, target_reached,
                 height_cmd_obs, current_height, height_err,
-                estimated_load, object_in_hand_obs, object_rel_ee_obs,
+                estimated_load, object_in_hand_obs, target_orient_obs,  # target_orient replaces object_rel_ee
                 lin_vel_xy, ang_vel_z,
             ], dim=-1)
             return obs.clamp(-10, 10).nan_to_num()
@@ -1027,7 +1140,7 @@ def create_env(num_envs, device):
             lv = CURRICULUM[self.curr_level]
             reach_threshold = lv["pos_threshold"]
             if lv["use_orientation"]:
-                orient_err = compute_orientation_error(palm_quat)
+                orient_err = compute_orientation_error(palm_quat, self.target_orient_body)
                 orient_threshold = lv.get("orient_threshold", 0.5)
                 reached = (dist < reach_threshold) & (orient_err < orient_threshold)
             else:
@@ -1071,7 +1184,7 @@ def create_env(num_envs, device):
             lin_vel_b = quat_apply_inverse(quat, robot.data.root_lin_vel_w)
             ang_vel_b = quat_apply_inverse(quat, robot.data.root_ang_vel_w)
 
-            r_vx = torch.exp(-2.0 * (lin_vel_b[:, 0] - self.vel_cmd[:, 0]) ** 2)
+            r_vx = torch.exp(-4.0 * (lin_vel_b[:, 0] - self.vel_cmd[:, 0]) ** 2)  # 2.0 → 4.0 daha strict
             r_vy = torch.exp(-3.0 * (lin_vel_b[:, 1] - self.vel_cmd[:, 1]) ** 2)
             r_vyaw = torch.exp(-2.0 * (ang_vel_b[:, 2] - self.vel_cmd[:, 2]) ** 2)
 
@@ -1192,10 +1305,10 @@ def create_env(num_envs, device):
             r_smooth = torch.exp(-1.0 * arm_diff.pow(2).sum(-1))
 
             if lv["use_orientation"]:
-                orient_err = compute_orientation_error(palm_quat)
+                orient_err = compute_orientation_error(palm_quat, self.target_orient_body)
                 r_palm_orient = torch.exp(-3.0 * orient_err)
             else:
-                orient_err = compute_orientation_error(palm_quat)  # Still compute for monitoring
+                orient_err = compute_orientation_error(palm_quat, self.target_orient_body)  # Still compute for monitoring
                 r_palm_orient = torch.zeros(self.num_envs, device=self.device)
 
             # NO GRIPPER REWARD!
@@ -1393,17 +1506,27 @@ def create_env(num_envs, device):
                         phase_msg = ""
                         if self.curr_level == 5:
                             phase_msg = " 🚶 PHASE 2: WALKING + REACHING!"
-                        if self.curr_level == 7:
-                            phase_msg = " 📐 ORIENTATION ENABLED!"
+                        elif self.curr_level == 7:
+                            phase_msg = " 📐 PHASE 3: FIXED ORIENTATION (palm down)!"
+                        elif self.curr_level == 9:
+                            phase_msg = " 🎯 PHASE 4: VARIABLE ORIENTATION!"
+                        elif self.curr_level == 12:
+                            phase_msg = " 🏆 FINAL: FULL ARBITRARY ORIENTATION!"
 
                         print(f"\n{'='*60}")
                         print(f"🎯 LEVEL UP! Level {self.curr_level}{phase_msg}")
                         print(f"   vx={new_lv['vx']}, pos_thresh={new_lv['pos_threshold']}")
                         print(f"   orient={new_lv['use_orientation']}", end="")
                         if new_lv['use_orientation']:
-                            print(f" (thresh={new_lv.get('orient_threshold', 'N/A')} rad)")
-                        else:
-                            print()
+                            thresh = new_lv.get('orient_threshold', 'N/A')
+                            var = new_lv.get('variable_orientation', False)
+                            sample_range = new_lv.get('orient_sample_range', 0)
+                            print(f" (thresh={thresh} rad, variable={var}", end="")
+                            if var:
+                                print(f", range={sample_range:.2f} rad = {np.degrees(sample_range):.0f}°)", end="")
+                            else:
+                                print(")", end="")
+                        print()
                         print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}")
                         print(f"   Reach rate: {reach_rate:.1f}/1K steps")
                         print(f"{'='*60}\n")
