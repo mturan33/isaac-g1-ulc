@@ -114,6 +114,7 @@ class CoordinatorConfig:
     walk_speed: float = 0.4
     reach_threshold: float = 0.10
     yaw_gain: float = 1.5
+    reverse_vx: bool = True  # G1 might need negative vx to go forward
 
 
 # ============================================================================
@@ -640,11 +641,21 @@ class Coordinator:
         if self.state == State.WALKING:
             dx = walk_target[0].item() - robot_pos[0].item()
             dy = walk_target[1].item() - robot_pos[1].item()
+
+            # Calculate desired heading to target
             target_yaw = math.atan2(dy, dx)
             yaw_error = normalize_angle(torch.tensor(target_yaw - robot_yaw)).item()
 
+            # Set velocity commands
             vx = self.cfg.walk_speed
+            if self.cfg.reverse_vx:
+                vx = -vx  # Try negative to see if robot goes forward
+            vy = 0.0
             vyaw = np.clip(yaw_error * self.cfg.yaw_gain, -0.5, 0.5)
+
+            # Debug: Print yaw info every 200 steps
+            if self.steps_in_state % 200 == 0:
+                print(f"  [DEBUG] robot_yaw={np.rad2deg(robot_yaw):.1f}° target_yaw={np.rad2deg(target_yaw):.1f}° err={np.rad2deg(yaw_error):.1f}° vx_cmd={vx:.2f}")
 
             loco_obs = env.build_loco_obs(vx=vx, vy=0.0, vyaw=vyaw)
             with torch.no_grad():
@@ -740,9 +751,10 @@ def main():
 
         if step % 50 == 0:
             h = env.robot.data.root_pos_w[0, 2].item()
-            vx = env.robot.data.root_lin_vel_w[0, 0].item()
+            robot_x = env.robot.data.root_pos_w[0, 0].item()
+            vx_world = env.robot.data.root_lin_vel_w[0, 0].item()
 
-            print(f"[Step {step:4d}] {info['state']:10s} | H={h:.2f}m | Vx={vx:+.2f}m/s | "
+            print(f"[Step {step:4d}] {info['state']:10s} | H={h:.2f}m | X={robot_x:+.2f}m | Vx={vx_world:+.2f}m/s | "
                   f"Walk: {info['robot_to_walk_target']:.2f}m | EE: {info['ee_to_target']:.3f}m")
 
         if coordinator.state == State.DONE:
