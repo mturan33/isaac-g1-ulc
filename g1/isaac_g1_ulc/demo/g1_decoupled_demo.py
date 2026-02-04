@@ -113,7 +113,7 @@ class State(Enum):
 @dataclass
 class CoordinatorConfig:
     walk_speed: float = 0.4
-    reach_threshold: float = 0.10
+    reach_threshold: float = 0.05  # 10cm → 5cm (daha sıkı)
     yaw_gain: float = 1.5
     reverse_vx: bool = True  # G1 might need negative vx to go forward
 
@@ -445,9 +445,9 @@ class DemoEnv(DirectRLEnv):
         -Y = LEFT
         """
         target_rel = torch.zeros(3, device=self.device)
-        target_rel[0] = -0.25  # -X = FRONT (25cm forward)
-        target_rel[1] = +0.20  # +Y = RIGHT (20cm to the right)
-        target_rel[2] = 0.35   # 35cm up (hand height)
+        target_rel[0] = -0.20  # -X = FRONT (20cm forward, closer)
+        target_rel[1] = +0.25  # +Y = RIGHT (25cm to the right, near shoulder)
+        target_rel[2] = 0.30   # 30cm up (slightly lower, easier reach)
 
         self.target_body[0] = target_rel
         print(f"[Env] Arm target (body frame): [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
