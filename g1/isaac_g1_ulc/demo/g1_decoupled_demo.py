@@ -30,7 +30,7 @@ parser.add_argument("--loco_checkpoint", type=str,
                     default="logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt")
 parser.add_argument("--arm_checkpoint", type=str,
                     default="logs/ulc/g1_arm_reach_2026-01-22_14-06-41/model_19998.pt")
-parser.add_argument("--walk_distance", type=float, default=1.5, help="How far to walk before reaching (m)")
+parser.add_argument("--walk_distance", type=float, default=0.5, help="How far to walk before reaching (m)")
 parser.add_argument("--spawn_radius", type=float, default=0.25, help="Arm target spawn radius (m)")
 parser.add_argument("--steps", type=int, default=5000)
 
@@ -113,10 +113,10 @@ class State(Enum):
 @dataclass
 class CoordinatorConfig:
     walk_speed: float = 0.4
-    reach_threshold: float = 0.15  # 15cm - guaranteed success for demo
+    reach_threshold: float = 0.10  # 10cm - meaningful but achievable
     yaw_gain: float = 1.5
     reverse_vx: bool = False
-    min_reaching_steps: int = 50  # Faster success for demo  # G1 might need negative vx to go forward
+    min_reaching_steps: int = 30  # Quick check  # G1 might need negative vx to go forward
 
 
 # ============================================================================
@@ -447,17 +447,16 @@ class DemoEnv(DirectRLEnv):
         print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f} (robot front is -X)")
 
     def sample_arm_target(self):
-        """Sample arm target - OPTIMIZED FOR DEMO VIDEO
-        Target positioned where EE can actually reach with gravity ON.
-        """
+        """Sample RANDOM arm target within reachable workspace for demo video."""
         target_rel = torch.zeros(3, device=self.device)
-        target_rel[0] = -0.02  # Almost no forward reach (easier)
-        target_rel[1] = +0.26  # Right side (near EE natural position)
-        target_rel[2] = 0.47   # Match EE natural height exactly
+
+        # Random position within EE's reachable workspace
+        target_rel[0] = -0.05 + torch.rand(1, device=self.device).item() * 0.10  # -0.05 to +0.05 (small X range)
+        target_rel[1] = 0.20 + torch.rand(1, device=self.device).item() * 0.15   # 0.20 to 0.35 (right side)
+        target_rel[2] = 0.42 + torch.rand(1, device=self.device).item() * 0.10   # 0.42 to 0.52 (near EE height)
 
         self.target_body[0] = target_rel
-        print(f"[Env] Arm target (body frame): [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
-        print(f"      DEMO MODE: Easy reach target")
+        print(f"[NEW TARGET] pos=[{target_rel[0]:.2f}, {target_rel[1]:.2f}, {target_rel[2]:.2f}]")
 
     def get_ee_pos(self) -> torch.Tensor:
         """Get EE position in world frame"""
@@ -822,49 +821,66 @@ def main():
     coordinator.start_walking()
 
     print("=" * 70)
+    print(f"    🎬 CONTINUOUS DEMO MODE")
     print(f"    Walk distance: {args.walk_distance}m")
-    print(f"    Arm target radius: {args.spawn_radius}m")
-    print(f"    Pipeline: WALKING → REACHING → DONE")
+    print(f"    New arm target every 3 seconds or on SUCCESS")
+    print(f"    Press Ctrl+C to stop")
     print("=" * 70 + "\n")
 
-    # Main loop
-    for step in range(args.steps):
-        actions, info = coordinator.step(env)
-        obs, reward, terminated, truncated, _ = env.step(actions)
+    # Tracking
+    target_timer = 0
+    TARGET_INTERVAL = 150  # 3 seconds at 50Hz
+    success_count = 0
 
-        if terminated.any():
-            print(f"[Step {step}] ⚠️ Robot fell! Resetting...")
-            env.reset()
-            env.set_walk_target(args.walk_distance)
-            env.sample_arm_target()
-            coordinator.reset()
-            coordinator.start_walking()
-            continue
+    # Main loop - runs forever until Ctrl+C
+    step = 0
+    try:
+        while True:
+            actions, info = coordinator.step(env)
+            obs, reward, terminated, truncated, _ = env.step(actions)
+            step += 1
+            target_timer += 1
 
-        if step % 50 == 0:
-            h = env.robot.data.root_pos_w[0, 2].item()
-            robot_x = env.robot.data.root_pos_w[0, 0].item()
-            vx_world = env.robot.data.root_lin_vel_w[0, 0].item()
+            if terminated.any():
+                print(f"[Step {step}] ⚠️ Robot fell! Resetting...")
+                env.reset()
+                env.set_walk_target(args.walk_distance)
+                env.sample_arm_target()
+                coordinator.reset()
+                coordinator.start_walking()
+                target_timer = 0
+                continue
 
-            state_info = info['state']
-            if info['state'] == 'REACHING':
-                state_info = f"REACHING ({coordinator.steps_in_state}/{coordinator.cfg.min_reaching_steps})"
+            # New target every 3 seconds OR on SUCCESS
+            if coordinator.state == State.DONE or (coordinator.state == State.REACHING and target_timer >= TARGET_INTERVAL):
+                if coordinator.state == State.DONE:
+                    success_count += 1
+                    print(f"    🎯 SUCCESS #{success_count}! EE: {info['ee_to_target']:.3f}m")
+                else:
+                    print(f"    ⏱️ New target (timeout)")
 
-            print(f"[Step {step:4d}] {state_info:20s} | H={h:.2f}m | X={robot_x:+.2f}m | Vx={vx_world:+.2f}m/s | "
-                  f"Walk: {info['robot_to_walk_target']:.2f}m | EE: {info['ee_to_target']:.3f}m")
+                # Sample new target and stay in REACHING mode
+                env.sample_arm_target()
+                target_timer = 0
+                coordinator.state = State.REACHING
+                coordinator.steps_in_state = 0
 
-        if coordinator.state == State.DONE:
-            print(f"\n{'='*70}")
-            print(f"    ✅ SUCCESS! Completed in {step} steps!")
-            print(f"{'='*70}\n")
+            if step % 50 == 0:
+                h = env.robot.data.root_pos_w[0, 2].item()
+                robot_x = env.robot.data.root_pos_w[0, 0].item()
+                vx_world = env.robot.data.root_lin_vel_w[0, 0].item()
 
-            for _ in range(100):
-                actions, _ = coordinator.step(env)
-                env.step(actions)
-            break
+                state_info = info['state']
+                if info['state'] == 'REACHING':
+                    time_left = (TARGET_INTERVAL - target_timer) / 50.0
+                    state_info = f"REACHING (next: {time_left:.1f}s)"
 
-    if coordinator.state != State.DONE:
-        print(f"\n[Timeout] Ended in state: {coordinator.state.name}")
+                print(f"[Step {step:4d}] {state_info:22s} | H={h:.2f}m | EE: {info['ee_to_target']:.3f}m | Successes: {success_count}")
+
+    except KeyboardInterrupt:
+        print(f"\n{'='*70}")
+        print(f"    🎬 Demo stopped. Total successes: {success_count}")
+        print(f"{'='*70}\n")
 
     env.close()
     simulation_app.close()
