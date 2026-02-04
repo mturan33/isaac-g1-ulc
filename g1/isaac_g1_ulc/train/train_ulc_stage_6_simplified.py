@@ -88,10 +88,10 @@ LOCO_REWARD_WEIGHTS = {
 # ARM REWARDS - NO GRIPPER!
 ARM_REWARD_WEIGHTS = {
     "distance": 4.0,
-    "reaching": 12.0,  # Smooth sigmoid
+    "reaching": 12.0,        # Smooth sigmoid
     "final_push": 6.0,
     "smooth": 3.0,
-    "palm_orient": 3.0,  # Only when enabled in Phase 2
+    "palm_orient": 3.0,      # Only when enabled in Phase 2
     # NO GRIPPER REWARD!
     # Penalties
     "action_rate": -0.05,
@@ -99,7 +99,6 @@ ARM_REWARD_WEIGHTS = {
     "workspace_violation": -2.0,
     "alive": 0.3,
 }
-
 
 # ============================================================================
 # SIMPLIFIED 10-LEVEL CURRICULUM
@@ -207,85 +206,85 @@ def create_simplified_curriculum():
     })
 
     # ═══════════════════════════════════════════════════════════════════════
-    # PHASE 2: WALKING + REACHING + ORIENTATION (Level 5-9)
-    # Robot yürürken kolunu hedeflere uzatıyor, orientation ekleniyor
+    # PHASE 2: WALKING + REACHING (Level 5-6) → + ORIENTATION (Level 7-9)
+    # Önce yürürken reaching öğren, SONRA orientation ekle
     # ═══════════════════════════════════════════════════════════════════════
 
-    # Level 5: Yavaş yürüyüş + reach, orientation başlangıç (gevşek: 0.8 rad)
+    # Level 5: Yavaş yürüyüş + reach, ORIENTATION KAPALI
     curriculum.append({
         "vx": (0.0, 0.2), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
         "arm_radius": (0.18, 0.35),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.06,
-        "orient_threshold": 0.8,  # ~46 derece - çok gevşek
+        "orient_threshold": None,  # KAPALI
         "success_rate": 0.28,
-        "min_reaches": 5000,
-        "min_steps": 2500,
-        "use_orientation": True,
+        "min_reaches": 4000,  # Düşürüldü
+        "min_steps": 2000,
+        "use_orientation": False,  # ❌ KAPALI
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.38),
     })
 
-    # Level 6: Orta hız + reach, orientation sıkılaşıyor (0.7 rad)
+    # Level 6: Orta hız + reach, ORIENTATION HALA KAPALI
     curriculum.append({
         "vx": (0.0, 0.3), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
         "arm_radius": (0.18, 0.37),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.05,
-        "orient_threshold": 0.7,  # ~40 derece
+        "orient_threshold": None,  # KAPALI
         "success_rate": 0.26,
-        "min_reaches": 6000,
-        "min_steps": 3000,
-        "use_orientation": True,
+        "min_reaches": 5000,
+        "min_steps": 2500,
+        "use_orientation": False,  # ❌ KAPALI
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
     })
 
-    # Level 7: Normal hız + reach, orientation orta (0.6 rad)
+    # Level 7: Normal hız + reach, ORIENTATION BAŞLIYOR (çok gevşek: 1.5 rad = ~86°)
     curriculum.append({
         "vx": (0.0, 0.4), "vy": (-0.09, 0.09), "vyaw": (-0.16, 0.16),
         "arm_radius": (0.18, 0.38),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.05,
-        "orient_threshold": 0.6,  # ~34 derece
+        "orient_threshold": 1.5,  # ~86 derece - neredeyse her şey geçer
         "success_rate": 0.24,
-        "min_reaches": 7000,
-        "min_steps": 3500,
-        "use_orientation": True,
+        "min_reaches": 5000,
+        "min_steps": 2500,
+        "use_orientation": True,  # ✅ AÇIK
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
     })
 
-    # Level 8: Hızlı yürüyüş + reach, orientation sıkı (0.5 rad)
+    # Level 8: Hızlı yürüyüş + reach, orientation biraz sıkılaşıyor (1.2 rad = ~69°)
     curriculum.append({
         "vx": (0.0, 0.5), "vy": (-0.11, 0.11), "vyaw": (-0.19, 0.19),
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.18, 0.28),
         "pos_threshold": 0.04,
-        "orient_threshold": 0.5,  # ~29 derece
+        "orient_threshold": 1.2,  # ~69 derece
         "success_rate": 0.22,
-        "min_reaches": 8000,
-        "min_steps": 4000,
-        "use_orientation": True,
+        "min_reaches": 6000,
+        "min_steps": 3000,
+        "use_orientation": True,  # ✅ AÇIK
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
     })
 
-    # Level 9: FINAL - En hızlı + en dar threshold (0.4 rad)
+    # Level 9: FINAL - En hızlı + orientation orta-sıkı (0.9 rad = ~52°)
     curriculum.append({
         "vx": (0.0, 0.6), "vy": (-0.13, 0.13), "vyaw": (-0.22, 0.22),
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.20, 0.30),
         "pos_threshold": 0.04,
-        "orient_threshold": 0.4,  # ~23 derece
+        "orient_threshold": 0.9,  # ~52 derece - makul sıkılık
         "success_rate": None,  # Final level - no graduation
         "min_reaches": None,
         "min_steps": None,
-        "use_orientation": True,
+        "use_orientation": True,  # ✅ AÇIK
         "use_gripper": False,
         "sampling_mode": "absolute",
         "workspace_radius": (0.18, 0.40),
@@ -315,15 +314,14 @@ def parse_args():
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
-
 args_cli = parse_args()
+
 
 # ============================================================================
 # ISAAC LAB IMPORTS
 # ============================================================================
 
 from isaaclab.app import AppLauncher
-
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -358,9 +356,9 @@ def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
 
 def get_palm_forward(quat: torch.Tensor) -> torch.Tensor:
     w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
-    fwd_x = 1 - 2 * (y * y + z * z)
-    fwd_y = 2 * (x * y + w * z)
-    fwd_z = 2 * (x * z - w * y)
+    fwd_x = 1 - 2*(y*y + z*z)
+    fwd_y = 2*(x*y + w*z)
+    fwd_z = 2*(x*z - w*y)
     return torch.stack([fwd_x, fwd_y, fwd_z], dim=-1)
 
 
@@ -400,7 +398,6 @@ print("=" * 80)
 
 class LocoActor(nn.Module):
     """Locomotion policy: 57 obs → 12 leg actions"""
-
     def __init__(self, num_obs=57, num_act=12, hidden=[512, 256, 128]):
         super().__init__()
         layers = []
@@ -426,7 +423,6 @@ class LocoActor(nn.Module):
 
 class LocoCritic(nn.Module):
     """Locomotion value function: 57 obs → 1 value"""
-
     def __init__(self, num_obs=57, hidden=[512, 256, 128]):
         super().__init__()
         layers = []
@@ -450,7 +446,6 @@ class LocoCritic(nn.Module):
 
 class ArmActor(nn.Module):
     """Arm policy: 52 obs → 5 actions (NO FINGERS!)"""
-
     def __init__(self, num_obs=52, num_act=5, hidden=[256, 256, 128]):
         super().__init__()
         layers = []
@@ -476,7 +471,6 @@ class ArmActor(nn.Module):
 
 class ArmCritic(nn.Module):
     """Arm value function: 52 obs → 1 value"""
-
     def __init__(self, num_obs=52, hidden=[256, 256, 128]):
         super().__init__()
         layers = []
@@ -506,7 +500,6 @@ class DualActorCritic(nn.Module):
     - LocoActor (57→12) + LocoCritic (57→1)
     - ArmActor (52→5)   + ArmCritic (52→1)
     """
-
     def __init__(self, loco_obs=57, arm_obs=52, loco_act=12, arm_act=5):
         super().__init__()
         self.loco_actor = LocoActor(loco_obs, loco_act)
@@ -676,6 +669,7 @@ class DualPPO:
 # ============================================================================
 
 def create_env(num_envs, device):
+
     @configclass
     class SceneCfg(InteractiveSceneCfg):
         terrain = TerrainImporterCfg(
@@ -743,7 +737,7 @@ def create_env(num_envs, device):
         action_space = 17  # 12 leg + 5 arm (NO FINGERS!)
         observation_space = 57
         state_space = 0
-        sim = sim_utils.SimulationCfg(dt=1 / 200, render_interval=4)
+        sim = sim_utils.SimulationCfg(dt=1/200, render_interval=4)
         scene = SceneCfg(num_envs=num_envs, env_spacing=2.5)
 
     class Stage6SimplifiedEnv(DirectRLEnv):
@@ -979,7 +973,7 @@ def create_env(num_envs, device):
             orient_threshold = lv.get("orient_threshold", 1.0) if lv["use_orientation"] else 1.0
             pos_threshold = lv["pos_threshold"]
             target_reached = ((dist_to_target < pos_threshold) &
-                              (orient_err * np.pi < orient_threshold)).float()
+                             (orient_err * np.pi < orient_threshold)).float()
 
             current_height = root_pos[:, 2:3]
             height_cmd_obs = self.height_cmd.unsqueeze(-1)
@@ -1081,15 +1075,15 @@ def create_env(num_envs, device):
 
             gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(quat, gravity_vec)
-            r_orientation = torch.exp(-5.0 * (proj_gravity[:, 0] ** 2 + proj_gravity[:, 1] ** 2))
+            r_orientation = torch.exp(-5.0 * (proj_gravity[:, 0]**2 + proj_gravity[:, 1]**2))
 
             joint_pos = robot.data.joint_pos[:, self.leg_idx]
             left_knee, right_knee = joint_pos[:, 6], joint_pos[:, 7]
             left_swing = (self.phase < 0.5).float()
             right_swing = (self.phase >= 0.5).float()
             knee_err = (
-                    (left_knee - (left_swing * 0.6 + (1 - left_swing) * 0.3)) ** 2 +
-                    (right_knee - (right_swing * 0.6 + (1 - right_swing) * 0.3)) ** 2
+                (left_knee - (left_swing * 0.6 + (1 - left_swing) * 0.3)) ** 2 +
+                (right_knee - (right_swing * 0.6 + (1 - right_swing) * 0.3)) ** 2
             )
             r_gait = torch.exp(-3.0 * knee_err)
 
@@ -1126,20 +1120,20 @@ def create_env(num_envs, device):
             p_energy = (leg_vel.abs() * self.prev_leg_actions.abs()).sum(-1)
 
             loco_reward = (
-                    LOCO_REWARD_WEIGHTS["vx"] * r_vx +
-                    LOCO_REWARD_WEIGHTS["vy"] * r_vy +
-                    LOCO_REWARD_WEIGHTS["vyaw"] * r_vyaw +
-                    LOCO_REWARD_WEIGHTS["height"] * r_height +
-                    LOCO_REWARD_WEIGHTS["orientation"] * r_orientation +
-                    LOCO_REWARD_WEIGHTS["gait"] * r_gait +
-                    LOCO_REWARD_WEIGHTS["com_stability"] * r_com_stability +
-                    LOCO_REWARD_WEIGHTS["leg_posture"] * r_leg_posture +
-                    LOCO_REWARD_WEIGHTS["standing_still"] * r_standing_still +
-                    LOCO_REWARD_WEIGHTS["foot_stability"] * r_foot_stability +
-                    LOCO_REWARD_WEIGHTS["action_rate"] * p_action_rate +
-                    LOCO_REWARD_WEIGHTS["jerk"] * p_jerk +
-                    LOCO_REWARD_WEIGHTS["energy"] * p_energy +
-                    LOCO_REWARD_WEIGHTS["alive"]
+                LOCO_REWARD_WEIGHTS["vx"] * r_vx +
+                LOCO_REWARD_WEIGHTS["vy"] * r_vy +
+                LOCO_REWARD_WEIGHTS["vyaw"] * r_vyaw +
+                LOCO_REWARD_WEIGHTS["height"] * r_height +
+                LOCO_REWARD_WEIGHTS["orientation"] * r_orientation +
+                LOCO_REWARD_WEIGHTS["gait"] * r_gait +
+                LOCO_REWARD_WEIGHTS["com_stability"] * r_com_stability +
+                LOCO_REWARD_WEIGHTS["leg_posture"] * r_leg_posture +
+                LOCO_REWARD_WEIGHTS["standing_still"] * r_standing_still +
+                LOCO_REWARD_WEIGHTS["foot_stability"] * r_foot_stability +
+                LOCO_REWARD_WEIGHTS["action_rate"] * p_action_rate +
+                LOCO_REWARD_WEIGHTS["jerk"] * p_jerk +
+                LOCO_REWARD_WEIGHTS["energy"] * p_energy +
+                LOCO_REWARD_WEIGHTS["alive"]
             )
 
             return loco_reward.clamp(-5, 25)
@@ -1186,16 +1180,16 @@ def create_env(num_envs, device):
             p_jerk = arm_accel.pow(2).sum(-1)
 
             arm_reward = (
-                    ARM_REWARD_WEIGHTS["distance"] * r_distance +
-                    ARM_REWARD_WEIGHTS["reaching"] * r_reaching +
-                    ARM_REWARD_WEIGHTS["final_push"] * r_final_push +
-                    ARM_REWARD_WEIGHTS["smooth"] * r_smooth +
-                    ARM_REWARD_WEIGHTS["palm_orient"] * r_palm_orient +
-                    # NO GRIPPER REWARD!
-                    ARM_REWARD_WEIGHTS["action_rate"] * p_action_rate +
-                    ARM_REWARD_WEIGHTS["jerk"] * p_jerk +
-                    ARM_REWARD_WEIGHTS["workspace_violation"] * p_workspace +
-                    ARM_REWARD_WEIGHTS["alive"]
+                ARM_REWARD_WEIGHTS["distance"] * r_distance +
+                ARM_REWARD_WEIGHTS["reaching"] * r_reaching +
+                ARM_REWARD_WEIGHTS["final_push"] * r_final_push +
+                ARM_REWARD_WEIGHTS["smooth"] * r_smooth +
+                ARM_REWARD_WEIGHTS["palm_orient"] * r_palm_orient +
+                # NO GRIPPER REWARD!
+                ARM_REWARD_WEIGHTS["action_rate"] * p_action_rate +
+                ARM_REWARD_WEIGHTS["jerk"] * p_jerk +
+                ARM_REWARD_WEIGHTS["workspace_violation"] * p_workspace +
+                ARM_REWARD_WEIGHTS["alive"]
             )
 
             return arm_reward.clamp(-5, 30)
@@ -1286,12 +1280,12 @@ def create_env(num_envs, device):
                         if self.curr_level == 5:
                             phase_msg = " 🚶 PHASE 2: WALKING + REACHING!"
 
-                        print(f"\n{'=' * 60}")
+                        print(f"\n{'='*60}")
                         print(f"🎯 LEVEL UP! Level {self.curr_level}{phase_msg}")
                         print(f"   vx={new_lv['vx']}, pos_thresh={new_lv['pos_threshold']}")
                         print(f"   orient={new_lv['use_orientation']}")
                         print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}")
-                        print(f"{'=' * 60}\n")
+                        print(f"{'='*60}\n")
 
                         self.stage_reaches = 0
                         self.stage_steps = 0
