@@ -113,7 +113,7 @@ class State(Enum):
 @dataclass
 class CoordinatorConfig:
     walk_speed: float = 0.4
-    reach_threshold: float = 0.10  # 10cm - meaningful but achievable
+    reach_threshold: float = 0.12  # 12cm - reasonable for larger workspace
     yaw_gain: float = 1.5
     reverse_vx: bool = False
     min_reaching_steps: int = 30  # Quick check  # G1 might need negative vx to go forward
@@ -447,16 +447,28 @@ class DemoEnv(DirectRLEnv):
         print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f} (robot front is -X)")
 
     def sample_arm_target(self):
-        """Sample RANDOM arm target within reachable workspace for demo video."""
-        target_rel = torch.zeros(3, device=self.device)
+        """Sample RANDOM arm target in hemisphere workspace (like Stage 5).
+        Inner radius: 18cm, Outer radius: 45cm from shoulder center.
+        """
+        # Random direction in front hemisphere
+        direction = torch.randn(3, device=self.device)
+        direction[0] = -torch.abs(direction[0])  # -X = front for G1
+        direction = direction / (direction.norm() + 1e-8)
 
-        # Random position within EE's reachable workspace
-        target_rel[0] = -0.05 + torch.rand(1, device=self.device).item() * 0.10  # -0.05 to +0.05 (small X range)
-        target_rel[1] = 0.20 + torch.rand(1, device=self.device).item() * 0.15   # 0.20 to 0.35 (right side)
-        target_rel[2] = 0.42 + torch.rand(1, device=self.device).item() * 0.10   # 0.42 to 0.52 (near EE height)
+        # Random distance in workspace (18cm to 45cm from shoulder)
+        inner = 0.18
+        outer = 0.45
+        dist = inner + torch.rand(1, device=self.device).item() * (outer - inner)
+
+        # Target = shoulder_center + direction * distance
+        target_rel = self.shoulder_offset.clone()
+        target_rel += direction * dist
+
+        # Clamp Z to reachable range (adjusted for gravity)
+        target_rel[2] = torch.clamp(target_rel[2], 0.35, 0.60)
 
         self.target_body[0] = target_rel
-        print(f"[NEW TARGET] pos=[{target_rel[0]:.2f}, {target_rel[1]:.2f}, {target_rel[2]:.2f}]")
+        print(f"[NEW TARGET] pos=[{target_rel[0]:.2f}, {target_rel[1]:.2f}, {target_rel[2]:.2f}] dist={dist:.2f}m")
 
     def get_ee_pos(self) -> torch.Tensor:
         """Get EE position in world frame"""
