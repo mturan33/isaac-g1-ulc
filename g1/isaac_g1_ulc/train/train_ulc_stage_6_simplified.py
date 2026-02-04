@@ -254,13 +254,13 @@ def create_simplified_curriculum():
     # PHASE 3: FIXED ORIENTATION (palm down)
     # ═══════════════════════════════════════════════════════════════════════
 
-    # Level 7: Normal hız + FIXED orientation (palm down, gevşek: 1.5 rad = ~86°)
+    # Level 7: Normal hız + FIXED orientation (palm down, ÇOK gevşek: 2.5 rad = ~143°)
     curriculum.append({
         "vx": (0.0, 0.35), "vy": (-0.08, 0.08), "vyaw": (-0.14, 0.14),
         "arm_radius": (0.18, 0.38),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.05,
-        "orient_threshold": 1.5,  # ~86° - çok gevşek
+        "orient_threshold": 2.5,  # ~143° - ÇOK gevşek, neredeyse her şey geçer
         "success_rate": 0.24,
         "min_reaches": 4000,
         "min_steps": 2000,
@@ -271,13 +271,13 @@ def create_simplified_curriculum():
         "workspace_radius": (0.18, 0.40),
     })
 
-    # Level 8: Orta hız + FIXED orientation (sıkılaştır: 1.0 rad = ~57°)
+    # Level 8: Orta hız + FIXED orientation (sıkılaştır: 2.0 rad = ~115°)
     curriculum.append({
         "vx": (0.0, 0.4), "vy": (-0.09, 0.09), "vyaw": (-0.16, 0.16),
         "arm_radius": (0.18, 0.38),
         "arm_height": (-0.15, 0.25),
         "pos_threshold": 0.05,
-        "orient_threshold": 1.0,  # ~57° - orta
+        "orient_threshold": 2.0,  # ~115° - hala gevşek
         "success_rate": 0.24,
         "min_reaches": 5000,
         "min_steps": 2500,
@@ -299,7 +299,7 @@ def create_simplified_curriculum():
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.18, 0.28),
         "pos_threshold": 0.05,
-        "orient_threshold": 1.0,  # ~57° tolerance
+        "orient_threshold": 1.8,  # ~103° tolerance - gevşek başla
         "success_rate": 0.22,
         "min_reaches": 5000,
         "min_steps": 2500,
@@ -317,7 +317,7 @@ def create_simplified_curriculum():
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.18, 0.28),
         "pos_threshold": 0.05,
-        "orient_threshold": 0.9,  # ~52° tolerance (sıkılaşıyor)
+        "orient_threshold": 1.5,  # ~86° tolerance
         "success_rate": 0.20,
         "min_reaches": 5000,
         "min_steps": 2500,
@@ -335,7 +335,7 @@ def create_simplified_curriculum():
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.20, 0.30),
         "pos_threshold": 0.04,
-        "orient_threshold": 0.8,  # ~46° tolerance
+        "orient_threshold": 1.2,  # ~69° tolerance
         "success_rate": 0.18,
         "min_reaches": 6000,
         "min_steps": 3000,
@@ -353,7 +353,7 @@ def create_simplified_curriculum():
         "arm_radius": (0.18, 0.40),
         "arm_height": (-0.20, 0.30),
         "pos_threshold": 0.04,
-        "orient_threshold": 0.7,  # ~40° tolerance - final quality
+        "orient_threshold": 1.0,  # ~57° tolerance - final quality
         "success_rate": None,  # Final level - no graduation
         "min_reaches": None,
         "min_steps": None,
