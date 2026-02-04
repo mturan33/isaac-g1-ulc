@@ -1,13 +1,15 @@
 """
-ULC G1 Stage 6-10: Complete Low-Level Controller Training V3
-=============================================================
-DUAL ACTOR-CRITIC ARCHITECTURE
+ULC G1 Stage 6-10: Complete Low-Level Controller Training V3 FIXED
+===================================================================
+DUAL ACTOR-CRITIC ARCHITECTURE - ALL REWARD ISSUES FIXED
 
-KEY INNOVATION:
-- Separate critics for Loco and Arm
-- Separate reward functions
-- Separate GAE calculations
-- Each policy learns its own task independently
+FIXES APPLIED:
+1. r_reaching: Binary → Smooth sigmoid transition (no oscillation)
+2. balance: Duplicate orientation → CoM lateral velocity (unique metric)
+3. foot_stability: Added actual calculation (ankle stability)
+4. workspace_violation: Added actual calculation (out-of-bounds penalty)
+5. already_reached: Added reset in _reset_idx (reach counting fix)
+6. reaching weight: 20.0 → 12.0 (better Arm/Loco balance)
 
 ARCHITECTURE:
 ┌─────────────────────────────────────────────────────────┐
@@ -70,10 +72,11 @@ GAIT_FREQUENCY = 1.5
 GRASP_THRESHOLD = 0.08
 
 # ============================================================================
-# SEPARATE REWARD WEIGHTS FOR EACH BRANCH
+# SEPARATE REWARD WEIGHTS FOR EACH BRANCH - FIXED & BALANCED
 # ============================================================================
 
 # LOCOMOTION REWARDS - For LocoCritic
+# Total positive max: ~22-24 (well balanced)
 LOCO_REWARD_WEIGHTS = {
     "vx": 3.0,
     "vy": 1.5,
@@ -81,10 +84,10 @@ LOCO_REWARD_WEIGHTS = {
     "height": 3.0,
     "orientation": 4.0,      # Critical for stability
     "gait": 2.0,
-    "balance": 2.5,
+    "com_stability": 2.5,    # FIXED: Was "balance" (duplicate), now CoM lateral velocity
     "leg_posture": 2.5,
     "standing_still": 2.0,   # Reward for standing when commanded
-    "foot_stability": 1.5,   # Feet flat on ground
+    "foot_stability": 1.5,   # FIXED: Now actually calculated (ankle stability)
 
     # Penalties
     "action_rate": -0.03,
@@ -94,10 +97,11 @@ LOCO_REWARD_WEIGHTS = {
 }
 
 # ARM REWARDS - For ArmCritic
+# Total positive max: ~25-30 (reduced from ~32-42)
 ARM_REWARD_WEIGHTS = {
     "distance": 4.0,
-    "reaching": 20.0,        # Bonus for reaching target
-    "final_push": 8.0,       # Bonus when very close
+    "reaching": 12.0,        # FIXED: Reduced from 20.0, now uses smooth sigmoid
+    "final_push": 6.0,       # Reduced from 8.0 for balance
     "smooth": 3.0,           # Smooth arm motion
     "palm_orient": 3.0,      # Palm orientation (when enabled)
     "gripper": 4.0,          # Gripper control (when enabled)
@@ -105,7 +109,7 @@ ARM_REWARD_WEIGHTS = {
     # Penalties
     "action_rate": -0.05,
     "jerk": -0.03,
-    "workspace_violation": -1.0,  # Penalize out-of-bounds targets
+    "workspace_violation": -2.0,  # FIXED: Now actually calculated
     "alive": 0.3,
 }
 
@@ -499,12 +503,12 @@ CURRICULUM = create_curriculum()
 # ============================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="ULC G1 Stage 6-10 V3: Dual Critic")
+    parser = argparse.ArgumentParser(description="ULC G1 Stage 6-10 V3 FIXED: Dual Critic")
     parser.add_argument("--num_envs", type=int, default=4096)
     parser.add_argument("--max_iterations", type=int, default=25000)
     parser.add_argument("--stage3_checkpoint", type=str, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage6_v3")
+    parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage6_v3_fixed")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
@@ -566,7 +570,15 @@ def compute_orientation_error(palm_quat: torch.Tensor) -> torch.Tensor:
 
 
 print("=" * 80)
-print("ULC G1 STAGE 6-10 V3: DUAL ACTOR-CRITIC ARCHITECTURE")
+print("ULC G1 STAGE 6-10 V3 FIXED: DUAL ACTOR-CRITIC ARCHITECTURE")
+print("=" * 80)
+print("FIXES APPLIED:")
+print("  1. r_reaching: Binary → Smooth sigmoid (no oscillation)")
+print("  2. balance: Duplicate → CoM lateral velocity (unique metric)")
+print("  3. foot_stability: Now actually calculated (ankle stability)")
+print("  4. workspace_violation: Now actually calculated")
+print("  5. already_reached: Added reset fix")
+print("  6. reaching weight: 20.0 → 12.0 (better balance)")
 print("=" * 80)
 print(f"Stage 3 checkpoint: {args_cli.stage3_checkpoint}")
 print(f"\nArchitecture:")
@@ -960,8 +972,8 @@ def create_env(num_envs, device):
         sim = sim_utils.SimulationCfg(dt=1/200, render_interval=4)
         scene = SceneCfg(num_envs=num_envs, env_spacing=2.5)
 
-    class Stage6EnvV3(DirectRLEnv):
-        """Environment with SEPARATE reward computation for Loco and Arm"""
+    class Stage6EnvV3Fixed(DirectRLEnv):
+        """Environment with FIXED reward computation for Loco and Arm"""
         cfg: EnvCfg
 
         def __init__(self, cfg, render_mode=None, **kwargs):
@@ -1008,10 +1020,10 @@ def create_env(num_envs, device):
             if self.palm_idx is None:
                 self.palm_idx = len(body_names) - 1
 
-            print(f"[Stage6V3] Leg joints: {len(self.leg_idx)}")
-            print(f"[Stage6V3] Arm joints: {len(self.arm_idx)}")
-            print(f"[Stage6V3] Finger joints: {len(self.finger_idx)}")
-            print(f"[Stage6V3] Palm body idx: {self.palm_idx}")
+            print(f"[Stage6V3Fixed] Leg joints: {len(self.leg_idx)}")
+            print(f"[Stage6V3Fixed] Arm joints: {len(self.arm_idx)}")
+            print(f"[Stage6V3Fixed] Finger joints: {len(self.finger_idx)}")
+            print(f"[Stage6V3Fixed] Palm body idx: {self.palm_idx}")
 
             # Commands
             self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
@@ -1306,7 +1318,7 @@ def create_env(num_envs, device):
             return {"policy": self.get_loco_obs()}
 
         def compute_loco_reward(self) -> torch.Tensor:
-            """Compute LOCOMOTION-ONLY reward for LocoCritic"""
+            """Compute LOCOMOTION-ONLY reward for LocoCritic - FIXED VERSION"""
             robot = self.robot
             quat = robot.data.root_quat_w
             pos = robot.data.root_pos_w
@@ -1339,8 +1351,10 @@ def create_env(num_envs, device):
             )
             r_gait = torch.exp(-3.0 * knee_err)
 
-            # Balance
-            r_balance = torch.exp(-5.0 * (proj_gravity[:, 0]**2 + proj_gravity[:, 1]**2))
+            # FIX #2: CoM Stability (was duplicate of orientation, now uses lateral velocity)
+            # Penalize lateral CoM movement for stability
+            lateral_vel = lin_vel_b[:, :2].norm(dim=-1)  # xy velocity magnitude
+            r_com_stability = torch.exp(-2.0 * lateral_vel)
 
             # Leg posture
             hip_roll_error = joint_pos[:, 2:4].pow(2).sum(-1)
@@ -1359,6 +1373,13 @@ def create_env(num_envs, device):
                 torch.ones_like(actual_vel_magnitude)
             )
 
+            # FIX #3: Foot Stability (was defined but not calculated)
+            # Penalize ankle joint deviations from neutral
+            ankle_pitch = joint_pos[:, 8:10]  # left/right ankle pitch
+            ankle_roll = joint_pos[:, 10:12]  # left/right ankle roll
+            ankle_deviation = ankle_pitch.pow(2).sum(-1) + ankle_roll.pow(2).sum(-1) * 1.5
+            r_foot_stability = torch.exp(-3.0 * ankle_deviation)
+
             # Penalties
             leg_diff = self.prev_leg_actions - self._prev_leg_actions
             p_action_rate = leg_diff.pow(2).sum(-1)
@@ -1369,7 +1390,7 @@ def create_env(num_envs, device):
             leg_vel = robot.data.joint_vel[:, self.leg_idx]
             p_energy = (leg_vel.abs() * self.prev_leg_actions.abs()).sum(-1)
 
-            # Total loco reward
+            # Total loco reward - FIXED
             loco_reward = (
                 LOCO_REWARD_WEIGHTS["vx"] * r_vx +
                 LOCO_REWARD_WEIGHTS["vy"] * r_vy +
@@ -1377,9 +1398,10 @@ def create_env(num_envs, device):
                 LOCO_REWARD_WEIGHTS["height"] * r_height +
                 LOCO_REWARD_WEIGHTS["orientation"] * r_orientation +
                 LOCO_REWARD_WEIGHTS["gait"] * r_gait +
-                LOCO_REWARD_WEIGHTS["balance"] * r_balance +
+                LOCO_REWARD_WEIGHTS["com_stability"] * r_com_stability +  # FIX #2: Was "balance"
                 LOCO_REWARD_WEIGHTS["leg_posture"] * r_leg_posture +
                 LOCO_REWARD_WEIGHTS["standing_still"] * r_standing_still +
+                LOCO_REWARD_WEIGHTS["foot_stability"] * r_foot_stability +  # FIX #3: Now calculated
                 LOCO_REWARD_WEIGHTS["action_rate"] * p_action_rate +
                 LOCO_REWARD_WEIGHTS["jerk"] * p_jerk +
                 LOCO_REWARD_WEIGHTS["energy"] * p_energy +
@@ -1389,7 +1411,7 @@ def create_env(num_envs, device):
             return loco_reward.clamp(-5, 25)
 
         def compute_arm_reward(self) -> torch.Tensor:
-            """Compute ARM-ONLY reward for ArmCritic"""
+            """Compute ARM-ONLY reward for ArmCritic - FIXED VERSION"""
             robot = self.robot
             quat = robot.data.root_quat_w
             pos = robot.data.root_pos_w
@@ -1402,12 +1424,15 @@ def create_env(num_envs, device):
             # Distance reward
             r_distance = torch.exp(-8.0 * dist)
 
-            # Reaching bonus
+            # FIX #1: Reaching bonus - SMOOTH SIGMOID instead of binary
+            # Prevents oscillation around threshold
             reach_threshold = lv["pos_threshold"]
-            r_reaching = (dist < reach_threshold).float()
+            # Sigmoid gives smooth 0→1 transition around threshold
+            # steepness=30 means sharp but not instant transition
+            r_reaching = torch.sigmoid((reach_threshold - dist) * 30.0)
 
-            # Final push bonus
-            r_final_push = torch.exp(-15.0 * dist) * (dist < 0.08).float()
+            # Final push bonus - also smoothed
+            r_final_push = torch.exp(-15.0 * dist) * torch.sigmoid((0.08 - dist) * 25.0)
 
             # Arm smoothness
             arm_diff = self.prev_arm_actions - self._prev_arm_actions
@@ -1434,6 +1459,15 @@ def create_env(num_envs, device):
             else:
                 r_gripper = torch.zeros(self.num_envs, device=self.device)
 
+            # FIX #4: Workspace violation penalty (was defined but not calculated)
+            # Penalize EE position outside workspace bounds
+            ee_body = quat_apply_inverse(quat, ee_pos - pos)
+            # Workspace limits: x=[0.05, 0.55], y=[-0.55, 0.10], z=[-0.25, 0.55]
+            x_violation = torch.clamp(0.05 - ee_body[:, 0], min=0) + torch.clamp(ee_body[:, 0] - 0.55, min=0)
+            y_violation = torch.clamp(-0.55 - ee_body[:, 1], min=0) + torch.clamp(ee_body[:, 1] - 0.10, min=0)
+            z_violation = torch.clamp(-0.25 - ee_body[:, 2], min=0) + torch.clamp(ee_body[:, 2] - 0.55, min=0)
+            p_workspace = (x_violation + y_violation + z_violation) * 5.0  # Scale up for impact
+
             # Penalties
             arm_diff = self.prev_arm_actions - self._prev_arm_actions
             p_action_rate = arm_diff.pow(2).sum(-1)
@@ -1441,16 +1475,17 @@ def create_env(num_envs, device):
             arm_accel = self.prev_arm_actions - 2 * self._prev_arm_actions + self._prev_prev_arm_actions
             p_jerk = arm_accel.pow(2).sum(-1)
 
-            # Total arm reward
+            # Total arm reward - FIXED
             arm_reward = (
                 ARM_REWARD_WEIGHTS["distance"] * r_distance +
-                ARM_REWARD_WEIGHTS["reaching"] * r_reaching +
+                ARM_REWARD_WEIGHTS["reaching"] * r_reaching +  # FIX #1: Now smooth sigmoid
                 ARM_REWARD_WEIGHTS["final_push"] * r_final_push +
                 ARM_REWARD_WEIGHTS["smooth"] * r_smooth +
                 ARM_REWARD_WEIGHTS["palm_orient"] * r_palm_orient +
                 ARM_REWARD_WEIGHTS["gripper"] * r_gripper +
                 ARM_REWARD_WEIGHTS["action_rate"] * p_action_rate +
                 ARM_REWARD_WEIGHTS["jerk"] * p_jerk +
+                ARM_REWARD_WEIGHTS["workspace_violation"] * p_workspace +  # FIX #4: Now calculated
                 ARM_REWARD_WEIGHTS["alive"]
             )
 
@@ -1512,6 +1547,7 @@ def create_env(num_envs, device):
             return terminated, truncated
 
         def _reset_idx(self, env_ids):
+            """Reset environments - FIXED: now resets already_reached flag"""
             super()._reset_idx(env_ids)
             if len(env_ids) == 0:
                 return
@@ -1539,6 +1575,7 @@ def create_env(num_envs, device):
             self._prev_prev_arm_actions[env_ids] = 0
             self.prev_ee_pos[env_ids] = 0
             self.reach_count[env_ids] = 0
+            self.already_reached[env_ids] = False  # FIX #5: Was missing!
 
         def update_curriculum(self, mean_reward):
             lv = CURRICULUM[self.curr_level]
@@ -1573,7 +1610,7 @@ def create_env(num_envs, device):
 
     cfg = EnvCfg()
     cfg.scene.num_envs = num_envs
-    return Stage6EnvV3(cfg)
+    return Stage6EnvV3Fixed(cfg)
 
 
 # ============================================================================
@@ -1653,10 +1690,11 @@ def train():
     obs, _ = env.reset()
 
     print("\n" + "=" * 80)
-    print("STARTING V3 TRAINING - DUAL ACTOR-CRITIC")
+    print("STARTING V3 FIXED TRAINING - DUAL ACTOR-CRITIC")
     print("  Separate critics: LocoCritic + ArmCritic")
     print("  Separate rewards: loco_reward + arm_reward")
     print("  Separate GAE:     loco_advantage + arm_advantage")
+    print("  FIXES: smooth reaching, CoM stability, foot stability, workspace penalty")
     print("=" * 80 + "\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
