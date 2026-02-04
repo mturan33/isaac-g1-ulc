@@ -88,8 +88,9 @@ ARM_JOINT_LIMITS = {
     "right_elbow_roll_joint": (-2.09, 2.09),
 }
 
-# Shoulder offset from robot root (body frame) - G1 specific
-SHOULDER_CENTER_OFFSET = [0.0, -0.174, 0.259]
+# Shoulder offset from robot root (body frame)
+# G1 right shoulder: Y should be NEGATIVE (right side of robot)
+SHOULDER_CENTER_OFFSET = [0.0, -0.174, 0.259]  # Right shoulder
 WORKSPACE_INNER_RADIUS = 0.18
 WORKSPACE_OUTER_RADIUS = 0.45
 
@@ -145,8 +146,40 @@ def rotate_vector_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     return v + w * t + torch.cross(xyz, t, dim=-1)
 
 
+def quat_inverse(q: torch.Tensor) -> torch.Tensor:
+    """Inverse of quaternion (wxyz format)"""
+    # For unit quaternion, inverse = conjugate
+    return torch.cat([q[:, 0:1], -q[:, 1:4]], dim=-1)
+
+
+def transform_world_to_body(vec_world: torch.Tensor, root_pos: torch.Tensor, root_quat: torch.Tensor) -> torch.Tensor:
+    """Transform vector from world frame to body frame.
+
+    Args:
+        vec_world: Position in world frame [N, 3]
+        root_pos: Robot root position in world frame [N, 3]
+        root_quat: Robot root quaternion (xyzw) [N, 4]
+
+    Returns:
+        Position in body frame [N, 3]
+    """
+    # Convert to relative position in world frame
+    rel_world = vec_world - root_pos
+
+    # Convert quaternion from xyzw to wxyz
+    quat_wxyz = torch.cat([root_quat[:, 3:4], root_quat[:, :3]], dim=-1)
+
+    # Rotate by inverse quaternion to get body frame
+    quat_inv = quat_inverse(quat_wxyz)
+    rel_body = rotate_vector_by_quat(rel_world, quat_inv)
+
+    return rel_body
+
+
 def quat_diff_rad(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
-    dot = torch.clamp(torch.sum(q1 * q2, dim=-1).abs(), -1.0, 1.0)
+    """Compute angular difference between two quaternions in radians."""
+    dot = torch.sum(q1 * q2, dim=-1).abs()
+    dot = torch.clamp(dot, -1.0, 1.0)
     return 2.0 * torch.acos(dot)
 
 
@@ -405,17 +438,17 @@ class DemoEnv(DirectRLEnv):
         print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f}")
 
     def sample_arm_target(self):
-        """Sample arm target in BODY FRAME (relative to robot root, in front of shoulder)"""
-        # Fixed reachable position for testing (in front of right shoulder)
-        # shoulder_offset = [0.0, -0.174, 0.259]
-        # Target should be ~25cm in front of shoulder
+        """Sample arm target in BODY FRAME - FIXED POSITION FOR TESTING"""
+        # For testing: Put target directly in front of right hand
+        # Right shoulder is at Y = -0.174, so target should also be negative Y
         target_rel = torch.zeros(3, device=self.device)
-        target_rel[0] = 0.20   # 20cm forward (robot's front is +X in body frame? Let's test)
-        target_rel[1] = -0.25  # 25cm to the right (shoulder is at Y=-0.174)
-        target_rel[2] = 0.30   # 30cm up from root (shoulder is at Z=0.259)
+        target_rel[0] = 0.25   # 25cm forward (+X = front for G1)
+        target_rel[1] = -0.20  # 20cm to the RIGHT (negative Y)
+        target_rel[2] = 0.30   # 30cm up (around shoulder height)
 
         self.target_body[0] = target_rel
-        print(f"[Env] Arm target (body frame): [{target_rel[0]:.2f}, {target_rel[1]:.2f}, {target_rel[2]:.2f}]")
+        print(f"[Env] Arm target (body frame): [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
+        print(f"      FIXED TEST POSITION: front-right of robot")
 
     def get_ee_pos(self) -> torch.Tensor:
         """Get EE position in world frame"""
@@ -431,7 +464,11 @@ class DemoEnv(DirectRLEnv):
         return torch.cat([palm_quat[:, 3:4], palm_quat[:, :3]], dim=-1)
 
     def get_target_world(self) -> torch.Tensor:
-        """Convert body frame target to world frame"""
+        """Get target position in world frame.
+
+        Since Stage 5 policy uses world-frame relative positions (robot was fixed),
+        we just add target_body to root_pos without rotation.
+        """
         root_pos = self.robot.data.root_pos_w
         return root_pos + self.target_body
 
@@ -515,27 +552,34 @@ class DemoEnv(DirectRLEnv):
         return obs.clamp(-10, 10).nan_to_num()
 
     def build_arm_obs(self, debug=False) -> torch.Tensor:
-        """Build Stage 5 arm observation (29 dims) - target in BODY FRAME"""
+        """Build Stage 5 arm observation (29 dims) - MATCH STAGE 5 FORMAT EXACTLY
+
+        Stage 5 uses world-frame relative positions because robot is fixed.
+        We do the same here - no quaternion transformations!
+        """
         root_pos = self.robot.data.root_pos_w
 
         arm_pos = self.robot.data.joint_pos[:, self.arm_idx]
         arm_vel = self.robot.data.joint_vel[:, self.arm_idx]
 
-        # Target in body frame (already stored this way!)
-        target_rel = self.target_body
+        # Target relative to root (world frame, like Stage 5)
+        target_rel = self.target_body  # Still in body frame coordinates
 
-        # EE relative to root (body frame)
+        # EE relative to root (world frame, like Stage 5!)
+        # Stage 5 does NOT use quat_apply_inverse!
         ee_pos_world = self.get_ee_pos()
-        ee_rel = ee_pos_world - root_pos
-        ee_quat = self.get_ee_quat()
+        ee_rel = ee_pos_world - root_pos  # World frame offset, NOT body frame!
 
+        ee_quat = self.get_ee_quat()  # wxyz format
+
+        # Error calculation
         pos_err = target_rel - ee_rel
         pos_dist = pos_err.norm(dim=-1, keepdim=True)
         ori_err = quat_diff_rad(ee_quat, self.target_quat).unsqueeze(-1)
 
         if debug:
             print(f"  [ARM OBS] target_body={target_rel[0].cpu().numpy()}")
-            print(f"  [ARM OBS] ee_rel={ee_rel[0].cpu().numpy()}")
+            print(f"  [ARM OBS] ee_rel(world)={ee_rel[0].cpu().numpy()}")
             print(f"  [ARM OBS] pos_err={pos_err[0].cpu().numpy()} dist={pos_dist[0].item():.3f}")
 
         obs = torch.cat([
