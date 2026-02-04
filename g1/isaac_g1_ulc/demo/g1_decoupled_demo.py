@@ -562,36 +562,34 @@ class DemoEnv(DirectRLEnv):
         return obs.clamp(-10, 10).nan_to_num()
 
     def build_arm_obs(self, debug=False) -> torch.Tensor:
-        """Build Stage 5 arm observation (29 dims) - BODY FRAME EVERYWHERE
+        """Build Stage 5 arm observation (29 dims) - WORLD FRAME RELATIVE
 
-        CRITICAL: Both target and EE must be in the SAME frame!
-        Using body frame since target_body is defined in body frame.
+        Stage 5 uses world-frame positions relative to root.
+        Both target and EE should be in the same frame!
         """
         root_pos = self.robot.data.root_pos_w
-        root_quat = self.robot.data.root_quat_w  # xyzw format
 
         arm_pos = self.robot.data.joint_pos[:, self.arm_idx]
         arm_vel = self.robot.data.joint_vel[:, self.arm_idx]
 
-        # Target in body frame (already defined this way)
-        target_rel = self.target_body
+        # Target in world frame (rotated with robot), then relative to root
+        target_world = self.get_target_world()
+        target_rel = target_world - root_pos
 
-        # EE position - CONVERT TO BODY FRAME!
-        ee_pos_world = self.get_ee_pos()
-        ee_rel_world = ee_pos_world - root_pos
-        # Convert to body frame using quat_apply_inverse
-        ee_rel = quat_apply_inverse(root_quat, ee_rel_world)
+        # EE in world frame, relative to root
+        ee_world = self.get_ee_pos()
+        ee_rel = ee_world - root_pos
 
         ee_quat = self.get_ee_quat()  # wxyz format
 
-        # Error calculation - now both in body frame!
+        # Error calculation - both in world-frame-relative
         pos_err = target_rel - ee_rel
         pos_dist = pos_err.norm(dim=-1, keepdim=True)
         ori_err = quat_diff_rad(ee_quat, self.target_quat).unsqueeze(-1)
 
         if debug:
-            print(f"  [ARM OBS] target_body={target_rel[0].cpu().numpy()}")
-            print(f"  [ARM OBS] ee_rel(BODY)={ee_rel[0].cpu().numpy()}")
+            print(f"  [ARM OBS] target_rel(world)={target_rel[0].cpu().numpy()}")
+            print(f"  [ARM OBS] ee_rel(world)={ee_rel[0].cpu().numpy()}")
             print(f"  [ARM OBS] pos_err={pos_err[0].cpu().numpy()} dist={pos_dist[0].item():.3f}")
 
         obs = torch.cat([
