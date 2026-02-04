@@ -311,7 +311,11 @@ class EnvCfg(DirectRLEnvCfg):
     action_space = 17
     observation_space = 50
     state_space = 0
-    sim: SimulationCfg = SimulationCfg(dt=1/200, render_interval=4, device="cuda:0")
+    sim: SimulationCfg = SimulationCfg(
+        dt=1/200,
+        render_interval=4,
+        device="cuda:0",
+    )
     scene: SceneCfg = SceneCfg(num_envs=1, env_spacing=4.0)
 
 
@@ -519,15 +523,16 @@ class DemoEnv(DirectRLEnv):
         leg_act = self.actions[:, :12]
         arm_act = self.actions[:, 12:]
 
-        # Smooth arm
-        self.smoothed_arm = 0.15 * arm_act + 0.85 * self.smoothed_arm
+        # STRONGER smoothing for arm (reduce jerkiness)
+        self.smoothed_arm = 0.08 * arm_act + 0.92 * self.smoothed_arm  # Was 0.15/0.85
 
         # Targets
         tgt = self.robot.data.default_joint_pos.clone()
         tgt[:, self.leg_idx] = self.default_leg + leg_act * 0.4
 
         cur_arm = self.robot.data.joint_pos[:, self.arm_idx]
-        arm_tgt = torch.clamp(cur_arm + self.smoothed_arm * 0.12, self.arm_lower, self.arm_upper)
+        # Smaller action scale for smoother motion
+        arm_tgt = torch.clamp(cur_arm + self.smoothed_arm * 0.08, self.arm_lower, self.arm_upper)  # Was 0.12
         tgt[:, self.arm_idx] = arm_tgt
 
         self.robot.set_joint_position_target(tgt)
@@ -776,8 +781,17 @@ def main():
     env_cfg.scene.num_envs = args.num_envs
     env = DemoEnv(cfg=env_cfg)
 
+    # Set camera to view robot from front
+    try:
+        from omni.isaac.core.utils.viewports import set_camera_view
+        # Robot faces -X, so camera should be at -X side looking at robot
+        set_camera_view(eye=[-3.0, 2.0, 2.0], target=[0.0, 0.0, 0.7])
+        print("[Camera] Set to front view")
+    except Exception as e:
+        print(f"[Camera] Could not set view: {e}")
+
     # Create coordinator
-    coord_cfg = CoordinatorConfig(walk_speed=0.4, reach_threshold=0.10)
+    coord_cfg = CoordinatorConfig(walk_speed=0.4)  # reach_threshold=0.05 (default)
     coordinator = Coordinator(loco_policy, arm_policy, device, coord_cfg)
 
     # Reset
