@@ -467,13 +467,20 @@ class DemoEnv(DirectRLEnv):
         return torch.cat([palm_quat[:, 3:4], palm_quat[:, :3]], dim=-1)
 
     def get_target_world(self) -> torch.Tensor:
-        """Get target position in world frame.
+        """Get target position in world frame (for marker visualization).
 
-        Since Stage 5 policy uses world-frame relative positions (robot was fixed),
-        we just add target_body to root_pos without rotation.
+        Converts body frame target to world frame accounting for robot rotation.
         """
         root_pos = self.robot.data.root_pos_w
-        return root_pos + self.target_body
+        root_quat = self.robot.data.root_quat_w  # xyzw format
+
+        # Convert quat to wxyz for rotate_vector_by_quat
+        quat_wxyz = torch.cat([root_quat[:, 3:4], root_quat[:, :3]], dim=-1)
+
+        # Rotate target_body by root orientation to get world frame offset
+        target_world_offset = rotate_vector_by_quat(self.target_body, quat_wxyz)
+
+        return root_pos + target_world_offset
 
     def _update_markers(self):
         """Update all visualization markers"""
@@ -555,34 +562,36 @@ class DemoEnv(DirectRLEnv):
         return obs.clamp(-10, 10).nan_to_num()
 
     def build_arm_obs(self, debug=False) -> torch.Tensor:
-        """Build Stage 5 arm observation (29 dims) - MATCH STAGE 5 FORMAT EXACTLY
+        """Build Stage 5 arm observation (29 dims) - BODY FRAME EVERYWHERE
 
-        Stage 5 uses world-frame relative positions because robot is fixed.
-        We do the same here - no quaternion transformations!
+        CRITICAL: Both target and EE must be in the SAME frame!
+        Using body frame since target_body is defined in body frame.
         """
         root_pos = self.robot.data.root_pos_w
+        root_quat = self.robot.data.root_quat_w  # xyzw format
 
         arm_pos = self.robot.data.joint_pos[:, self.arm_idx]
         arm_vel = self.robot.data.joint_vel[:, self.arm_idx]
 
-        # Target relative to root (world frame, like Stage 5)
-        target_rel = self.target_body  # Still in body frame coordinates
+        # Target in body frame (already defined this way)
+        target_rel = self.target_body
 
-        # EE relative to root (world frame, like Stage 5!)
-        # Stage 5 does NOT use quat_apply_inverse!
+        # EE position - CONVERT TO BODY FRAME!
         ee_pos_world = self.get_ee_pos()
-        ee_rel = ee_pos_world - root_pos  # World frame offset, NOT body frame!
+        ee_rel_world = ee_pos_world - root_pos
+        # Convert to body frame using quat_apply_inverse
+        ee_rel = quat_apply_inverse(root_quat, ee_rel_world)
 
         ee_quat = self.get_ee_quat()  # wxyz format
 
-        # Error calculation
+        # Error calculation - now both in body frame!
         pos_err = target_rel - ee_rel
         pos_dist = pos_err.norm(dim=-1, keepdim=True)
         ori_err = quat_diff_rad(ee_quat, self.target_quat).unsqueeze(-1)
 
         if debug:
             print(f"  [ARM OBS] target_body={target_rel[0].cpu().numpy()}")
-            print(f"  [ARM OBS] ee_rel(world)={ee_rel[0].cpu().numpy()}")
+            print(f"  [ARM OBS] ee_rel(BODY)={ee_rel[0].cpu().numpy()}")
             print(f"  [ARM OBS] pos_err={pos_err[0].cpu().numpy()} dist={pos_dist[0].item():.3f}")
 
         obs = torch.cat([
