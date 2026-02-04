@@ -89,8 +89,8 @@ ARM_JOINT_LIMITS = {
 }
 
 # Shoulder offset from robot root (body frame)
-# G1 right shoulder: Y should be NEGATIVE (right side of robot)
-SHOULDER_CENTER_OFFSET = [0.0, -0.174, 0.259]  # Right shoulder
+# G1 coordinate system: +Y = RIGHT side
+SHOULDER_CENTER_OFFSET = [0.0, 0.174, 0.259]  # Right shoulder (+Y)
 WORKSPACE_INNER_RADIUS = 0.18
 WORKSPACE_OUTER_RADIUS = 0.45
 
@@ -438,17 +438,20 @@ class DemoEnv(DirectRLEnv):
         print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f}")
 
     def sample_arm_target(self):
-        """Sample arm target in BODY FRAME - FIXED POSITION FOR TESTING"""
-        # For testing: Put target directly in front of right hand
-        # Right shoulder is at Y = -0.174, so target should also be negative Y
+        """Sample arm target in BODY FRAME - G1 COORDINATE SYSTEM:
+        -X = FRONT (forward)
+        +X = BACK
+        +Y = RIGHT
+        -Y = LEFT
+        """
         target_rel = torch.zeros(3, device=self.device)
-        target_rel[0] = 0.25   # 25cm forward (+X = front for G1)
-        target_rel[1] = -0.20  # 20cm to the RIGHT (negative Y)
-        target_rel[2] = 0.30   # 30cm up (around shoulder height)
+        target_rel[0] = -0.25  # -X = FRONT (25cm forward)
+        target_rel[1] = +0.20  # +Y = RIGHT (20cm to the right)
+        target_rel[2] = 0.35   # 35cm up (hand height)
 
         self.target_body[0] = target_rel
         print(f"[Env] Arm target (body frame): [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
-        print(f"      FIXED TEST POSITION: front-right of robot")
+        print(f"      G1 coords: FRONT(-X)={-target_rel[0]:.2f}m, RIGHT(+Y)={target_rel[1]:.2f}m")
 
     def get_ee_pos(self) -> torch.Tensor:
         """Get EE position in world frame"""
