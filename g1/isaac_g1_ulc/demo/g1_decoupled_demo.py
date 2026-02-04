@@ -398,27 +398,21 @@ class DemoEnv(DirectRLEnv):
         root_pos = self.robot.data.root_pos_w[0]
         self.walk_target_world[0, 0] = root_pos[0] + distance
         self.walk_target_world[0, 1] = root_pos[1]
-        self.walk_target_world[0, 2] = 0.0  # Ground level marker
+        self.walk_target_world[0, 2] = 0.1  # Slightly above ground for visibility
 
         # Update marker
         self._update_walk_marker()
-        print(f"[Env] Walk target set: {distance}m ahead")
+        print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f}")
 
     def sample_arm_target(self):
-        """Sample arm target in BODY FRAME (relative to shoulder)"""
-        # Random direction (front-biased)
-        direction = torch.randn(3, device=self.device)
-        direction[0] = -torch.abs(direction[0])  # -X = robot's front
-        direction = direction / (direction.norm() + 1e-8)
-
-        # Random distance in workspace
-        inner = WORKSPACE_INNER_RADIUS
-        outer = min(args.spawn_radius, WORKSPACE_OUTER_RADIUS)
-        dist = inner + torch.rand(1, device=self.device).item() * (outer - inner)
-
-        # Target relative to shoulder (body frame)
-        target_rel = self.shoulder_offset + direction * dist
-        target_rel[2] = torch.clamp(target_rel[2], 0.05, 0.55)
+        """Sample arm target in BODY FRAME (relative to robot root, in front of shoulder)"""
+        # Fixed reachable position for testing (in front of right shoulder)
+        # shoulder_offset = [0.0, -0.174, 0.259]
+        # Target should be ~25cm in front of shoulder
+        target_rel = torch.zeros(3, device=self.device)
+        target_rel[0] = 0.20   # 20cm forward (robot's front is +X in body frame? Let's test)
+        target_rel[1] = -0.25  # 25cm to the right (shoulder is at Y=-0.174)
+        target_rel[2] = 0.30   # 30cm up from root (shoulder is at Z=0.259)
 
         self.target_body[0] = target_rel
         print(f"[Env] Arm target (body frame): [{target_rel[0]:.2f}, {target_rel[1]:.2f}, {target_rel[2]:.2f}]")
@@ -520,7 +514,7 @@ class DemoEnv(DirectRLEnv):
 
         return obs.clamp(-10, 10).nan_to_num()
 
-    def build_arm_obs(self) -> torch.Tensor:
+    def build_arm_obs(self, debug=False) -> torch.Tensor:
         """Build Stage 5 arm observation (29 dims) - target in BODY FRAME"""
         root_pos = self.robot.data.root_pos_w
 
@@ -538,6 +532,11 @@ class DemoEnv(DirectRLEnv):
         pos_err = target_rel - ee_rel
         pos_dist = pos_err.norm(dim=-1, keepdim=True)
         ori_err = quat_diff_rad(ee_quat, self.target_quat).unsqueeze(-1)
+
+        if debug:
+            print(f"  [ARM OBS] target_body={target_rel[0].cpu().numpy()}")
+            print(f"  [ARM OBS] ee_rel={ee_rel[0].cpu().numpy()}")
+            print(f"  [ARM OBS] pos_err={pos_err[0].cpu().numpy()} dist={pos_dist[0].item():.3f}")
 
         obs = torch.cat([
             arm_pos, arm_vel * 0.1,
@@ -667,9 +666,14 @@ class Coordinator:
             with torch.no_grad():
                 leg_actions = self.loco(loco_obs)
 
-            arm_obs = env.build_arm_obs()
+            # Debug every 100 steps
+            debug = (self.steps_in_state % 100 == 0)
+            arm_obs = env.build_arm_obs(debug=debug)
             with torch.no_grad():
                 arm_actions = self.arm(arm_obs)
+
+            if debug:
+                print(f"  [ARM ACT] actions={arm_actions[0].cpu().numpy()}")
 
         else:  # IDLE or DONE
             loco_obs = env.build_loco_obs(vx=0.0, vy=0.0, vyaw=0.0)
