@@ -10,7 +10,8 @@ Düzeltmeler:
 KULLANIM:
 ./isaaclab.bat -p g1_decoupled_demo_v5.py --num_envs 1
 
-Turan Özhan - VLM-RL G1 Humanoid Project
+FAILED DEMO
+
 4 Şubat 2026
 """
 
