@@ -113,9 +113,10 @@ class State(Enum):
 @dataclass
 class CoordinatorConfig:
     walk_speed: float = 0.4
-    reach_threshold: float = 0.05  # 10cm → 5cm (daha sıkı)
+    reach_threshold: float = 0.05  # 5cm threshold
     yaw_gain: float = 1.5
-    reverse_vx: bool = True  # G1 might need negative vx to go forward
+    reverse_vx: bool = True
+    min_reaching_steps: int = 100  # At least 100 steps in REACHING before SUCCESS  # G1 might need negative vx to go forward
 
 
 # ============================================================================
@@ -684,11 +685,12 @@ class Coordinator:
                 print(f"              Distance to walk target: {robot_to_walk_target:.2f}m\n")
 
         elif self.state == State.REACHING:
-            if ee_to_target < self.cfg.reach_threshold:
+            # Need minimum steps in REACHING state before declaring success
+            if self.steps_in_state >= self.cfg.min_reaching_steps and ee_to_target < self.cfg.reach_threshold:
                 self.state = State.DONE
                 self.steps_in_state = 0
                 print(f"\n[Coordinator] 🎯 SUCCESS! State: REACHING → DONE")
-                print(f"              EE-Target: {ee_to_target:.3f}m\n")
+                print(f"              EE-Target: {ee_to_target:.3f}m (threshold: {self.cfg.reach_threshold}m)\n")
 
         # Generate actions
         if self.state == State.WALKING:
@@ -812,7 +814,11 @@ def main():
             robot_x = env.robot.data.root_pos_w[0, 0].item()
             vx_world = env.robot.data.root_lin_vel_w[0, 0].item()
 
-            print(f"[Step {step:4d}] {info['state']:10s} | H={h:.2f}m | X={robot_x:+.2f}m | Vx={vx_world:+.2f}m/s | "
+            state_info = info['state']
+            if info['state'] == 'REACHING':
+                state_info = f"REACHING ({coordinator.steps_in_state}/{coordinator.cfg.min_reaching_steps})"
+
+            print(f"[Step {step:4d}] {state_info:20s} | H={h:.2f}m | X={robot_x:+.2f}m | Vx={vx_world:+.2f}m/s | "
                   f"Walk: {info['robot_to_walk_target']:.2f}m | EE: {info['ee_to_target']:.3f}m")
 
         if coordinator.state == State.DONE:
