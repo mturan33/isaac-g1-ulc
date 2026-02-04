@@ -115,7 +115,7 @@ class CoordinatorConfig:
     walk_speed: float = 0.4
     reach_threshold: float = 0.05  # 5cm threshold
     yaw_gain: float = 1.5
-    reverse_vx: bool = True
+    reverse_vx: bool = False  # G1: positive vx = forward (-X direction)
     min_reaching_steps: int = 100  # At least 100 steps in REACHING before SUCCESS  # G1 might need negative vx to go forward
 
 
@@ -428,15 +428,19 @@ class DemoEnv(DirectRLEnv):
         self.robot = self.scene["robot"]
 
     def set_walk_target(self, distance: float):
-        """Set walk target distance ahead (world frame)"""
+        """Set walk target distance ahead (world frame).
+
+        G1 faces -X direction, so walk target should be in -X direction.
+        """
         root_pos = self.robot.data.root_pos_w[0]
-        self.walk_target_world[0, 0] = root_pos[0] + distance
+        # G1 faces -X, so target should be at root_pos - distance in X
+        self.walk_target_world[0, 0] = root_pos[0] - distance  # -X = robot's front
         self.walk_target_world[0, 1] = root_pos[1]
         self.walk_target_world[0, 2] = 0.1  # Slightly above ground for visibility
 
         # Update marker
         self._update_walk_marker()
-        print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f}")
+        print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f} (robot front is -X)")
 
     def sample_arm_target(self):
         """Sample arm target in BODY FRAME - G1 COORDINATE SYSTEM:
