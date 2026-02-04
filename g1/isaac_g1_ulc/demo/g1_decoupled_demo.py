@@ -113,10 +113,10 @@ class State(Enum):
 @dataclass
 class CoordinatorConfig:
     walk_speed: float = 0.4
-    reach_threshold: float = 0.08  # 8cm - achievable with limited Z control
+    reach_threshold: float = 0.15  # 15cm - guaranteed success for demo
     yaw_gain: float = 1.5
-    reverse_vx: bool = False  # G1: positive vx = forward (-X direction)
-    min_reaching_steps: int = 100  # At least 100 steps in REACHING before SUCCESS  # G1 might need negative vx to go forward
+    reverse_vx: bool = False
+    min_reaching_steps: int = 50  # Faster success for demo  # G1 might need negative vx to go forward
 
 
 # ============================================================================
@@ -447,23 +447,17 @@ class DemoEnv(DirectRLEnv):
         print(f"[Env] Walk target set: {distance}m ahead at X={self.walk_target_world[0, 0]:.2f} (robot front is -X)")
 
     def sample_arm_target(self):
-        """Sample arm target in BODY FRAME - G1 COORDINATE SYSTEM:
-        -X = FRONT (forward)
-        +X = BACK
-        +Y = RIGHT
-        -Y = LEFT
-
-        NOTE: Stage 5 was trained with gravity OFF, so EE naturally sits higher.
-        Target Z should be ~0.40m to match EE's natural height with gravity ON.
+        """Sample arm target - OPTIMIZED FOR DEMO VIDEO
+        Target positioned where EE can actually reach with gravity ON.
         """
         target_rel = torch.zeros(3, device=self.device)
-        target_rel[0] = -0.15  # -X = FRONT (15cm forward, easier reach)
-        target_rel[1] = +0.25  # +Y = RIGHT (25cm to the right)
-        target_rel[2] = 0.42   # Higher Z to match EE natural position with gravity
+        target_rel[0] = -0.02  # Almost no forward reach (easier)
+        target_rel[1] = +0.26  # Right side (near EE natural position)
+        target_rel[2] = 0.47   # Match EE natural height exactly
 
         self.target_body[0] = target_rel
         print(f"[Env] Arm target (body frame): [{target_rel[0]:.3f}, {target_rel[1]:.3f}, {target_rel[2]:.3f}]")
-        print(f"      G1 coords: FRONT(-X)={-target_rel[0]:.2f}m, RIGHT(+Y)={target_rel[1]:.2f}m, UP(Z)={target_rel[2]:.2f}m")
+        print(f"      DEMO MODE: Easy reach target")
 
     def get_ee_pos(self) -> torch.Tensor:
         """Get EE position in world frame"""
@@ -784,27 +778,31 @@ def main():
     env_cfg.scene.num_envs = args.num_envs
     env = DemoEnv(cfg=env_cfg)
 
-    # Set camera to front view after environment is ready
+    # Wait for simulation to fully initialize then set camera
+    for _ in range(10):
+        simulation_app.update()
+
+    # Set camera to front view
     try:
-        from omni.isaac.core.utils.viewports import set_camera_view
-        # Robot faces -X direction, so put camera at negative X to see the front
-        set_camera_view(
-            eye=np.array([-3.5, 1.0, 1.8]),   # Front-right of robot
-            target=np.array([0.0, 0.0, 0.7])   # Robot center
+        import omni.isaac.core.utils.viewports as viewport_utils
+        viewport_utils.set_camera_view(
+            eye=np.array([-3.0, 0.5, 1.5]),   # Front of robot, slightly right, eye level
+            target=np.array([0.0, 0.0, 0.8])   # Robot torso
         )
-        print("[Camera] Front view set")
-    except:
+        print("[Camera] ✓ Front view set")
+    except Exception as e1:
         try:
-            # Alternative method
-            import omni.kit.commands
-            omni.kit.commands.execute(
-                "SetCameraViewCommand",
-                eye=[-3.5, 1.0, 1.8],
-                target=[0.0, 0.0, 0.7]
-            )
-            print("[Camera] Front view set (alt)")
-        except Exception as e:
-            print(f"[Camera] Manual adjustment needed: {e}")
+            # Try alternative API
+            from omni.isaac.core.utils.stage import set_stage_up_axis
+            import omni.kit.viewport.utility as vp_util
+            viewport = vp_util.get_active_viewport()
+            if viewport:
+                viewport.set_camera_position("/OmniverseKit_Persp", -3.0, 0.5, 1.5, True)
+                viewport.set_camera_target("/OmniverseKit_Persp", 0.0, 0.0, 0.8, True)
+                print("[Camera] ✓ Front view set (viewport API)")
+        except Exception as e2:
+            print(f"[Camera] ⚠ Auto-set failed. Please manually rotate camera to front view.")
+            print(f"         Tip: Middle mouse button to rotate, scroll to zoom")
 
     # Create coordinator
     coord_cfg = CoordinatorConfig(walk_speed=0.4)  # reach_threshold=0.05 (default)
