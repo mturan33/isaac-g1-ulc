@@ -1,19 +1,16 @@
 """
-G1 Decoupled Policy Demo V4 - Full State Machine
-=================================================
+G1 Decoupled Policy Demo V5 - Full State Machine (FIXED)
+=========================================================
 
-Option B: Decoupled Policies with Coordinator
-
-State Machine:
-1. IDLE → Target pozisyon verilir
-2. WALKING → Robot hedefe yürür (arm sabit, loco policy vx>0)
-3. REACHING → Robot durur (loco policy vx=0), arm uzanır
-4. DONE → Başarılı!
+Düzeltmeler:
+1. VisualizationMarkers kullanıyor (fizik bozulmuyor)
+2. Target BODY FRAME'de (omuzun önünde spawn)
+3. Walking → Standing → Reaching pipeline
 
 KULLANIM:
-./isaaclab.bat -p g1_decoupled_demo_v4.py --num_envs 1 --target_x 2.0
+./isaaclab.bat -p g1_decoupled_demo_v5.py --num_envs 1
 
-Mehmet Turan YARDIMCI - VLM-RL G1 Humanoid Project
+Turan Özhan - VLM-RL G1 Humanoid Project
 4 Şubat 2026
 """
 
@@ -27,15 +24,14 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Tuple, Optional
 
-parser = argparse.ArgumentParser(description="G1 Decoupled Demo V4 - Full State Machine")
+parser = argparse.ArgumentParser(description="G1 Decoupled Demo V5")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--loco_checkpoint", type=str,
                     default="logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt")
 parser.add_argument("--arm_checkpoint", type=str,
                     default="logs/ulc/g1_arm_reach_2026-01-22_14-06-41/model_19998.pt")
-parser.add_argument("--target_x", type=float, default=2.0, help="Target X (world frame)")
-parser.add_argument("--target_y", type=float, default=0.0, help="Target Y (world frame)")
-parser.add_argument("--target_z", type=float, default=0.9, help="Target Z (world frame)")
+parser.add_argument("--walk_distance", type=float, default=1.5, help="How far to walk before reaching (m)")
+parser.add_argument("--spawn_radius", type=float, default=0.25, help="Arm target spawn radius (m)")
 parser.add_argument("--steps", type=int, default=5000)
 
 from isaaclab.app import AppLauncher
@@ -50,7 +46,7 @@ import torch.nn as nn
 import numpy as np
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -58,6 +54,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 
 # ============================================================================
@@ -91,7 +88,11 @@ ARM_JOINT_LIMITS = {
     "right_elbow_roll_joint": (-2.09, 2.09),
 }
 
-SHOULDER_CENTER_OFFSET = torch.tensor([0.0, -0.174, 0.259])
+# Shoulder offset from robot root (body frame) - G1 specific
+SHOULDER_CENTER_OFFSET = [0.0, -0.174, 0.259]
+WORKSPACE_INNER_RADIUS = 0.18
+WORKSPACE_OUTER_RADIUS = 0.45
+
 HEIGHT_DEFAULT = 0.72
 GAIT_FREQUENCY = 1.5
 EE_OFFSET = 0.02
@@ -110,11 +111,9 @@ class State(Enum):
 
 @dataclass
 class CoordinatorConfig:
-    """Coordinator thresholds"""
-    walk_speed: float = 0.4           # m/s
-    reach_start_distance: float = 0.6  # Start reaching when robot is this close to target XY
-    reach_threshold: float = 0.08      # EE distance for success
-    yaw_gain: float = 1.5              # Yaw correction gain
+    walk_speed: float = 0.4
+    reach_threshold: float = 0.10
+    yaw_gain: float = 1.5
 
 
 # ============================================================================
@@ -139,6 +138,7 @@ def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
 
 
 def rotate_vector_by_quat(v: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    """Rotate vector by quaternion (wxyz format)"""
     w, xyz = q[:, 0:1], q[:, 1:4]
     t = 2.0 * torch.cross(xyz, v, dim=-1)
     return v + w * t + torch.cross(xyz, t, dim=-1)
@@ -150,7 +150,6 @@ def quat_diff_rad(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
 
 
 def normalize_angle(angle: torch.Tensor) -> torch.Tensor:
-    """Normalize angle to [-pi, pi]"""
     return torch.atan2(torch.sin(angle), torch.cos(angle))
 
 
@@ -224,11 +223,13 @@ def load_arm_policy(path: str, device: str) -> ArmActor:
 
 
 # ============================================================================
-# ENVIRONMENT
+# ENVIRONMENT (No RigidObjects for markers!)
 # ============================================================================
 
 @configclass
 class SceneCfg(InteractiveSceneCfg):
+    """Scene WITHOUT RigidObject markers - using VisualizationMarkers instead"""
+
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -264,28 +265,6 @@ class SceneCfg(InteractiveSceneCfg):
         },
     )
 
-    target: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Target",
-        spawn=sim_utils.SphereCfg(
-            radius=0.05,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0), emissive_color=(0.5, 0.0, 0.0)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(2.0, 0.0, 0.9)),
-    )
-
-    ee_marker: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/EEMarker",
-        spawn=sim_utils.SphereCfg(
-            radius=0.03,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.5, 0.0), emissive_color=(0.5, 0.25, 0.0)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2, -0.2, 1.0)),
-    )
-
 
 @configclass
 class EnvCfg(DirectRLEnvCfg):
@@ -308,8 +287,6 @@ class DemoEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.robot = self.scene["robot"]
-        self.target_obj = self.scene["target"]
-        self.ee_marker = self.scene["ee_marker"]
 
         joint_names = self.robot.data.joint_names
         body_names = self.robot.data.body_names
@@ -326,7 +303,7 @@ class DemoEnv(DirectRLEnv):
         self.default_arm = torch.tensor(DEFAULT_ARM_POS, device=self.device)
         self.arm_lower = torch.tensor([ARM_JOINT_LIMITS[n][0] for n in ARM_JOINT_NAMES], device=self.device)
         self.arm_upper = torch.tensor([ARM_JOINT_LIMITS[n][1] for n in ARM_JOINT_NAMES], device=self.device)
-        self.shoulder_offset = SHOULDER_CENTER_OFFSET.to(self.device)
+        self.shoulder_offset = torch.tensor(SHOULDER_CENTER_OFFSET, device=self.device)
 
         # State
         self.gait_phase = torch.zeros(self.num_envs, device=self.device)
@@ -338,27 +315,115 @@ class DemoEnv(DirectRLEnv):
         self.torso_cmd = torch.zeros(self.num_envs, 3, device=self.device)
         self.height_cmd = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
 
-        # Target (world frame)
-        self.target_world = torch.zeros(self.num_envs, 3, device=self.device)
+        # Target (BODY FRAME - relative to shoulder)
+        self.target_body = torch.zeros(self.num_envs, 3, device=self.device)
         self.target_quat = torch.tensor([[0.707, 0.707, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1).clone()
+
+        # Walk target (world frame - where to walk to)
+        self.walk_target_world = torch.zeros(self.num_envs, 3, device=self.device)
 
         # Helper
         self.local_forward = torch.tensor([[1.0, 0.0, 0.0]], device=self.device).expand(self.num_envs, -1)
 
-        print(f"\n[Env] Leg joints: {len(self.leg_idx)}, Arm joints: {len(self.arm_idx)}, Palm: {self.palm_idx}")
+        # ============ VISUALIZATION MARKERS (no physics!) ============
+        self.target_marker = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/TargetMarker",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.05,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(0.0, 1.0, 0.0),
+                            emissive_color=(0.0, 0.5, 0.0),
+                        ),
+                    ),
+                },
+            )
+        )
+
+        self.ee_marker = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/EEMarker",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.03,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 0.5, 0.0),
+                            emissive_color=(0.5, 0.25, 0.0),
+                        ),
+                    ),
+                },
+            )
+        )
+
+        self.walk_target_marker = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/WalkTargetMarker",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.08,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 0.0, 0.0),
+                            emissive_color=(0.5, 0.0, 0.0),
+                        ),
+                    ),
+                },
+            )
+        )
+
+        self.shoulder_marker = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/ShoulderMarker",
+                markers={
+                    "sphere": sim_utils.SphereCfg(
+                        radius=0.025,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 1.0, 1.0),
+                            emissive_color=(0.5, 0.5, 0.5),
+                        ),
+                    ),
+                },
+            )
+        )
+
+        print(f"\n[Env] Initialized with VisualizationMarkers (no physics interference)")
+        print(f"  Leg joints: {len(self.leg_idx)}, Arm joints: {len(self.arm_idx)}, Palm: {self.palm_idx}")
 
     def _setup_scene(self):
         self.robot = self.scene["robot"]
-        self.target_obj = self.scene["target"]
-        self.ee_marker = self.scene["ee_marker"]
 
-    def set_target(self, pos: torch.Tensor):
-        """Set target position (world frame)"""
-        self.target_world[:] = pos
-        pose = torch.cat([pos.unsqueeze(0), torch.tensor([[0,0,0,1]], device=self.device)], dim=-1)
-        self.target_obj.write_root_pose_to_sim(pose)
+    def set_walk_target(self, distance: float):
+        """Set walk target distance ahead (world frame)"""
+        root_pos = self.robot.data.root_pos_w[0]
+        self.walk_target_world[0, 0] = root_pos[0] + distance
+        self.walk_target_world[0, 1] = root_pos[1]
+        self.walk_target_world[0, 2] = 0.0  # Ground level marker
+
+        # Update marker
+        self._update_walk_marker()
+        print(f"[Env] Walk target set: {distance}m ahead")
+
+    def sample_arm_target(self):
+        """Sample arm target in BODY FRAME (relative to shoulder)"""
+        # Random direction (front-biased)
+        direction = torch.randn(3, device=self.device)
+        direction[0] = -torch.abs(direction[0])  # -X = robot's front
+        direction = direction / (direction.norm() + 1e-8)
+
+        # Random distance in workspace
+        inner = WORKSPACE_INNER_RADIUS
+        outer = min(args.spawn_radius, WORKSPACE_OUTER_RADIUS)
+        dist = inner + torch.rand(1, device=self.device).item() * (outer - inner)
+
+        # Target relative to shoulder (body frame)
+        target_rel = self.shoulder_offset + direction * dist
+        target_rel[2] = torch.clamp(target_rel[2], 0.05, 0.55)
+
+        self.target_body[0] = target_rel
+        print(f"[Env] Arm target (body frame): [{target_rel[0]:.2f}, {target_rel[1]:.2f}, {target_rel[2]:.2f}]")
 
     def get_ee_pos(self) -> torch.Tensor:
+        """Get EE position in world frame"""
         palm_pos = self.robot.data.body_pos_w[:, self.palm_idx]
         palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
         palm_quat_wxyz = torch.cat([palm_quat[:, 3:4], palm_quat[:, :3]], dim=-1)
@@ -366,8 +431,39 @@ class DemoEnv(DirectRLEnv):
         return palm_pos + EE_OFFSET * forward
 
     def get_ee_quat(self) -> torch.Tensor:
+        """Get EE orientation (wxyz)"""
         palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
         return torch.cat([palm_quat[:, 3:4], palm_quat[:, :3]], dim=-1)
+
+    def get_target_world(self) -> torch.Tensor:
+        """Convert body frame target to world frame"""
+        root_pos = self.robot.data.root_pos_w
+        return root_pos + self.target_body
+
+    def _update_markers(self):
+        """Update all visualization markers"""
+        identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device)
+
+        # Target marker (world position)
+        target_world = self.get_target_world()
+        self.target_marker.visualize(translations=target_world, orientations=identity_quat.expand(self.num_envs, -1))
+
+        # EE marker
+        ee_pos = self.get_ee_pos()
+        self.ee_marker.visualize(translations=ee_pos, orientations=identity_quat.expand(self.num_envs, -1))
+
+        # Shoulder marker
+        root_pos = self.robot.data.root_pos_w
+        shoulder_world = root_pos + self.shoulder_offset.unsqueeze(0)
+        self.shoulder_marker.visualize(translations=shoulder_world, orientations=identity_quat.expand(self.num_envs, -1))
+
+    def _update_walk_marker(self):
+        """Update walk target marker"""
+        identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device)
+        self.walk_target_marker.visualize(
+            translations=self.walk_target_world,
+            orientations=identity_quat.expand(self.num_envs, -1)
+        )
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self.actions = actions.clone()
@@ -392,7 +488,7 @@ class DemoEnv(DirectRLEnv):
         self.prev_leg_actions = leg_act.clone()
 
     def build_loco_obs(self, vx: float = 0.0, vy: float = 0.0, vyaw: float = 0.0) -> torch.Tensor:
-        """Build Stage 3 observation with given velocity commands"""
+        """Build Stage 3 observation (57 dims)"""
         quat = self.robot.data.root_quat_w
         lin_vel_b = quat_apply_inverse(quat, self.robot.data.root_lin_vel_w)
         ang_vel_b = quat_apply_inverse(quat, self.robot.data.root_ang_vel_w)
@@ -406,36 +502,36 @@ class DemoEnv(DirectRLEnv):
         gait = torch.stack([torch.sin(2*np.pi*self.gait_phase), torch.cos(2*np.pi*self.gait_phase)], dim=-1)
         torso_euler = quat_to_euler_xyz(quat)
 
-        # Set velocity command
         self.vel_cmd[:, 0] = vx
         self.vel_cmd[:, 1] = vy
         self.vel_cmd[:, 2] = vyaw
 
         obs = torch.cat([
-            lin_vel_b, ang_vel_b, proj_grav,     # 9
-            leg_pos, leg_vel,                     # 24
-            self.height_cmd.unsqueeze(-1),        # 1
-            self.vel_cmd,                         # 3
-            gait,                                 # 2
-            self.prev_leg_actions,                # 12
-            self.torso_cmd,                       # 3
-            torso_euler,                          # 3
-        ], dim=-1)  # 57
+            lin_vel_b, ang_vel_b, proj_grav,
+            leg_pos, leg_vel,
+            self.height_cmd.unsqueeze(-1),
+            self.vel_cmd,
+            gait,
+            self.prev_leg_actions,
+            self.torso_cmd,
+            torso_euler,
+        ], dim=-1)
 
         return obs.clamp(-10, 10).nan_to_num()
 
     def build_arm_obs(self) -> torch.Tensor:
-        """Build Stage 5 arm observation"""
+        """Build Stage 5 arm observation (29 dims) - target in BODY FRAME"""
         root_pos = self.robot.data.root_pos_w
 
         arm_pos = self.robot.data.joint_pos[:, self.arm_idx]
         arm_vel = self.robot.data.joint_vel[:, self.arm_idx]
 
-        # Target relative to robot (body frame approximation)
-        target_rel = self.target_world - root_pos
+        # Target in body frame (already stored this way!)
+        target_rel = self.target_body
 
-        ee_pos = self.get_ee_pos()
-        ee_rel = ee_pos - root_pos
+        # EE relative to root (body frame)
+        ee_pos_world = self.get_ee_pos()
+        ee_rel = ee_pos_world - root_pos
         ee_quat = self.get_ee_quat()
 
         pos_err = target_rel - ee_rel
@@ -443,19 +539,16 @@ class DemoEnv(DirectRLEnv):
         ori_err = quat_diff_rad(ee_quat, self.target_quat).unsqueeze(-1)
 
         obs = torch.cat([
-            arm_pos, arm_vel * 0.1,              # 10
-            target_rel, self.target_quat,         # 7
-            ee_rel, ee_quat,                      # 7
-            pos_err, ori_err, pos_dist / 0.5,     # 5
-        ], dim=-1)  # 29
+            arm_pos, arm_vel * 0.1,
+            target_rel, self.target_quat,
+            ee_rel, ee_quat,
+            pos_err, ori_err, pos_dist / 0.5,
+        ], dim=-1)
 
         return obs
 
     def _get_observations(self) -> dict:
-        # Update EE marker
-        ee_pos = self.get_ee_pos()
-        ee_quat = self.robot.data.body_quat_w[:, self.palm_idx]
-        self.ee_marker.write_root_pose_to_sim(torch.cat([ee_pos, ee_quat], dim=-1))
+        self._update_markers()
         return {"policy": torch.zeros(self.num_envs, 50, device=self.device)}
 
     def _get_rewards(self) -> torch.Tensor:
@@ -495,8 +588,6 @@ class DemoEnv(DirectRLEnv):
 # ============================================================================
 
 class Coordinator:
-    """State machine coordinator"""
-
     def __init__(self, loco_policy, arm_policy, device, cfg: CoordinatorConfig = None):
         self.loco = loco_policy
         self.arm = arm_policy
@@ -504,52 +595,39 @@ class Coordinator:
         self.cfg = cfg or CoordinatorConfig()
 
         self.state = State.IDLE
-        self.target_world = None
         self.steps_in_state = 0
-
         self.default_arm_actions = torch.zeros(5, device=device)
 
     def reset(self):
         self.state = State.IDLE
-        self.target_world = None
         self.steps_in_state = 0
 
-    def set_target(self, target: torch.Tensor):
-        self.target_world = target.clone()
+    def start_walking(self):
         self.state = State.WALKING
         self.steps_in_state = 0
-        print(f"\n[Coordinator] Target set: [{target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f}]")
-        print(f"[Coordinator] State: IDLE → WALKING\n")
+        print(f"\n[Coordinator] State: IDLE → WALKING\n")
 
     def step(self, env: DemoEnv) -> Tuple[torch.Tensor, dict]:
-        """Run one coordinator step"""
-
-        if self.target_world is None:
-            # IDLE - return zeros
-            actions = torch.zeros(env.num_envs, 17, device=self.device)
-            return actions, {"state": "IDLE"}
-
-        # Get robot state
-        robot_pos = env.robot.data.root_pos_w[0]  # [3]
-        robot_quat = env.robot.data.root_quat_w[0]  # [4]
+        robot_pos = env.robot.data.root_pos_w[0]
+        robot_quat = env.robot.data.root_quat_w[0]
         euler = quat_to_euler_xyz(robot_quat.unsqueeze(0))[0]
         robot_yaw = euler[2].item()
 
-        ee_pos = env.get_ee_pos()[0]
-
         # Distances
-        robot_to_target_xy = (self.target_world[:2] - robot_pos[:2]).norm().item()
-        ee_to_target = (ee_pos - self.target_world).norm().item()
+        walk_target = env.walk_target_world[0]
+        robot_to_walk_target = (walk_target[:2] - robot_pos[:2]).norm().item()
+
+        ee_pos = env.get_ee_pos()[0]
+        target_world = env.get_target_world()[0]
+        ee_to_target = (ee_pos - target_world).norm().item()
 
         # State transitions
-        prev_state = self.state
-
         if self.state == State.WALKING:
-            if robot_to_target_xy < self.cfg.reach_start_distance:
+            if robot_to_walk_target < 0.3:  # Arrived at walk position
                 self.state = State.REACHING
                 self.steps_in_state = 0
-                print(f"\n[Coordinator] Close enough! State: WALKING → REACHING")
-                print(f"              Robot-Target XY: {robot_to_target_xy:.2f}m\n")
+                print(f"\n[Coordinator] Arrived! State: WALKING → REACHING")
+                print(f"              Distance to walk target: {robot_to_walk_target:.2f}m\n")
 
         elif self.state == State.REACHING:
             if ee_to_target < self.cfg.reach_threshold:
@@ -558,36 +636,26 @@ class Coordinator:
                 print(f"\n[Coordinator] 🎯 SUCCESS! State: REACHING → DONE")
                 print(f"              EE-Target: {ee_to_target:.3f}m\n")
 
-        # Generate actions based on state
+        # Generate actions
         if self.state == State.WALKING:
-            # Calculate velocity command to walk toward target
-            dx = self.target_world[0].item() - robot_pos[0].item()
-            dy = self.target_world[1].item() - robot_pos[1].item()
-
-            # Target yaw (world frame)
+            dx = walk_target[0].item() - robot_pos[0].item()
+            dy = walk_target[1].item() - robot_pos[1].item()
             target_yaw = math.atan2(dy, dx)
             yaw_error = normalize_angle(torch.tensor(target_yaw - robot_yaw)).item()
 
-            # Body frame velocity
             vx = self.cfg.walk_speed
-            vy = 0.0
             vyaw = np.clip(yaw_error * self.cfg.yaw_gain, -0.5, 0.5)
 
-            # Get loco action
-            loco_obs = env.build_loco_obs(vx=vx, vy=vy, vyaw=vyaw)
+            loco_obs = env.build_loco_obs(vx=vx, vy=0.0, vyaw=vyaw)
             with torch.no_grad():
                 leg_actions = self.loco(loco_obs)
-
-            # Arm stays at default
-            arm_actions = self.default_arm_actions.unsqueeze(0).expand(env.num_envs, -1)
+            arm_actions = self.default_arm_actions.unsqueeze(0)
 
         elif self.state == State.REACHING:
-            # Stand still (vx=0) + arm reaching
             loco_obs = env.build_loco_obs(vx=0.0, vy=0.0, vyaw=0.0)
             with torch.no_grad():
                 leg_actions = self.loco(loco_obs)
 
-            # Arm policy
             arm_obs = env.build_arm_obs()
             with torch.no_grad():
                 arm_actions = self.arm(arm_obs)
@@ -596,17 +664,15 @@ class Coordinator:
             loco_obs = env.build_loco_obs(vx=0.0, vy=0.0, vyaw=0.0)
             with torch.no_grad():
                 leg_actions = self.loco(loco_obs)
-            arm_actions = self.default_arm_actions.unsqueeze(0).expand(env.num_envs, -1)
+            arm_actions = self.default_arm_actions.unsqueeze(0)
 
         actions = torch.cat([leg_actions, arm_actions], dim=-1)
-
         self.steps_in_state += 1
 
         info = {
             "state": self.state.name,
-            "robot_to_target_xy": robot_to_target_xy,
+            "robot_to_walk_target": robot_to_walk_target,
             "ee_to_target": ee_to_target,
-            "steps_in_state": self.steps_in_state,
         }
 
         return actions, info
@@ -618,8 +684,8 @@ class Coordinator:
 
 def main():
     print("\n" + "=" * 70)
-    print("    G1 DECOUPLED DEMO V4 - Full State Machine")
-    print("    WALKING → REACHING Pipeline")
+    print("    G1 DECOUPLED DEMO V5 - FIXED")
+    print("    VisualizationMarkers + Body Frame Target")
     print("=" * 70)
 
     device = "cuda:0"
@@ -636,70 +702,61 @@ def main():
     env = DemoEnv(cfg=env_cfg)
 
     # Create coordinator
-    coord_cfg = CoordinatorConfig(
-        walk_speed=0.4,
-        reach_start_distance=0.6,
-        reach_threshold=0.08,
-    )
+    coord_cfg = CoordinatorConfig(walk_speed=0.4, reach_threshold=0.10)
     coordinator = Coordinator(loco_policy, arm_policy, device, coord_cfg)
 
-    # Set target
-    print("\n[3/3] Setting target...")
-    target = torch.tensor([args.target_x, args.target_y, args.target_z], device=device)
-
     # Reset
+    print("\n[3/3] Setting up demo...")
     obs, _ = env.reset()
-    env.set_target(target)
-    coordinator.set_target(target)
+
+    # Set walk target (where robot should walk to)
+    env.set_walk_target(args.walk_distance)
+
+    # Sample arm target (body frame - relative to shoulder)
+    env.sample_arm_target()
+
+    # Start
+    coordinator.start_walking()
 
     print("=" * 70)
-    print(f"    Target: ({args.target_x}, {args.target_y}, {args.target_z})")
-    print(f"    Walk speed: {coord_cfg.walk_speed} m/s")
-    print(f"    Reach start: {coord_cfg.reach_start_distance}m")
-    print(f"    Reach threshold: {coord_cfg.reach_threshold}m")
+    print(f"    Walk distance: {args.walk_distance}m")
+    print(f"    Arm target radius: {args.spawn_radius}m")
+    print(f"    Pipeline: WALKING → REACHING → DONE")
     print("=" * 70 + "\n")
 
     # Main loop
     for step in range(args.steps):
-        # Coordinator step
         actions, info = coordinator.step(env)
-
-        # Environment step
         obs, reward, terminated, truncated, _ = env.step(actions)
 
-        # Check fallen
         if terminated.any():
             print(f"[Step {step}] ⚠️ Robot fell! Resetting...")
             env.reset()
-            env.set_target(target)
+            env.set_walk_target(args.walk_distance)
+            env.sample_arm_target()
             coordinator.reset()
-            coordinator.set_target(target)
+            coordinator.start_walking()
             continue
 
-        # Log
         if step % 50 == 0:
             h = env.robot.data.root_pos_w[0, 2].item()
             vx = env.robot.data.root_lin_vel_w[0, 0].item()
 
-            print(f"[Step {step:4d}] State={info['state']:10s} | "
-                  f"H={h:.2f}m | Vx={vx:+.2f}m/s | "
-                  f"Robot→Target: {info['robot_to_target_xy']:.2f}m | "
-                  f"EE→Target: {info['ee_to_target']:.3f}m")
+            print(f"[Step {step:4d}] {info['state']:10s} | H={h:.2f}m | Vx={vx:+.2f}m/s | "
+                  f"Walk: {info['robot_to_walk_target']:.2f}m | EE: {info['ee_to_target']:.3f}m")
 
-        # Done?
         if coordinator.state == State.DONE:
             print(f"\n{'='*70}")
-            print(f"    ✅ SUCCESS! Target reached in {step} steps!")
+            print(f"    ✅ SUCCESS! Completed in {step} steps!")
             print(f"{'='*70}\n")
 
-            # Wait a bit then exit
             for _ in range(100):
                 actions, _ = coordinator.step(env)
                 env.step(actions)
             break
 
     if coordinator.state != State.DONE:
-        print(f"\n[Timeout] Demo ended in state: {coordinator.state.name}")
+        print(f"\n[Timeout] Ended in state: {coordinator.state.name}")
 
     env.close()
     simulation_app.close()
