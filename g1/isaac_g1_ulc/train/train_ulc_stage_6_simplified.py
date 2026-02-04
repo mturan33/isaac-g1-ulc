@@ -822,6 +822,11 @@ def create_env(num_envs, device):
             self.loco_reward = torch.zeros(self.num_envs, device=self.device)
             self.arm_reward = torch.zeros(self.num_envs, device=self.device)
 
+            # Reward component tracking for monitoring
+            self.loco_reward_components = {}
+            self.arm_reward_components = {}
+            self.behavior_metrics = {}
+
             self._markers_initialized = False
 
         @property
@@ -1096,13 +1101,14 @@ def create_env(num_envs, device):
             posture_error = hip_roll_error * 2.0 + ankle_roll_error * 1.5 + hip_yaw_error * 1.0
             r_leg_posture = torch.exp(-3.0 * posture_error)
 
+            # FIXED: standing_still sadece durması istendiğinde
             vel_cmd_magnitude = self.vel_cmd.abs().sum(dim=-1)
             actual_vel_magnitude = lin_vel_b[:, :2].abs().sum(dim=-1) + ang_vel_b[:, 2].abs()
-            is_standing_cmd = vel_cmd_magnitude < 0.1
+            is_standing_cmd = vel_cmd_magnitude < 0.05  # Daha strict
             r_standing_still = torch.where(
                 is_standing_cmd,
                 torch.exp(-5.0 * actual_vel_magnitude),
-                torch.ones_like(actual_vel_magnitude)
+                torch.zeros_like(actual_vel_magnitude)  # Yürümesi isteniyorsa 0
             )
 
             ankle_pitch = joint_pos[:, 8:10]
@@ -1118,6 +1124,32 @@ def create_env(num_envs, device):
 
             leg_vel = robot.data.joint_vel[:, self.leg_idx]
             p_energy = (leg_vel.abs() * self.prev_leg_actions.abs()).sum(-1)
+
+            # Store reward components for monitoring (weighted values)
+            self.loco_reward_components = {
+                "vx": (LOCO_REWARD_WEIGHTS["vx"] * r_vx).mean().item(),
+                "vy": (LOCO_REWARD_WEIGHTS["vy"] * r_vy).mean().item(),
+                "vyaw": (LOCO_REWARD_WEIGHTS["vyaw"] * r_vyaw).mean().item(),
+                "height": (LOCO_REWARD_WEIGHTS["height"] * r_height).mean().item(),
+                "orientation": (LOCO_REWARD_WEIGHTS["orientation"] * r_orientation).mean().item(),
+                "gait": (LOCO_REWARD_WEIGHTS["gait"] * r_gait).mean().item(),
+                "com_stability": (LOCO_REWARD_WEIGHTS["com_stability"] * r_com_stability).mean().item(),
+                "leg_posture": (LOCO_REWARD_WEIGHTS["leg_posture"] * r_leg_posture).mean().item(),
+                "standing_still": (LOCO_REWARD_WEIGHTS["standing_still"] * r_standing_still).mean().item(),
+                "foot_stability": (LOCO_REWARD_WEIGHTS["foot_stability"] * r_foot_stability).mean().item(),
+                "action_rate": (LOCO_REWARD_WEIGHTS["action_rate"] * p_action_rate).mean().item(),
+                "jerk": (LOCO_REWARD_WEIGHTS["jerk"] * p_jerk).mean().item(),
+                "energy": (LOCO_REWARD_WEIGHTS["energy"] * p_energy).mean().item(),
+            }
+
+            # Store behavior metrics (actual values, not rewards)
+            self.behavior_metrics.update({
+                "actual_vx": lin_vel_b[:, 0].mean().item(),
+                "cmd_vx": self.vel_cmd[:, 0].mean().item(),
+                "vx_error": (lin_vel_b[:, 0] - self.vel_cmd[:, 0]).abs().mean().item(),
+                "actual_height": pos[:, 2].mean().item(),
+                "height_error": height_error.abs().mean().item(),
+            })
 
             loco_reward = (
                 LOCO_REWARD_WEIGHTS["vx"] * r_vx +
@@ -1163,6 +1195,7 @@ def create_env(num_envs, device):
                 orient_err = compute_orientation_error(palm_quat)
                 r_palm_orient = torch.exp(-3.0 * orient_err)
             else:
+                orient_err = compute_orientation_error(palm_quat)  # Still compute for monitoring
                 r_palm_orient = torch.zeros(self.num_envs, device=self.device)
 
             # NO GRIPPER REWARD!
@@ -1178,6 +1211,26 @@ def create_env(num_envs, device):
 
             arm_accel = self.prev_arm_actions - 2 * self._prev_arm_actions + self._prev_prev_arm_actions
             p_jerk = arm_accel.pow(2).sum(-1)
+
+            # Store reward components for monitoring (weighted values)
+            self.arm_reward_components = {
+                "distance": (ARM_REWARD_WEIGHTS["distance"] * r_distance).mean().item(),
+                "reaching": (ARM_REWARD_WEIGHTS["reaching"] * r_reaching).mean().item(),
+                "final_push": (ARM_REWARD_WEIGHTS["final_push"] * r_final_push).mean().item(),
+                "smooth": (ARM_REWARD_WEIGHTS["smooth"] * r_smooth).mean().item(),
+                "palm_orient": (ARM_REWARD_WEIGHTS["palm_orient"] * r_palm_orient).mean().item(),
+                "action_rate": (ARM_REWARD_WEIGHTS["action_rate"] * p_action_rate).mean().item(),
+                "jerk": (ARM_REWARD_WEIGHTS["jerk"] * p_jerk).mean().item(),
+                "workspace_violation": (ARM_REWARD_WEIGHTS["workspace_violation"] * p_workspace).mean().item(),
+            }
+
+            # Store behavior metrics
+            self.behavior_metrics.update({
+                "ee_dist_raw": dist.mean().item(),
+                "ee_dist_min": dist.min().item(),
+                "orient_error_raw": orient_err.mean().item(),
+                "reaching_sigmoid": r_reaching.mean().item(),  # 0-1 arası, reach'e ne kadar yakın
+            })
 
             arm_reward = (
                 ARM_REWARD_WEIGHTS["distance"] * r_distance +
@@ -1200,6 +1253,7 @@ def create_env(num_envs, device):
             combined = self.loco_reward + self.arm_reward
 
             phase_name = "P1-Stand" if self.curr_level < 5 else "P2-Walk"
+            lv = CURRICULUM[self.curr_level]
 
             robot = self.robot
             quat = robot.data.root_quat_w
@@ -1209,7 +1263,11 @@ def create_env(num_envs, device):
             target_world = pos + quat_apply(quat, self.target_pos_body)
             dist = torch.norm(ee_pos - target_world, dim=-1)
 
+            # Reach rate calculation
+            reach_rate = self.stage_reaches / max(self.stage_steps, 1) * 1000  # per 1K steps
+
             self.extras = {
+                # Basic metrics
                 "R/loco_total": self.loco_reward.mean().item(),
                 "R/arm_total": self.arm_reward.mean().item(),
                 "M/height": pos[:, 2].mean().item(),
@@ -1218,6 +1276,52 @@ def create_env(num_envs, device):
                 "M/reaches": self.total_reaches,
                 "curriculum_level": self.curr_level,
                 "phase": phase_name,
+
+                # LOCO REWARD COMPONENTS (RC = Reward Component)
+                "RC/loco_vx": self.loco_reward_components.get("vx", 0),
+                "RC/loco_vy": self.loco_reward_components.get("vy", 0),
+                "RC/loco_vyaw": self.loco_reward_components.get("vyaw", 0),
+                "RC/loco_height": self.loco_reward_components.get("height", 0),
+                "RC/loco_orientation": self.loco_reward_components.get("orientation", 0),
+                "RC/loco_gait": self.loco_reward_components.get("gait", 0),
+                "RC/loco_com_stability": self.loco_reward_components.get("com_stability", 0),
+                "RC/loco_leg_posture": self.loco_reward_components.get("leg_posture", 0),
+                "RC/loco_standing_still": self.loco_reward_components.get("standing_still", 0),
+                "RC/loco_foot_stability": self.loco_reward_components.get("foot_stability", 0),
+                "RC/loco_action_rate": self.loco_reward_components.get("action_rate", 0),
+                "RC/loco_jerk": self.loco_reward_components.get("jerk", 0),
+                "RC/loco_energy": self.loco_reward_components.get("energy", 0),
+
+                # ARM REWARD COMPONENTS
+                "RC/arm_distance": self.arm_reward_components.get("distance", 0),
+                "RC/arm_reaching": self.arm_reward_components.get("reaching", 0),
+                "RC/arm_final_push": self.arm_reward_components.get("final_push", 0),
+                "RC/arm_smooth": self.arm_reward_components.get("smooth", 0),
+                "RC/arm_palm_orient": self.arm_reward_components.get("palm_orient", 0),
+                "RC/arm_action_rate": self.arm_reward_components.get("action_rate", 0),
+                "RC/arm_jerk": self.arm_reward_components.get("jerk", 0),
+                "RC/arm_workspace_violation": self.arm_reward_components.get("workspace_violation", 0),
+
+                # BEHAVIOR METRICS (BH = Behavior, actual values not rewards)
+                "BH/actual_vx": self.behavior_metrics.get("actual_vx", 0),
+                "BH/cmd_vx": self.behavior_metrics.get("cmd_vx", 0),
+                "BH/vx_error": self.behavior_metrics.get("vx_error", 0),
+                "BH/actual_height": self.behavior_metrics.get("actual_height", 0),
+                "BH/height_error": self.behavior_metrics.get("height_error", 0),
+                "BH/ee_dist_raw": self.behavior_metrics.get("ee_dist_raw", 0),
+                "BH/ee_dist_min": self.behavior_metrics.get("ee_dist_min", 0),
+                "BH/orient_error_raw": self.behavior_metrics.get("orient_error_raw", 0),
+                "BH/reaching_sigmoid": self.behavior_metrics.get("reaching_sigmoid", 0),
+
+                # REACHING STATS
+                "BH/reach_rate_per_1k": reach_rate,
+                "BH/stage_reaches": self.stage_reaches,
+                "BH/stage_steps": self.stage_steps,
+
+                # CURRICULUM INFO
+                "Curr/pos_threshold": lv["pos_threshold"],
+                "Curr/orient_threshold": lv.get("orient_threshold", 0) if lv["use_orientation"] else 0,
+                "Curr/use_orientation": float(lv["use_orientation"]),
             }
 
             return combined.clamp(-10, 50)
@@ -1268,6 +1372,16 @@ def create_env(num_envs, device):
             if lv["min_reaches"] is None:
                 return
 
+            # Gaming detection: Check reach rate
+            reach_rate = self.stage_reaches / max(self.stage_steps, 1) * 1000
+
+            # WARNING: Low reach rate might indicate reward hacking
+            if self.stage_steps >= 500 and reach_rate < 5:
+                print(f"\n⚠️  WARNING: Low reach rate at Level {self.curr_level}")
+                print(f"    Reaches/1K steps: {reach_rate:.1f}")
+                print(f"    Stage reaches: {self.stage_reaches}, Stage steps: {self.stage_steps}")
+                print(f"    Possible reward hacking - robot may not be actually reaching!")
+
             min_steps = lv.get("min_steps", 0)
             if self.stage_steps >= min_steps and self.stage_reaches >= lv["min_reaches"]:
                 success_rate = self.stage_reaches / max(self.stage_steps, 1)
@@ -1279,12 +1393,19 @@ def create_env(num_envs, device):
                         phase_msg = ""
                         if self.curr_level == 5:
                             phase_msg = " 🚶 PHASE 2: WALKING + REACHING!"
+                        if self.curr_level == 7:
+                            phase_msg = " 📐 ORIENTATION ENABLED!"
 
                         print(f"\n{'='*60}")
                         print(f"🎯 LEVEL UP! Level {self.curr_level}{phase_msg}")
                         print(f"   vx={new_lv['vx']}, pos_thresh={new_lv['pos_threshold']}")
-                        print(f"   orient={new_lv['use_orientation']}")
+                        print(f"   orient={new_lv['use_orientation']}", end="")
+                        if new_lv['use_orientation']:
+                            print(f" (thresh={new_lv.get('orient_threshold', 'N/A')} rad)")
+                        else:
+                            print()
                         print(f"   Reaches: {self.stage_reaches}, SR: {success_rate:.2%}")
+                        print(f"   Reach rate: {reach_rate:.1f}/1K steps")
                         print(f"{'='*60}\n")
 
                         self.stage_reaches = 0
