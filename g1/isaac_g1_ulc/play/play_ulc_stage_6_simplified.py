@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-ULC G1 Stage 6 SIMPLIFIED Play Script
-=====================================
-Matches the DUAL ACTOR-CRITIC architecture from training.
+ULC G1 Stage 6 SIMPLIFIED Play Script V2 - FIXED
+=================================================
+Fixes from V1:
+1. deterministic=True by default (removes action noise)
+2. target_reached obs matches training (position + orientation)
+3. Better diagnostics and reach reporting
+4. Configurable orient_range matching training Level 12
 
 Architecture (MUST MATCH TRAINING):
-- LocoActor (57→12) with self.net
-- LocoCritic (57→1) with self.net
-- ArmActor (52→5) with self.net  ← NO FINGERS!
-- ArmCritic (52→1) with self.net
+- LocoActor (57→12) with self.net + LayerNorm
+- LocoCritic (57→1) with self.net + LayerNorm
+- ArmActor (52→5) with self.net (NO LayerNorm)
+- ArmCritic (52→1) with self.net (NO LayerNorm)
 
 Usage:
-    ./isaaclab.bat -p play_ulc_stage6_simplified.py \
+    ./isaaclab.bat -p play_ulc_stage6_simplified_v2.py \
         --checkpoint logs/ulc/ulc_g1_stage6_simplified_.../model_best.pt \
         --num_envs 4 \
         --mode walking
@@ -25,19 +29,32 @@ import torch.nn as nn
 import numpy as np
 
 # Parse arguments before Isaac imports
-parser = argparse.ArgumentParser(description="ULC G1 Stage 6 Simplified Play")
+parser = argparse.ArgumentParser(description="ULC G1 Stage 6 Simplified Play V2")
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint")
 parser.add_argument("--num_envs", type=int, default=4, help="Number of environments")
 parser.add_argument("--steps", type=int, default=3000, help="Steps to run")
 parser.add_argument("--mode", type=str, default="walking",
                     choices=["standing", "walking", "fast", "demo"],
                     help="Test mode")
+parser.add_argument("--deterministic", action="store_true", default=True,
+                    help="Use deterministic actions (default: True)")
+parser.add_argument("--stochastic", action="store_true", default=False,
+                    help="Use stochastic actions (overrides deterministic)")
+parser.add_argument("--reach_threshold", type=float, default=0.05,
+                    help="Position reach threshold in meters")
+parser.add_argument("--orient_threshold", type=float, default=1.0,
+                    help="Orientation reach threshold in radians (matches Level 12)")
+parser.add_argument("--orient_range", type=float, default=1.4,
+                    help="Orient sampling cone range in radians (Level 12 = 1.4 = ~80°)")
 
 from isaaclab.app import AppLauncher
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = False
+
+# Handle deterministic flag
+use_deterministic = not args.stochastic
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -53,7 +70,7 @@ from isaaclab.utils.math import quat_apply_inverse, quat_apply
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 # ============================================================================
-# CONSTANTS
+# CONSTANTS (MUST MATCH TRAINING)
 # ============================================================================
 HEIGHT_DEFAULT = 0.72
 GAIT_FREQUENCY = 1.5
@@ -133,7 +150,7 @@ class LocoActor(nn.Module):
             layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
             prev = h
         layers.append(nn.Linear(prev, num_act))
-        self.net = nn.Sequential(*layers)  # MUST BE self.net!
+        self.net = nn.Sequential(*layers)
         self.log_std = nn.Parameter(torch.zeros(num_act))
 
     def forward(self, x):
@@ -151,7 +168,7 @@ class LocoCritic(nn.Module):
             layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
             prev = h
         layers.append(nn.Linear(prev, 1))
-        self.net = nn.Sequential(*layers)  # MUST BE self.net!
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x).squeeze(-1)
@@ -168,7 +185,7 @@ class ArmActor(nn.Module):
             layers += [nn.Linear(prev, h), nn.ELU()]  # NO LayerNorm!
             prev = h
         layers.append(nn.Linear(prev, num_act))
-        self.net = nn.Sequential(*layers)  # MUST BE self.net!
+        self.net = nn.Sequential(*layers)
         self.log_std = nn.Parameter(torch.zeros(num_act))
 
     def forward(self, x):
@@ -186,7 +203,7 @@ class ArmCritic(nn.Module):
             layers += [nn.Linear(prev, h), nn.ELU()]  # NO LayerNorm!
             prev = h
         layers.append(nn.Linear(prev, 1))
-        self.net = nn.Sequential(*layers)  # MUST BE self.net!
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x).squeeze(-1)
@@ -197,8 +214,8 @@ class DualActorCritic(nn.Module):
     Dual Actor-Critic - MATCHES TRAINING EXACTLY
 
     Architecture:
-    - LocoActor (57→12) + LocoCritic (57→1)
-    - ArmActor (52→5)   + ArmCritic (52→1)  ← NO FINGERS!
+    - LocoActor (57→12) + LocoCritic (57→1) [with LayerNorm]
+    - ArmActor (52→5)   + ArmCritic (52→1)  [NO LayerNorm, NO FINGERS!]
     """
 
     def __init__(self, loco_obs=57, arm_obs=52, loco_act=12, arm_act=5):
@@ -225,7 +242,7 @@ class DualActorCritic(nn.Module):
 
 
 # ============================================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (MUST MATCH TRAINING)
 # ============================================================================
 
 def quat_to_euler_xyz(quat: torch.Tensor) -> torch.Tensor:
@@ -256,7 +273,7 @@ def compute_orientation_error(palm_quat: torch.Tensor, target_dir: torch.Tensor 
     forward = get_palm_forward(palm_quat)
     if target_dir is None:
         target_dir = torch.zeros_like(forward)
-        target_dir[:, 2] = -1.0  # Default: palm down
+        target_dir[:, 2] = -1.0
     dot = (forward * target_dir).sum(dim=-1)
     dot = torch.clamp(dot, -1.0, 1.0)
     return torch.acos(dot)
@@ -398,7 +415,7 @@ class PlayEnv(DirectRLEnv):
 
         self.phase = torch.zeros(self.num_envs, device=self.device)
 
-        # Action history
+        # Action history (MUST MATCH TRAINING - includes _prev_prev for jerk)
         self.prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
         self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
         self._prev_leg_actions = torch.zeros(self.num_envs, 12, device=self.device)
@@ -406,18 +423,34 @@ class PlayEnv(DirectRLEnv):
 
         self.prev_ee_pos = torch.zeros(self.num_envs, 3, device=self.device)
 
+        # Reach thresholds - MATCH TRAINING LEVEL 12
+        self.reach_pos_threshold = args.reach_threshold  # 0.05 default
+        self.reach_orient_threshold = args.orient_threshold  # 1.0 rad default (Level 12)
+        self.orient_sample_range = args.orient_range  # 1.4 rad default (Level 12 = ~80°)
+
         # Stats
         self.total_reaches = 0
-        self.reach_threshold = 0.05  # Position threshold for reach
         self.already_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # Diagnostic counters
+        self.pos_close_count = 0  # Times position was within threshold
+        self.orient_close_count = 0  # Times orientation was within threshold
+        self.both_close_count = 0  # Times both were within threshold
 
         # Mode config
         self.mode_cfg = MODE_CONFIGS[args.mode]
 
-        print(f"[PlayEnv] Leg joints: {len(self.leg_idx)}")
-        print(f"[PlayEnv] Arm joints: {len(self.arm_idx)}")
-        print(f"[PlayEnv] Finger joints: {len(self.finger_idx)} (FIXED OPEN)")
-        print(f"[PlayEnv] Palm body idx: {self.palm_idx}")
+        print(f"\n[PlayEnv] Configuration:")
+        print(f"  Leg joints: {len(self.leg_idx)}")
+        print(f"  Arm joints: {len(self.arm_idx)}")
+        print(f"  Finger joints: {len(self.finger_idx)} (FIXED OPEN)")
+        print(f"  Palm body idx: {self.palm_idx}")
+        print(f"  Reach pos threshold: {self.reach_pos_threshold:.3f}m")
+        print(
+            f"  Reach orient threshold: {self.reach_orient_threshold:.2f} rad ({np.degrees(self.reach_orient_threshold):.0f}°)")
+        print(
+            f"  Orient sample range: {self.orient_sample_range:.2f} rad ({np.degrees(self.orient_sample_range):.0f}°)")
+        print(f"  Deterministic: {use_deterministic}")
 
         # Markers
         self._markers_initialized = False
@@ -435,7 +468,7 @@ class PlayEnv(DirectRLEnv):
                 markers={
                     "sphere": sim_utils.SphereCfg(
                         radius=0.05,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),  # Green
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
                     ),
                 },
             )
@@ -446,7 +479,7 @@ class PlayEnv(DirectRLEnv):
                 markers={
                     "sphere": sim_utils.SphereCfg(
                         radius=0.03,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),  # Red
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                     ),
                 },
             )
@@ -470,7 +503,7 @@ class PlayEnv(DirectRLEnv):
         self.vel_cmd[env_ids, 2] = torch.empty(n, device=self.device).uniform_(*cfg["vyaw_range"])
         self.height_cmd[env_ids] = HEIGHT_DEFAULT
 
-        # Target position
+        # Target position (MATCH TRAINING absolute sampling)
         ws = cfg["workspace_radius"]
         azimuth = torch.empty(n, device=self.device).uniform_(-0.3, 1.2)
         elevation = torch.empty(n, device=self.device).uniform_(-0.4, 0.6)
@@ -484,9 +517,9 @@ class PlayEnv(DirectRLEnv):
         self.target_pos_body[env_ids, 1] = y.clamp(-0.55, 0.10)
         self.target_pos_body[env_ids, 2] = z.clamp(-0.25, 0.55)
 
-        # Target orientation (variable - sample from cone around down)
-        orient_range = 0.7  # ~40° cone
-        theta = torch.empty(n, device=self.device).uniform_(0, orient_range)
+        # Target orientation - variable, sample from cone around -Z (down)
+        # MATCH TRAINING Level 12: orient_sample_range = 1.4 rad (~80°)
+        theta = torch.empty(n, device=self.device).uniform_(0, self.orient_sample_range)
         phi = torch.empty(n, device=self.device).uniform_(0, 2 * np.pi)
 
         dir_x = torch.sin(theta) * torch.cos(phi)
@@ -500,6 +533,7 @@ class PlayEnv(DirectRLEnv):
         self.already_reached[env_ids] = False
 
     def get_loco_obs(self) -> torch.Tensor:
+        """MUST MATCH TRAINING EXACTLY - 57 dims"""
         robot = self.robot
         quat = robot.data.root_quat_w
         lin_vel_b = quat_apply_inverse(quat, robot.data.root_lin_vel_w)
@@ -521,6 +555,10 @@ class PlayEnv(DirectRLEnv):
         return obs.clamp(-10, 10).nan_to_num()
 
     def get_arm_obs(self) -> torch.Tensor:
+        """MUST MATCH TRAINING EXACTLY - 52 dims
+
+        FIX: target_reached now includes orientation check to match training!
+        """
         robot = self.robot
         root_pos = robot.data.root_pos_w
         root_quat = robot.data.root_quat_w
@@ -546,9 +584,14 @@ class PlayEnv(DirectRLEnv):
         target_body = self.target_pos_body
         pos_error = target_body - ee_body
         pos_dist = pos_error.norm(dim=-1, keepdim=True) / 0.5
+
+        # Orientation error - MATCH TRAINING: uses target_orient_body
         orient_err = compute_orientation_error(palm_quat, self.target_orient_body).unsqueeze(-1) / np.pi
 
-        target_reached = (dist_to_target < self.reach_threshold).float()
+        # FIX: target_reached MUST include orientation check like training!
+        # Training Level 12: pos_threshold=0.04, orient_threshold=1.0
+        target_reached = ((dist_to_target < self.reach_pos_threshold) &
+                          (orient_err * np.pi < self.reach_orient_threshold)).float()
 
         current_height = root_pos[:, 2:3]
         height_cmd_obs = self.height_cmd.unsqueeze(-1)
@@ -556,7 +599,7 @@ class PlayEnv(DirectRLEnv):
 
         estimated_load = torch.zeros(self.num_envs, 3, device=self.device)
         object_in_hand_obs = torch.zeros(self.num_envs, 1, device=self.device)
-        target_orient_obs = self.target_orient_body
+        target_orient_obs = self.target_orient_body  # [N, 3]
 
         lin_vel_b = quat_apply_inverse(root_quat, robot.data.root_lin_vel_w)
         ang_vel_b = quat_apply_inverse(root_quat, robot.data.root_ang_vel_w)
@@ -588,14 +631,25 @@ class PlayEnv(DirectRLEnv):
         self.robot.set_joint_position_target(target_pos)
         self.phase = (self.phase + GAIT_FREQUENCY * 0.02) % 1.0
 
-        # Check reaches
+        # Check reaches - MATCH TRAINING: position + orientation
         ee_pos, palm_quat = self._compute_palm_ee()
         root_pos = self.robot.data.root_pos_w
         root_quat = self.robot.data.root_quat_w
         target_world = root_pos + quat_apply(root_quat, self.target_pos_body)
         dist = torch.norm(ee_pos - target_world, dim=-1)
+        orient_err = compute_orientation_error(palm_quat, self.target_orient_body)
 
-        reached = dist < self.reach_threshold
+        # Diagnostic tracking
+        pos_close = dist < self.reach_pos_threshold
+        orient_close = orient_err < self.reach_orient_threshold
+        both_close = pos_close & orient_close
+
+        self.pos_close_count += pos_close.sum().item()
+        self.orient_close_count += orient_close.sum().item()
+        self.both_close_count += both_close.sum().item()
+
+        # Reach detection: BOTH position AND orientation (like training)
+        reached = both_close
         new_reaches = reached & ~self.already_reached
         if new_reaches.any():
             reached_ids = torch.where(new_reaches)[0]
@@ -669,18 +723,21 @@ class PlayEnv(DirectRLEnv):
 def main():
     device = "cuda:0"
 
-    print(f"\n{'=' * 60}")
-    print("ULC G1 STAGE 6 SIMPLIFIED - PLAY")
-    print(f"{'=' * 60}")
+    print(f"\n{'=' * 70}")
+    print("ULC G1 STAGE 6 SIMPLIFIED - PLAY V2 (FIXED)")
+    print(f"{'=' * 70}")
     print(f"  Checkpoint: {args.checkpoint}")
     print(f"  Mode: {args.mode}")
     print(f"  Description: {MODE_CONFIGS[args.mode]['description']}")
-    print(f"{'=' * 60}\n")
+    print(f"  Deterministic: {use_deterministic}")
+    print(f"  Num envs: {args.num_envs}")
+    print(f"  Reach threshold: pos={args.reach_threshold}m, orient={args.orient_threshold:.1f}rad")
+    print(f"{'=' * 70}\n")
 
     # Load checkpoint
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
 
-    print(f"\n[Checkpoint Info]")
+    print(f"[Checkpoint Info]")
     if "best_reward" in checkpoint:
         print(f"  Best reward: {checkpoint['best_reward']:.2f}")
     if "iteration" in checkpoint:
@@ -694,6 +751,9 @@ def main():
     cfg = PlayEnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = PlayEnv(cfg)
+
+    # Verify num_envs
+    print(f"\n[INFO] Actual num_envs: {env.num_envs}")
 
     # Create network - MUST MATCH TRAINING!
     net = DualActorCritic(loco_obs=57, arm_obs=52, loco_act=12, arm_act=5).to(device)
@@ -725,13 +785,27 @@ def main():
 
     net.load_state_dict(state_dict, strict=True)
     net.eval()
-    print(f"[INFO] Loaded checkpoint successfully\n")
+
+    # Print loaded std values for diagnostic
+    loco_std = net.loco_actor.log_std.clamp(-2, 1).exp()
+    arm_std = net.arm_actor.log_std.clamp(-2, 1).exp()
+    print(f"\n[Loaded Std Values]")
+    print(f"  Loco log_std (raw): {net.loco_actor.log_std.data.mean().item():.4f}")
+    print(f"  Loco std (clamped): {loco_std.mean().item():.4f}")
+    print(f"  Arm log_std (raw):  {net.arm_actor.log_std.data.mean().item():.4f}")
+    print(f"  Arm std (clamped):  {arm_std.mean().item():.4f}")
+    if not use_deterministic:
+        print(
+            f"  ⚠️  Stochastic mode: {loco_std.mean().item() * 100:.1f}% noise on loco, {arm_std.mean().item() * 100:.1f}% noise on arm")
+
+    print(f"\n[INFO] Loaded checkpoint successfully\n")
 
     # Run
     obs, _ = env.reset()
     prev_reaches = 0
 
     print(f"[Play] Starting {args.steps} steps in '{args.mode}' mode...")
+    print(f"       {'DETERMINISTIC' if use_deterministic else 'STOCHASTIC'} actions")
     print(f"       Press Ctrl+C to stop\n")
 
     with torch.no_grad():
@@ -739,43 +813,71 @@ def main():
             loco_obs = env.get_loco_obs()
             arm_obs = env.get_arm_obs()
 
-            leg_actions, arm_actions = net.get_actions(loco_obs, arm_obs, deterministic=False)
+            leg_actions, arm_actions = net.get_actions(loco_obs, arm_obs, deterministic=use_deterministic)
             actions = torch.cat([leg_actions, arm_actions], dim=-1)
 
             obs, reward, terminated, truncated, info = env.step(actions)
 
             # Report reaches
             if env.total_reaches > prev_reaches:
-                print(f"[Step {step:4d}] 🎯 REACH! Total: {env.total_reaches}")
+                ee_pos, palm_quat = env._compute_palm_ee()
+                root_pos = env.robot.data.root_pos_w
+                root_quat = env.robot.data.root_quat_w
+                target_world = root_pos + quat_apply(root_quat, env.target_pos_body)
+                dist = torch.norm(ee_pos - target_world, dim=-1).min().item()
+                orient_err = compute_orientation_error(palm_quat, env.target_orient_body).min().item()
+                print(f"[Step {step:4d}] 🎯 REACH! Total: {env.total_reaches} "
+                      f"(dist={dist:.3f}m, orient_err={np.degrees(orient_err):.1f}°)")
                 prev_reaches = env.total_reaches
 
-            # Resample commands periodically
+            # Resample commands periodically (for variety)
             if step > 0 and step % 500 == 0:
                 env._sample_commands(torch.arange(env.num_envs, device=device))
 
             # Progress report
             if step > 0 and step % 200 == 0:
                 height = env.robot.data.root_pos_w[:, 2].mean().item()
-                vx = env.robot.data.root_lin_vel_w[:, 0].mean().item()
-                ee_pos, _ = env._compute_palm_ee()
-                root_pos = env.robot.data.root_pos_w
                 root_quat = env.robot.data.root_quat_w
+                lin_vel_b = quat_apply_inverse(root_quat, env.robot.data.root_lin_vel_w)
+                vx_body = lin_vel_b[:, 0].mean().item()
+                cmd_vx = env.vel_cmd[:, 0].mean().item()
+
+                ee_pos, palm_quat = env._compute_palm_ee()
+                root_pos = env.robot.data.root_pos_w
                 ee_body = quat_apply_inverse(root_quat, ee_pos - root_pos)
-                ee_dist = (ee_body - env.target_pos_body).norm(dim=-1).mean().item()
+                target_world = root_pos + quat_apply(root_quat, env.target_pos_body)
+                ee_dist = torch.norm(ee_pos - target_world, dim=-1).mean().item()
+                orient_err = compute_orientation_error(palm_quat, env.target_orient_body).mean().item()
+
+                total_steps_envs = step * env.num_envs
+                pos_pct = env.pos_close_count / max(total_steps_envs, 1) * 100
+                orient_pct = env.orient_close_count / max(total_steps_envs, 1) * 100
+                both_pct = env.both_close_count / max(total_steps_envs, 1) * 100
 
                 print(
                     f"[Step {step:4d}] "
                     f"H={height:.3f}m | "
-                    f"Vx={vx:.2f}m/s | "
-                    f"EE_dist={ee_dist:.3f}m | "
-                    f"Reaches={env.total_reaches}"
+                    f"Vx_body={vx_body:+.2f} (cmd={cmd_vx:.2f}) | "
+                    f"EE={ee_dist:.3f}m | "
+                    f"Orient={np.degrees(orient_err):.1f}° | "
+                    f"Reaches={env.total_reaches} | "
+                    f"Close%: pos={pos_pct:.1f} orient={orient_pct:.1f} both={both_pct:.1f}"
                 )
 
-    print(f"\n{'=' * 60}")
+    # Final summary
+    total_steps_envs = args.steps * env.num_envs
+    print(f"\n{'=' * 70}")
     print("PLAY COMPLETE")
-    print(f"{'=' * 60}")
+    print(f"{'=' * 70}")
     print(f"  Total reaches: {env.total_reaches}")
-    print(f"{'=' * 60}\n")
+    print(f"  Reach rate: {env.total_reaches / args.steps * 1000:.1f} per 1K steps")
+    print(f"  Diagnostic breakdown:")
+    print(
+        f"    Position close (<{args.reach_threshold}m): {env.pos_close_count / max(total_steps_envs, 1) * 100:.1f}% of time")
+    print(
+        f"    Orient close (<{np.degrees(args.orient_threshold):.0f}°): {env.orient_close_count / max(total_steps_envs, 1) * 100:.1f}% of time")
+    print(f"    BOTH close (=reach): {env.both_close_count / max(total_steps_envs, 1) * 100:.1f}% of time")
+    print(f"{'=' * 70}\n")
 
     env.close()
     simulation_app.close()
