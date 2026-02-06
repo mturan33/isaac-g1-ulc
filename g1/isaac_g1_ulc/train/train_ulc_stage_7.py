@@ -658,7 +658,7 @@ def create_env(num_envs, device):
         observation_space = 57
         state_space = 0
         sim = sim_utils.SimulationCfg(dt=1/200, render_interval=4)
-        scene = SceneCfg(num_envs=num_envs, env_spacing=2.5)
+        scene = SceneCfg(num_envs=num_envs, env_spacing=4.0)
 
     class Stage7AntiGamingEnv(DirectRLEnv):
         """Stage 7 environment with anti-gaming mechanisms"""
