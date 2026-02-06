@@ -265,8 +265,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="ULC G1 Stage 7: Anti-Gaming Arm Reaching")
     parser.add_argument("--num_envs", type=int, default=4096)
     parser.add_argument("--max_iterations", type=int, default=15000)
-    parser.add_argument("--stage6_checkpoint", type=str, required=True,
-                        help="Stage 6 checkpoint (loco weights will be frozen)")
+    parser.add_argument("--stage6_checkpoint", type=str, default=None,
+                        help="Stage 6 checkpoint (loco weights will be frozen). Required for fresh start.")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from Stage 7 checkpoint")
     parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage7_antigaming")
@@ -1537,6 +1537,7 @@ def train():
     net = DualActorCritic(loco_obs=57, arm_obs=55, loco_act=12, arm_act=5).to(device)
 
     start_iter = 0
+    best_reward_resume = float('-inf')
 
     if args_cli.checkpoint:
         # Resume Stage 7 training
@@ -1544,10 +1545,14 @@ def train():
         ckpt = torch.load(args_cli.checkpoint, map_location=device, weights_only=False)
         net.load_state_dict(ckpt["model"])
         start_iter = ckpt.get("iteration", 0)
+        best_reward_resume = ckpt.get("best_reward", float('-inf'))
         env.curr_level = ckpt.get("curriculum_level", 0)
+        env.total_reaches = ckpt.get("total_reaches", 0)
         env.validated_reaches = ckpt.get("validated_reaches", 0)
         env.timed_out_targets = ckpt.get("timed_out_targets", 0)
         env.total_attempts = ckpt.get("total_attempts", 0)
+        print(f"   Resumed at iter={start_iter}, level={env.curr_level}, "
+              f"VR={env.validated_reaches}, TO={env.timed_out_targets}, best={best_reward_resume:.2f}")
 
         # Re-freeze loco after loading
         for name, p in net.named_parameters():
@@ -1555,6 +1560,8 @@ def train():
                 p.requires_grad = False
     else:
         # Fresh Stage 7 from Stage 6 checkpoint
+        if args_cli.stage6_checkpoint is None:
+            raise ValueError("--stage6_checkpoint is required for fresh Stage 7 start (not resuming)")
         load_stage6_and_setup(net, args_cli.stage6_checkpoint, device)
 
     ppo = DualPPO(net, device, arm_lr=3e-4)
@@ -1566,7 +1573,7 @@ def train():
 
     print(f"\n[INFO] Logging to: {log_dir}")
 
-    best_reward = float('-inf')
+    best_reward = best_reward_resume if args_cli.checkpoint else float('-inf')
 
     obs, _ = env.reset()
 
