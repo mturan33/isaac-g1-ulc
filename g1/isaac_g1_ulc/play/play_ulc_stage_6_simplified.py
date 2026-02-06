@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """
-ULC G1 Stage 6 Play Script V3
+ULC G1 Stage 6 Play Script V4
 ==============================
-Fixes from V2:
-1. Orient check OFF by default (policy didn't learn orientation)
-2. env_spacing increased to 5.0 (robots don't overlap)
-3. Position-only reach counting for accurate demo
-4. --orient_check flag to enable orientation verification
+Fixes from V3:
+1. reach_threshold 0.05 → 0.08 (matches training range 0.04-0.12)
+2. Replaced forced 500-step resample with per-env stuck detection (300 steps)
+3. Stuck detection matches training behavior (robot gets time to reach target)
+
+Previous V3 fixes (kept):
+- Orient check OFF by default
+- env_spacing 5.0
+- Position-only reach counting
 
 Usage:
     # Default: position-only reach (recommended)
-    ./isaaclab.bat -p play_ulc_stage6_v3.py \
+    ./isaaclab.bat -p play_ulc_stage6_simplified.py \
         --checkpoint logs/ulc/.../model_best.pt \
         --num_envs 4 --mode walking
 
-    # With orientation check (will have very few reaches)
-    ./isaaclab.bat -p play_ulc_stage6_v3.py \
+    # With orientation check
+    ./isaaclab.bat -p play_ulc_stage6_simplified.py \
         --checkpoint logs/ulc/.../model_best.pt \
         --num_envs 4 --mode walking --orient_check
+
+    # Stricter threshold (closer to training final level)
+    ./isaaclab.bat -p play_ulc_stage6_simplified.py \
+        --checkpoint logs/ulc/.../model_best.pt \
+        --num_envs 1 --mode standing --reach_threshold 0.05
 """
 
 from __future__ import annotations
@@ -35,8 +44,8 @@ parser.add_argument("--mode", type=str, default="walking",
                     choices=["standing", "walking", "fast", "demo"])
 parser.add_argument("--stochastic", action="store_true", default=False,
                     help="Use stochastic actions (default: deterministic)")
-parser.add_argument("--reach_threshold", type=float, default=0.05,
-                    help="Position reach threshold in meters")
+parser.add_argument("--reach_threshold", type=float, default=0.08,
+                    help="Position reach threshold in meters (training used 0.04-0.12)")
 parser.add_argument("--orient_check", action="store_true", default=False,
                     help="Enable orientation check for reaches (OFF by default)")
 parser.add_argument("--orient_threshold", type=float, default=1.5,
@@ -395,6 +404,8 @@ class PlayEnv(DirectRLEnv):
         self.already_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.pos_close_count = 0
         self.orient_close_count = 0
+        self.steps_since_resample = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.stuck_threshold = 300  # Resample if no reach after this many steps
 
         self.mode_cfg = MODE_CONFIGS[args.mode]
         self._markers_initialized = False
@@ -478,6 +489,7 @@ class PlayEnv(DirectRLEnv):
         self.target_orient_body[env_ids, 2] = -torch.cos(theta)
 
         self.already_reached[env_ids] = False
+        self.steps_since_resample[env_ids] = 0
 
     def get_loco_obs(self):
         robot = self.robot
@@ -597,6 +609,13 @@ class PlayEnv(DirectRLEnv):
             self.total_reaches += len(reached_ids)
             self.already_reached[reached_ids] = True
             self._sample_commands(reached_ids)
+
+        # Stuck detection: resample if no reach after stuck_threshold steps
+        self.steps_since_resample += 1
+        stuck = self.steps_since_resample >= self.stuck_threshold
+        if stuck.any():
+            stuck_ids = torch.where(stuck)[0]
+            self._sample_commands(stuck_ids)
 
         # Markers
         self._init_markers()
@@ -732,8 +751,7 @@ def main():
                       f"dist={dist:.3f}m orient={np.degrees(o_err):.0f}°")
                 prev_reaches = env.total_reaches
 
-            if step > 0 and step % 500 == 0:
-                env._sample_commands(torch.arange(env.num_envs, device=device))
+            # Stuck detection is now in _pre_physics_step (300 step timeout per env)
 
             if step > 0 and step % 200 == 0:
                 h = env.robot.data.root_pos_w[:, 2].mean().item()
