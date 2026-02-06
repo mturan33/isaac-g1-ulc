@@ -44,7 +44,7 @@ parser.add_argument("--mode", type=str, default="walking",
                     choices=["standing", "walking", "fast", "demo"])
 parser.add_argument("--stochastic", action="store_true", default=False,
                     help="Use stochastic actions (default: deterministic)")
-parser.add_argument("--reach_threshold", type=float, default=0.08,
+parser.add_argument("--reach_threshold", type=float, default=0.12,
                     help="Position reach threshold in meters (training used 0.04-0.12)")
 parser.add_argument("--orient_check", action="store_true", default=False,
                     help="Enable orientation check for reaches (OFF by default)")
