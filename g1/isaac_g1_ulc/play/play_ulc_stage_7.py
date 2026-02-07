@@ -90,7 +90,7 @@ app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -178,11 +178,11 @@ MODE_CONFIGS = {
 
 # Camera presets: (eye_position, target_position)
 CAMERA_PRESETS = {
-    "front_right": ((-1.2, 1.0, 1.2), (0.0, 0.0, 0.75)),
-    "front_left":  ((-1.2, -1.0, 1.2), (0.0, 0.0, 0.75)),
-    "right_side":  ((0.0, 1.5, 1.0), (0.0, 0.0, 0.75)),
-    "front":       ((-2.0, 0.0, 1.2), (0.0, 0.0, 0.75)),
-    "top":         ((0.0, 0.0, 2.5), (0.0, 0.0, 0.75)),
+    "front_right": ((-1.8, 1.3, 1.3), (0.0, 0.0, 0.65)),
+    "front_left":  ((-1.8, -1.3, 1.3), (0.0, 0.0, 0.65)),
+    "right_side":  ((0.0, 2.0, 1.1), (0.0, 0.0, 0.65)),
+    "front":       ((-2.5, 0.0, 1.3), (0.0, 0.0, 0.65)),
+    "top":         ((0.0, 0.0, 3.0), (0.0, 0.0, 0.65)),
 }
 
 
@@ -408,12 +408,28 @@ class PlaySceneCfg(InteractiveSceneCfg):
             static_friction=1.0, dynamic_friction=1.0, restitution=0.0,
         ),
     )
+    # Dome light: ambient fill from all directions
+    dome_light = AssetBaseCfg(
+        prim_path="/World/DomeLight",
+        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=1500.0),
+    )
+    # Distant light: directional sun-like light for metallic reflections
+    distant_light = AssetBaseCfg(
+        prim_path="/World/DistantLight",
+        spawn=sim_utils.DistantLightCfg(color=(1.0, 1.0, 0.95), intensity=3000.0),
+    )
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
             usd_path=G1_USD,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False, max_depenetration_velocity=10.0,
+            ),
+            # Brushed steel for LinkedIn demo video
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.45, 0.45, 0.48),
+                metallic=0.85,
+                roughness=0.4,
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
