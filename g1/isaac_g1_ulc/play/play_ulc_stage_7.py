@@ -615,7 +615,7 @@ class PlayEnv(DirectRLEnv):
             if args.mode == "showcase":
                 self.reach_pos_threshold = 0.08  # Relaxed from 0.04 to 0.08
                 self.min_displacement = 0.04     # Relaxed from 0.12 to 0.04
-                self.max_reach_steps = 100       # Shorter timeout, faster retry
+                self.max_reach_steps = 70        # 1.4s timeout, very fast retry
                 print(f"\n[PlayEnv] SHOWCASE overrides:")
                 print(f"  pos_threshold: {self.reach_pos_threshold:.3f}m (relaxed for demo)")
                 print(f"  min_displacement: {self.min_displacement:.3f}m (relaxed)")
@@ -897,23 +897,23 @@ class PlayEnv(DirectRLEnv):
             self.timed_out_targets += len(timed_out_ids)
             self._sample_commands(timed_out_ids)
 
-        # Stuck detection: if EE barely moved in last 30 steps, increment counter
+        # Stuck detection: if EE barely moved in last 15 steps, increment counter
         ee_movement = torch.norm(ee_body - self.ee_pos_history, dim=-1)
-        barely_moving = ee_movement < 0.005  # Less than 5mm in 30 steps
+        barely_moving = ee_movement < 0.008  # Less than 8mm in 15 steps
         self.stuck_counter = torch.where(
             barely_moving & ~self.already_reached,
             self.stuck_counter + 1,
             torch.zeros_like(self.stuck_counter)
         )
-        # Update history every 30 steps
-        update_history = (self.steps_since_spawn % 30 == 0)
+        # Update history every 15 steps
+        update_history = (self.steps_since_spawn % 15 == 0)
         if update_history.any():
             self.ee_pos_history[update_history] = ee_body[update_history].clone()
 
-        # If stuck for 60+ steps (2 cycles of 30) AND past 50% of max steps, resample
-        stuck_threshold = 2  # 2 cycles of barely moving
-        past_half = self.steps_since_spawn > (self.max_reach_steps // 2)
-        stuck = (self.stuck_counter >= stuck_threshold) & past_half & ~self.already_reached
+        # If stuck for 2 cycles (30 steps barely moving) AND past 40% of max steps, resample
+        stuck_threshold = 2
+        past_threshold = self.steps_since_spawn > (self.max_reach_steps * 2 // 5)
+        stuck = (self.stuck_counter >= stuck_threshold) & past_threshold & ~self.already_reached
         if stuck.any():
             stuck_ids = torch.where(stuck)[0]
             self.stuck_resample_count += len(stuck_ids)
