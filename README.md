@@ -6,7 +6,7 @@
 > If you use any part of this codebase, architecture, or methodology, citation is required.
 > Contact the author for collaboration inquiries.
 
-https://github.com/user-attachments/assets/placeholder-video-link
+[https://github.com/user-attachments/assets/placeholder-video-link](https://github.com/mturan33/isaac-g1-ulc-vlm/blob/main/g1_stage7_reaching_showcase.mp4)
 
 ---
 
