@@ -6,6 +6,8 @@
 > If you use any part of this codebase, architecture, or methodology, citation is required.
 > Contact the author for collaboration inquiries.
 
+![g1_stage7_reaching_showcase](https://github.com/user-attachments/assets/bcb24855-d711-4146-b4a5-79726106e673)
+
 [https://github.com/mturan33/isaac-g1-ulc-vlm/blob/main/g1_stage7_reaching_showcase.mp4]
 
 ---
