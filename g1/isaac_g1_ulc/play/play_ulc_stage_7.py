@@ -613,9 +613,9 @@ class PlayEnv(DirectRLEnv):
 
             # Showcase mode: relax thresholds for smoother demo
             if args.mode == "showcase":
-                self.reach_pos_threshold = 0.06  # Relaxed from 0.04 to 0.06
-                self.min_displacement = 0.05     # Relaxed from 0.12 to 0.05
-                self.max_reach_steps = 120       # Shorter timeout, faster retry
+                self.reach_pos_threshold = 0.08  # Relaxed from 0.04 to 0.08
+                self.min_displacement = 0.04     # Relaxed from 0.12 to 0.04
+                self.max_reach_steps = 100       # Shorter timeout, faster retry
                 print(f"\n[PlayEnv] SHOWCASE overrides:")
                 print(f"  pos_threshold: {self.reach_pos_threshold:.3f}m (relaxed for demo)")
                 print(f"  min_displacement: {self.min_displacement:.3f}m (relaxed)")
