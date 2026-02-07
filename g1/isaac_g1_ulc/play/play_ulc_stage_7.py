@@ -14,17 +14,22 @@ Usage:
     # Default: standing mode with anti-gaming validation
     ./isaaclab.bat -p play_ulc_stage7.py \
         --checkpoint logs/ulc/.../model_best.pt \
-        --num_envs 4 --mode standing
+        --num_envs 1 --mode standing --no_orient
+
+    # Showcase mode for video recording
+    ./isaaclab.bat -p play_ulc_stage7.py \
+        --checkpoint logs/ulc/.../model_best.pt \
+        --num_envs 1 --mode showcase --no_orient
+
+    # Record 10-second demo video
+    ./isaaclab.bat -p play_ulc_stage7.py \
+        --checkpoint logs/ulc/.../model_best.pt \
+        --num_envs 1 --mode showcase --no_orient --record --record_duration 10
 
     # Walking test
     ./isaaclab.bat -p play_ulc_stage7.py \
         --checkpoint logs/ulc/.../model_best.pt \
-        --num_envs 4 --mode walking
-
-    # Single env for visual debugging
-    ./isaaclab.bat -p play_ulc_stage7.py \
-        --checkpoint logs/ulc/.../model_best.pt \
-        --num_envs 1 --mode standing --steps 2000
+        --num_envs 1 --mode walking --no_orient
 """
 
 from __future__ import annotations
@@ -33,13 +38,15 @@ import argparse
 import torch
 import torch.nn as nn
 import numpy as np
+import os
+from datetime import datetime
 
 parser = argparse.ArgumentParser(description="ULC G1 Stage 7 Play - Anti-Gaming")
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--steps", type=int, default=3000)
 parser.add_argument("--mode", type=str, default="standing",
-                    choices=["standing", "walking", "fast", "demo"])
+                    choices=["standing", "walking", "fast", "demo", "showcase"])
 parser.add_argument("--stochastic", action="store_true", default=False,
                     help="Use stochastic actions (default: deterministic)")
 parser.add_argument("--reach_threshold", type=float, default=0.08,
@@ -49,11 +56,23 @@ parser.add_argument("--min_displacement", type=float, default=0.05,
 parser.add_argument("--max_reach_steps", type=int, default=200,
                     help="Maximum steps to reach target before timeout")
 parser.add_argument("--orient_check", action="store_true", default=False,
-                    help="Enable orientation check for reaches")
+                    help="Enable orientation check for reaches (overrides curriculum)")
+parser.add_argument("--no_orient", action="store_true", default=False,
+                    help="Force disable orientation check (overrides curriculum level)")
 parser.add_argument("--orient_threshold", type=float, default=2.0,
                     help="Orientation threshold in radians")
 parser.add_argument("--env_spacing", type=float, default=5.0,
                     help="Spacing between environments")
+# Video recording
+parser.add_argument("--record", action="store_true", default=False,
+                    help="Enable video recording")
+parser.add_argument("--record_duration", type=float, default=10.0,
+                    help="Recording duration in seconds (default: 10)")
+parser.add_argument("--fps", type=int, default=30,
+                    help="Video FPS (default: 30)")
+parser.add_argument("--camera_angle", type=str, default="front_right",
+                    choices=["front_right", "front_left", "right_side", "front", "top"],
+                    help="Camera viewing angle")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -61,6 +80,11 @@ args = parser.parse_args()
 args.headless = False
 
 use_deterministic = not args.stochastic
+
+# Showcase mode: force no_orient and 1 env
+if args.mode == "showcase":
+    args.no_orient = True
+    args.num_envs = 1
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -142,7 +166,111 @@ MODE_CONFIGS = {
         "min_target_distance": 0.12,
         "description": "Mixed demo mode"
     },
+    "showcase": {
+        "vx_range": (0.0, 0.0),
+        "vy_range": (0.0, 0.0),
+        "vyaw_range": (0.0, 0.0),
+        "workspace_radius": (0.20, 0.35),
+        "min_target_distance": 0.08,
+        "description": "Showcase: close targets, fast retry, no timeout stalls"
+    },
 }
+
+# Camera presets: (eye_position, target_position)
+CAMERA_PRESETS = {
+    "front_right": ((-1.2, 1.0, 1.2), (0.0, 0.0, 0.75)),
+    "front_left":  ((-1.2, -1.0, 1.2), (0.0, 0.0, 0.75)),
+    "right_side":  ((0.0, 1.5, 1.0), (0.0, 0.0, 0.75)),
+    "front":       ((-2.0, 0.0, 1.2), (0.0, 0.0, 0.75)),
+    "top":         ((0.0, 0.0, 2.5), (0.0, 0.0, 0.75)),
+}
+
+
+# ============================================================================
+# VIDEO RECORDING
+# ============================================================================
+
+class FrameRecorder:
+    """Captures viewport frames and converts to MP4 via ffmpeg."""
+
+    def __init__(self, output_dir: str, fps: int = 30):
+        self.output_dir = output_dir
+        self.fps = fps
+        self.frame_dir = os.path.join(output_dir, "frames")
+        os.makedirs(self.frame_dir, exist_ok=True)
+        self.frame_count = 0
+
+        from omni.kit.viewport.utility import get_active_viewport
+        self.viewport = get_active_viewport()
+
+    def capture_frame(self):
+        from omni.kit.viewport.utility import capture_viewport_to_file
+        frame_path = os.path.join(self.frame_dir, f"frame_{self.frame_count:06d}.png")
+        capture_viewport_to_file(self.viewport, frame_path)
+        self.frame_count += 1
+
+    def finalize_video(self, output_name: str = "stage7_reaching_demo.mp4"):
+        import subprocess
+        import shutil
+
+        output_path = os.path.join(self.output_dir, output_name)
+        frame_pattern = os.path.join(self.frame_dir, "frame_%06d.png")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", str(self.fps),
+            "-i", frame_pattern,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "18",
+            output_path
+        ]
+
+        print(f"\n[VIDEO] {self.frame_count} frame -> MP4 donusturuluyor...")
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            print(f"[VIDEO] Kaydedildi: {output_path}")
+            shutil.rmtree(self.frame_dir)
+            print(f"[VIDEO] Frame'ler temizlendi")
+            return output_path
+        except subprocess.CalledProcessError as e:
+            print(f"[VIDEO] ffmpeg hatasi: {e}")
+            print(f"[VIDEO] Frame'ler: {self.frame_dir}")
+            return None
+        except FileNotFoundError:
+            print(f"[VIDEO] ffmpeg bulunamadi! Frame'ler: {self.frame_dir}")
+            return None
+
+# ============================================================================
+# TRAINING CURRICULUM LEVELS (must match train_ulc_stage_7.py EXACTLY)
+# Used to set correct thresholds for observation computation
+# ============================================================================
+TRAINING_CURRICULUM = [
+    # Level 0: Stand+Reach easy
+    {"pos_threshold": 0.10, "min_target_distance": 0.10, "min_displacement": 0.05,
+     "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.18, 0.30)},
+    # Level 1
+    {"pos_threshold": 0.08, "min_target_distance": 0.12, "min_displacement": 0.07,
+     "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.18, 0.33)},
+    # Level 2
+    {"pos_threshold": 0.07, "min_target_distance": 0.14, "min_displacement": 0.08,
+     "max_reach_steps": 170, "use_orientation": False, "workspace_radius": (0.18, 0.36)},
+    # Level 3
+    {"pos_threshold": 0.06, "min_target_distance": 0.15, "min_displacement": 0.10,
+     "max_reach_steps": 160, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 4: Walk+Reach slow
+    {"pos_threshold": 0.06, "min_target_distance": 0.15, "min_displacement": 0.10,
+     "max_reach_steps": 160, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 5: Walk+Reach normal
+    {"pos_threshold": 0.05, "min_target_distance": 0.16, "min_displacement": 0.11,
+     "max_reach_steps": 150, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 6: Walk+Orient
+    {"pos_threshold": 0.05, "min_target_distance": 0.16, "min_displacement": 0.11,
+     "max_reach_steps": 150, "orient_threshold": 2.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Level 7: FINAL
+    {"pos_threshold": 0.04, "min_target_distance": 0.18, "min_displacement": 0.12,
+     "max_reach_steps": 150, "orient_threshold": 2.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+]
 
 
 # ============================================================================
@@ -404,12 +532,23 @@ class PlayEnv(DirectRLEnv):
         self.steps_since_spawn = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.initial_dist = torch.zeros(self.num_envs, device=self.device)
 
-        # Config
+        # Stuck detection
+        self.ee_pos_history = torch.zeros(self.num_envs, 3, device=self.device)
+        self.stuck_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.stuck_resample_count = 0
+
+        # Config - will be overridden by set_curriculum_level() from checkpoint
         self.reach_pos_threshold = args.reach_threshold
         self.min_displacement = args.min_displacement
         self.max_reach_steps = args.max_reach_steps
         self.use_orient_check = args.orient_check
         self.orient_threshold = args.orient_threshold
+        self.curriculum_level = 0  # Will be set from checkpoint
+
+        # Training-matched threshold for observation computation
+        # This is the pos_threshold from the training curriculum level
+        # CRITICAL: must match training so target_reached obs is consistent
+        self.obs_pos_threshold = args.reach_threshold  # Default, overridden by set_curriculum_level
 
         # Stats
         self.total_reaches = 0
@@ -420,17 +559,69 @@ class PlayEnv(DirectRLEnv):
         self.reach_distances = []
         self.reach_displacements = []
 
+        # Per-step reach info for logging (stores PRE-resample values)
+        self.last_reach_dists = []
+        self.last_reach_disps = []
+        self.last_reach_count = 0
+
         self.mode_cfg = MODE_CONFIGS[args.mode]
         self._markers_initialized = False
 
         print(f"\n[PlayEnv Stage 7] Configuration:")
         print(f"  Envs: {self.num_envs}, Spacing: {args.env_spacing}m")
         print(f"  Mode: {args.mode} ({self.mode_cfg['description']})")
-        print(f"  Pos threshold: {self.reach_pos_threshold:.3f}m")
+        print(f"  CLI Pos threshold: {self.reach_pos_threshold:.3f}m")
         print(f"  Min displacement: {self.min_displacement:.3f}m")
         print(f"  Max reach steps: {self.max_reach_steps}")
         print(f"  Orient check: {self.use_orient_check}")
         print(f"  Deterministic: {use_deterministic}")
+
+    def set_curriculum_level(self, level):
+        """Set thresholds from training curriculum level to match training obs exactly."""
+        self.curriculum_level = level
+        if level < len(TRAINING_CURRICULUM):
+            lv = TRAINING_CURRICULUM[level]
+            # Use training curriculum's pos_threshold for observation computation
+            self.obs_pos_threshold = lv["pos_threshold"]
+            # Also use training thresholds for reach validation
+            self.reach_pos_threshold = lv["pos_threshold"]
+            self.min_displacement = lv["min_displacement"]
+            self.max_reach_steps = lv["max_reach_steps"]
+            self.orient_threshold = lv.get("orient_threshold", 2.0)
+            # Update mode workspace/distance from curriculum
+            self.mode_cfg["min_target_distance"] = lv["min_target_distance"]
+            self.mode_cfg["workspace_radius"] = lv["workspace_radius"]
+
+            # Orientation check: CLI flags override curriculum
+            if args.no_orient:
+                self.use_orient_check = False
+                print(f"\n[PlayEnv] --no_orient: Orientation check DISABLED (CLI override)")
+            elif args.orient_check:
+                self.use_orient_check = True
+                print(f"\n[PlayEnv] --orient_check: Orientation check ENABLED (CLI override)")
+            else:
+                self.use_orient_check = lv.get("use_orientation", False)
+
+            print(f"\n[PlayEnv] Loaded training curriculum Level {level}:")
+            print(f"  pos_threshold: {self.reach_pos_threshold:.3f}m (used for obs AND reach check)")
+            print(f"  min_displacement: {self.min_displacement:.3f}m")
+            print(f"  max_reach_steps: {self.max_reach_steps}")
+            print(f"  min_target_distance: {lv['min_target_distance']:.3f}m")
+            print(f"  workspace_radius: {lv['workspace_radius']}")
+            print(f"  use_orientation: {self.use_orient_check} (curriculum={lv.get('use_orientation', False)})")
+            print(f"  orient_threshold: {self.orient_threshold:.2f} rad")
+
+            # Showcase mode: relax thresholds for smoother demo
+            if args.mode == "showcase":
+                self.reach_pos_threshold = 0.06  # Relaxed from 0.04 to 0.06
+                self.min_displacement = 0.05     # Relaxed from 0.12 to 0.05
+                self.max_reach_steps = 120       # Shorter timeout, faster retry
+                print(f"\n[PlayEnv] SHOWCASE overrides:")
+                print(f"  pos_threshold: {self.reach_pos_threshold:.3f}m (relaxed for demo)")
+                print(f"  min_displacement: {self.min_displacement:.3f}m (relaxed)")
+                print(f"  max_reach_steps: {self.max_reach_steps} (faster retry)")
+        else:
+            print(f"\n[PlayEnv] WARNING: Level {level} not in curriculum, using CLI args")
 
     @property
     def robot(self):
@@ -581,8 +772,10 @@ class PlayEnv(DirectRLEnv):
         pos_dist = pos_error.norm(dim=-1, keepdim=True) / 0.5
         orient_err = compute_orientation_error(palm_quat, self.target_orient_body).unsqueeze(-1) / np.pi
 
+        # CRITICAL: Use obs_pos_threshold (from training curriculum level) not CLI arg
+        # This ensures target_reached observation matches what the policy was trained with
         orient_threshold = self.orient_threshold if self.use_orient_check else 1.0
-        target_reached = ((dist_to_target < self.reach_pos_threshold) &
+        target_reached = ((dist_to_target < self.obs_pos_threshold) &
                          (orient_err * np.pi < orient_threshold)).float()
 
         current_height = root_pos[:, 2:3]
@@ -641,16 +834,28 @@ class PlayEnv(DirectRLEnv):
         dist = torch.norm(ee_pos - target_world, dim=-1)
 
         # Condition 1: Position close
-        pos_close = dist < self.reach_pos_threshold
+        pos_only_close = dist < self.reach_pos_threshold
+        pos_close = pos_only_close.clone()
 
         # Condition 1b: Optional orientation
+        orient_err_val = compute_orientation_error(palm_quat, self.target_orient_body)
         if self.use_orient_check:
-            orient_err = compute_orientation_error(palm_quat, self.target_orient_body)
-            pos_close = pos_close & (orient_err < self.orient_threshold)
+            orient_ok = orient_err_val < self.orient_threshold
+            pos_close = pos_close & orient_ok
 
-        # Track position-only reaches (for comparison)
-        pos_only_new = pos_close & ~self.already_reached
+        # Track TRUE position-only reaches (ignoring orientation) for comparison
+        pos_only_new = pos_only_close & ~self.already_reached
         self.pos_only_reaches += pos_only_new.sum().item()
+
+        # Debug: Log when position is close but orientation fails
+        pos_but_not_orient = pos_only_close & ~pos_close
+        if pos_but_not_orient.any() and self.use_orient_check:
+            fail_ids = torch.where(pos_but_not_orient)[0]
+            for idx in fail_ids:
+                if self.steps_since_spawn[idx] % 50 == 0:  # Don't spam
+                    print(f"  [DEBUG] Env {idx.item()}: pos={dist[idx]:.3f}m OK, "
+                          f"orient_err={orient_err_val[idx]:.2f} rad > thresh={self.orient_threshold:.2f} "
+                          f"(step_since_spawn={self.steps_since_spawn[idx]})")
 
         # Condition 2: Displacement
         ee_displacement = torch.norm(ee_body - self.ee_pos_at_spawn, dim=-1)
@@ -663,15 +868,26 @@ class PlayEnv(DirectRLEnv):
         validated_reach = pos_close & moved_enough & within_time
         new_reaches = validated_reach & ~self.already_reached
 
+        # Clear per-step reach info
+        self.last_reach_dists = []
+        self.last_reach_disps = []
+        self.last_reach_count = 0
+
         if new_reaches.any():
             reached_ids = torch.where(new_reaches)[0]
             self.total_reaches += len(reached_ids)
             self.validated_reaches += len(reached_ids)
-            # Record stats
+            self.last_reach_count = len(reached_ids)
+            # Record stats BEFORE resample (pre-resample values = actual reach performance)
             for idx in reached_ids:
-                self.reach_distances.append(dist[idx].item())
-                self.reach_displacements.append(ee_displacement[idx].item())
+                d = dist[idx].item()
+                disp = ee_displacement[idx].item()
+                self.reach_distances.append(d)
+                self.reach_displacements.append(disp)
+                self.last_reach_dists.append(d)
+                self.last_reach_disps.append(disp)
             self.already_reached[reached_ids] = True
+            # Resample AFTER recording stats
             self._sample_commands(reached_ids)
 
         # Handle timeouts
@@ -680,6 +896,29 @@ class PlayEnv(DirectRLEnv):
             timed_out_ids = torch.where(timed_out)[0]
             self.timed_out_targets += len(timed_out_ids)
             self._sample_commands(timed_out_ids)
+
+        # Stuck detection: if EE barely moved in last 30 steps, increment counter
+        ee_movement = torch.norm(ee_body - self.ee_pos_history, dim=-1)
+        barely_moving = ee_movement < 0.005  # Less than 5mm in 30 steps
+        self.stuck_counter = torch.where(
+            barely_moving & ~self.already_reached,
+            self.stuck_counter + 1,
+            torch.zeros_like(self.stuck_counter)
+        )
+        # Update history every 30 steps
+        update_history = (self.steps_since_spawn % 30 == 0)
+        if update_history.any():
+            self.ee_pos_history[update_history] = ee_body[update_history].clone()
+
+        # If stuck for 60+ steps (2 cycles of 30) AND past 50% of max steps, resample
+        stuck_threshold = 2  # 2 cycles of barely moving
+        past_half = self.steps_since_spawn > (self.max_reach_steps // 2)
+        stuck = (self.stuck_counter >= stuck_threshold) & past_half & ~self.already_reached
+        if stuck.any():
+            stuck_ids = torch.where(stuck)[0]
+            self.stuck_resample_count += len(stuck_ids)
+            self._sample_commands(stuck_ids)
+            self.stuck_counter[stuck_ids] = 0
 
         # Markers
         self._init_markers()
@@ -740,7 +979,10 @@ def main():
     device = "cuda:0"
 
     print(f"\n{'=' * 70}")
-    print("ULC G1 STAGE 7 - ANTI-GAMING PLAY")
+    if args.record:
+        print("ULC G1 STAGE 7 - VIDEO RECORDING")
+    else:
+        print("ULC G1 STAGE 7 - ANTI-GAMING PLAY")
     print(f"{'=' * 70}")
     print(f"  Checkpoint: {args.checkpoint}")
     print(f"  Mode: {args.mode} | {MODE_CONFIGS[args.mode]['description']}")
@@ -748,20 +990,29 @@ def main():
     print(f"  Min displacement: {args.min_displacement}m")
     print(f"  Max reach steps: {args.max_reach_steps}")
     print(f"  Deterministic: {use_deterministic}")
+    if args.record:
+        print(f"  RECORDING: {args.record_duration}s @ {args.fps}fps")
+        print(f"  Camera: {args.camera_angle}")
     print(f"{'=' * 70}\n")
 
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
 
     print(f"[Checkpoint]")
+    ckpt_level = 0
     for key in ["best_reward", "iteration", "curriculum_level", "total_reaches",
                 "validated_reaches", "timed_out_targets"]:
         if key in checkpoint:
             print(f"  {key}: {checkpoint[key]}")
+            if key == "curriculum_level":
+                ckpt_level = checkpoint[key]
 
     cfg = PlayEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.scene.env_spacing = args.env_spacing
     env = PlayEnv(cfg)
+
+    # CRITICAL: Set curriculum level from checkpoint so thresholds match training
+    env.set_curriculum_level(ckpt_level)
 
     net = DualActorCritic(loco_obs=57, arm_obs=55, loco_act=12, arm_act=5).to(device)
 
@@ -785,10 +1036,37 @@ def main():
     arm_std = net.arm_actor.log_std.clamp(-2, 1).exp().mean().item()
     print(f"[Std] Arm: {arm_std:.4f}")
 
+    # Camera setup
+    from isaacsim.core.utils.viewports import set_camera_view
+    eye, target_cam = CAMERA_PRESETS[args.camera_angle]
+    set_camera_view(eye=eye, target=target_cam)
+    print(f"[Camera] {args.camera_angle}: eye={eye}, target={target_cam}")
+
+    # Video recorder setup
+    recorder = None
+    if args.record:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        record_dir = os.path.join(os.getcwd(), "recordings", f"stage7_{timestamp}")
+        recorder = FrameRecorder(record_dir, fps=args.fps)
+        # Override steps to match recording duration
+        env_dt = 0.02  # 4 decimation * 1/200 physics dt
+        total_steps = int(args.record_duration / env_dt)
+        args.steps = total_steps
+        record_interval = max(1, int(1.0 / (env_dt * args.fps)))
+        print(f"[Record] {args.record_duration}s = {total_steps} steps, "
+              f"capture every {record_interval} steps")
+
     obs, _ = env.reset()
+
+    # Reset camera after env reset (Isaac Lab sometimes resets viewport)
+    set_camera_view(eye=eye, target=target_cam)
+
     prev_reaches = 0
 
-    print(f"\n[Play] {args.steps} steps | '{args.mode}' | {'DETERM' if use_deterministic else 'STOCH'}\n")
+    print(f"\n[Play] {args.steps} steps | '{args.mode}' | {'DETERM' if use_deterministic else 'STOCH'}")
+    print(f"  Training Level {ckpt_level}: pos_thresh={env.reach_pos_threshold}m, "
+          f"min_disp={env.min_displacement}m, max_steps={env.max_reach_steps}")
+    print(f"  obs_pos_threshold={env.obs_pos_threshold}m (for target_reached observation)\n")
 
     with torch.no_grad():
         for step in range(args.steps):
@@ -800,17 +1078,16 @@ def main():
 
             obs, reward, terminated, truncated, info = env.step(actions)
 
+            # Capture frame for video
+            if recorder and (step % record_interval == 0):
+                recorder.capture_frame()
+
             if env.validated_reaches > prev_reaches:
-                ee_pos, palm_quat = env._compute_palm_ee()
-                root_pos = env.robot.data.root_pos_w
-                root_quat = env.robot.data.root_quat_w
-                ee_body = quat_apply_inverse(root_quat, ee_pos - root_pos)
-                target_world = root_pos + quat_apply(root_quat, env.target_pos_body)
-                dist = torch.norm(ee_pos - target_world, dim=-1).min().item()
-                disp = torch.norm(ee_body - env.ee_pos_at_spawn, dim=-1).max().item()
                 new = env.validated_reaches - prev_reaches
-                print(f"[Step {step:4d}] 🎯 +{new} VALIDATED REACH (total={env.validated_reaches}) "
-                      f"dist={dist:.3f}m disp={disp:.3f}m")
+                avg_dist = np.mean(env.last_reach_dists) if env.last_reach_dists else 0
+                avg_disp = np.mean(env.last_reach_disps) if env.last_reach_disps else 0
+                print(f"[Step {step:4d}] +{new} REACH (total={env.validated_reaches}) "
+                      f"dist={avg_dist:.3f}m disp={avg_disp:.3f}m")
                 prev_reaches = env.validated_reaches
 
             if step > 0 and step % 200 == 0:
@@ -827,16 +1104,25 @@ def main():
                 ee_disp = torch.norm(ee_body - env.ee_pos_at_spawn, dim=-1).mean().item()
                 ee_spd = torch.norm((ee_pos - env.prev_ee_pos) / 0.02, dim=-1).mean().item()
 
-                total_attempts = env.validated_reaches + env.timed_out_targets
+                orient_err_debug = compute_orientation_error(pq, env.target_orient_body).mean().item()
+
+                total_attempts = env.validated_reaches + env.timed_out_targets + env.stuck_resample_count
                 v_rate = env.validated_reaches / max(total_attempts, 1) * 100
 
                 print(
                     f"[Step {step:4d}] "
                     f"H={h:.3f} Vx={vx_b:+.2f}(cmd={cmd_vx:.2f}) "
                     f"EE={ee_d:.3f}m Disp={ee_disp:.3f}m Spd={ee_spd:.3f} "
+                    f"Orient={orient_err_debug:.2f}rad "
                     f"VR={env.validated_reaches} TO={env.timed_out_targets} "
-                    f"Rate={v_rate:.0f}%"
+                    f"Stuck={env.stuck_resample_count} Rate={v_rate:.0f}%"
                 )
+
+    # Finalize video
+    if recorder:
+        video_path = recorder.finalize_video(f"g1_stage7_reaching_{args.mode}.mp4")
+        if video_path:
+            print(f"\n[VIDEO] LinkedIn-ready video: {video_path}")
 
     total_attempts = env.validated_reaches + env.timed_out_targets
     print(f"\n{'=' * 70}")
@@ -845,6 +1131,7 @@ def main():
     print(f"  Validated Reaches: {env.validated_reaches}")
     print(f"  Position-Only Reaches: {env.pos_only_reaches}")
     print(f"  Timed Out: {env.timed_out_targets}")
+    print(f"  Stuck Resamples: {env.stuck_resample_count}")
     print(f"  Total Attempts: {total_attempts}")
     if total_attempts > 0:
         print(f"  Validated Rate: {env.validated_reaches / total_attempts:.1%}")
