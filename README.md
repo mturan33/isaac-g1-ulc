@@ -225,6 +225,5 @@ For collaboration or usage inquiries: mehmetturanyardimci@hotmail.com
 ## Author
 
 **Mehmet Turan Yardimci**
-- Cukurova University, Computer Engineering
 - GitHub: [@mturan33](https://github.com/mturan33)
 - LinkedIn: [/in/mehmetturanyardimci](https://linkedin.com/in/mehmetturanyardimci)
