@@ -6,7 +6,7 @@
 > If you use any part of this codebase, architecture, or methodology, citation is required.
 > Contact the author for collaboration inquiries.
 
-[https://www.linkedin.com/analytics/post-summary/urn:li:activity:7425863949679575040/]
+[https://github.com/mturan33/isaac-g1-ulc-vlm/blob/main/g1_stage7_reaching_showcase.mp4]
 
 ---
 
