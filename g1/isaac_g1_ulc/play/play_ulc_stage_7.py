@@ -170,9 +170,9 @@ MODE_CONFIGS = {
         "vx_range": (0.0, 0.0),
         "vy_range": (0.0, 0.0),
         "vyaw_range": (0.0, 0.0),
-        "workspace_radius": (0.20, 0.35),
+        "workspace_radius": (0.18, 0.40),
         "min_target_distance": 0.08,
-        "description": "Showcase: close targets, fast retry, no timeout stalls"
+        "description": "Showcase: full workspace, fast retry, no timeout stalls"
     },
 }
 
@@ -615,7 +615,7 @@ class PlayEnv(DirectRLEnv):
             if args.mode == "showcase":
                 self.reach_pos_threshold = 0.08  # Relaxed from 0.04 to 0.08
                 self.min_displacement = 0.04     # Relaxed from 0.12 to 0.04
-                self.max_reach_steps = 70        # 1.4s timeout, very fast retry
+                self.max_reach_steps = 50        # 1.0s timeout, instant retry
                 print(f"\n[PlayEnv] SHOWCASE overrides:")
                 print(f"  pos_threshold: {self.reach_pos_threshold:.3f}m (relaxed for demo)")
                 print(f"  min_displacement: {self.min_displacement:.3f}m (relaxed)")
@@ -662,7 +662,7 @@ class PlayEnv(DirectRLEnv):
         return ee_pos, palm_quat
 
     def _sample_commands(self, env_ids):
-        """Absolute-only sampling with min distance enforcement"""
+        """Absolute-only sampling with min distance enforcement."""
         n = len(env_ids)
         cfg = self.mode_cfg
 
@@ -678,7 +678,7 @@ class PlayEnv(DirectRLEnv):
         ee_world = ee_world[env_ids]
         current_ee_body = quat_apply_inverse(root_quat, ee_world - root_pos)
 
-        # Absolute sampling
+        # Absolute sampling - full workspace always
         ws = cfg["workspace_radius"]
         azimuth = torch.empty(n, device=self.device).uniform_(-0.3, 1.2)
         elevation = torch.empty(n, device=self.device).uniform_(-0.4, 0.6)
@@ -897,22 +897,22 @@ class PlayEnv(DirectRLEnv):
             self.timed_out_targets += len(timed_out_ids)
             self._sample_commands(timed_out_ids)
 
-        # Stuck detection: if EE barely moved in last 15 steps, increment counter
+        # Stuck detection: if EE barely moved in last 10 steps, increment counter
         ee_movement = torch.norm(ee_body - self.ee_pos_history, dim=-1)
-        barely_moving = ee_movement < 0.008  # Less than 8mm in 15 steps
+        barely_moving = ee_movement < 0.01  # Less than 10mm in 10 steps
         self.stuck_counter = torch.where(
             barely_moving & ~self.already_reached,
             self.stuck_counter + 1,
             torch.zeros_like(self.stuck_counter)
         )
-        # Update history every 15 steps
-        update_history = (self.steps_since_spawn % 15 == 0)
+        # Update history every 10 steps
+        update_history = (self.steps_since_spawn % 10 == 0)
         if update_history.any():
             self.ee_pos_history[update_history] = ee_body[update_history].clone()
 
-        # If stuck for 2 cycles (30 steps barely moving) AND past 40% of max steps, resample
-        stuck_threshold = 2
-        past_threshold = self.steps_since_spawn > (self.max_reach_steps * 2 // 5)
+        # If stuck for 1 cycle (10 steps barely moving) AND past 20% of max steps, resample instantly
+        stuck_threshold = 1
+        past_threshold = self.steps_since_spawn > (self.max_reach_steps * 2 // 10)
         stuck = (self.stuck_counter >= stuck_threshold) & past_threshold & ~self.already_reached
         if stuck.any():
             stuck_ids = torch.where(stuck)[0]
