@@ -16,9 +16,9 @@ ARCHITECTURE:
 
 ARM OBS: 55 (same as Stage 7)
 
-CURRICULUM (11 levels, 2 phases):
-- Phase 1 (Level 0-5): Position perfection (4cm, >90% rate)
-- Phase 2 (Level 6-10): Palm orientation (progressive cone widening)
+CURRICULUM (12 levels, 2 phases):
+- Phase 1 (Level 0-6): Position perfection (8cm→4cm, gradual)
+- Phase 2 (Level 7-11): Palm orientation (progressive cone widening)
 
 KEY DIFFERENCE FROM STAGE 7:
 - Arm weights FINE-TUNED (not fresh) — preserves reaching skill
@@ -108,196 +108,217 @@ ARM_REWARD_WEIGHTS = {
 
 
 # ============================================================================
-# ANTI-GAMING CURRICULUM (11 levels, 2 phases)
+# ANTI-GAMING CURRICULUM (12 levels, 2 phases)
 # ============================================================================
 
 def create_antigaming_curriculum():
     """
-    11-level curriculum with 2 phases
+    12-level curriculum with 2 phases
 
-    Phase 1 (Level 0-5): Position perfection — 4cm threshold, >90% validated rate
-    Phase 2 (Level 6-10): Palm orientation — progressive cone widening
+    Phase 1 (Level 0-6): Position perfection — gradual 8cm→4cm, smoother steps
+    Phase 2 (Level 7-11): Palm orientation — progressive cone widening
+
+    Key design decisions (learned from failed v1):
+    - Gradual threshold: 8→7→6→5→4cm (not 8→6 jumps!)
+    - Lower rate requirements: 30-35% (not 50% — workspace has hard corners)
+    - Generous max_reach_steps: 200+ (robot needs time to learn precision)
+    - Low min_displacement: 0.04m (some targets spawn close, that's OK)
     """
     levels = []
 
     # ============================================================
-    # PHASE 1: POSITION PERFECTION (Levels 0-5)
+    # PHASE 1: POSITION PERFECTION (Levels 0-6)
     # No orientation check — focus purely on position
     # ============================================================
 
-    # Level 0: Standing + Easy reaching (warm up from Stage 7 weights)
+    # Level 0: Warm-up from Stage 7 (same threshold as Stage 7 play)
     levels.append({
         "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
         "pos_threshold": 0.08,
         "min_target_distance": 0.10,
-        "min_displacement": 0.05,
-        "max_reach_steps": 150,
-        "use_orientation": False,
-        "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.50,
-        "min_validated_reaches": 5000,
-        "min_steps": 200000,
-        "description": "Phase1: Stand + Easy reach (0.08m thresh, 50% rate)",
-    })
-
-    # Level 1: Tighter threshold
-    levels.append({
-        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
-        "pos_threshold": 0.06,
-        "min_target_distance": 0.12,
-        "min_displacement": 0.07,
-        "max_reach_steps": 140,
-        "use_orientation": False,
-        "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.50,
-        "min_validated_reaches": 6000,
-        "min_steps": 250000,
-        "description": "Phase1: Stand + Medium reach (0.06m thresh, 50% rate)",
-    })
-
-    # Level 2: Getting precise
-    levels.append({
-        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
-        "pos_threshold": 0.05,
-        "min_target_distance": 0.14,
-        "min_displacement": 0.08,
-        "max_reach_steps": 130,
-        "use_orientation": False,
-        "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.45,
-        "min_validated_reaches": 7000,
-        "min_steps": 300000,
-        "description": "Phase1: Stand + Precise reach (0.05m thresh, 45% rate)",
-    })
-
-    # Level 3: Target precision (4cm!)
-    levels.append({
-        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
-        "pos_threshold": 0.04,
-        "min_target_distance": 0.15,
-        "min_displacement": 0.10,
-        "max_reach_steps": 120,
-        "use_orientation": False,
-        "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.40,
-        "min_validated_reaches": 8000,
-        "min_steps": 350000,
-        "description": "Phase1: Stand + 4cm reach (40% rate)",
-    })
-
-    # Level 4: Walking + 4cm
-    levels.append({
-        "vx_range": (0.0, 0.3), "vy_range": (-0.05, 0.05), "vyaw_range": (-0.10, 0.10),
-        "pos_threshold": 0.04,
-        "min_target_distance": 0.15,
-        "min_displacement": 0.10,
-        "max_reach_steps": 130,
+        "min_displacement": 0.04,
+        "max_reach_steps": 200,
         "use_orientation": False,
         "workspace_radius": (0.18, 0.40),
         "validated_reach_rate": 0.35,
-        "min_validated_reaches": 8000,
-        "min_steps": 350000,
-        "description": "Phase1: Walk(0.3) + 4cm reach (35% rate)",
+        "min_validated_reaches": 5000,
+        "min_steps": 150000,
+        "description": "Phase1 L0: Stand + 8cm (warm-up, 35% rate)",
     })
 
-    # Level 5: Faster walking + 4cm
+    # Level 1: First tightening — 7cm
     levels.append({
-        "vx_range": (0.0, 0.5), "vy_range": (-0.07, 0.07), "vyaw_range": (-0.13, 0.13),
-        "pos_threshold": 0.04,
-        "min_target_distance": 0.16,
-        "min_displacement": 0.10,
-        "max_reach_steps": 140,
+        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
+        "pos_threshold": 0.07,
+        "min_target_distance": 0.10,
+        "min_displacement": 0.04,
+        "max_reach_steps": 200,
         "use_orientation": False,
         "workspace_radius": (0.18, 0.40),
         "validated_reach_rate": 0.30,
-        "min_validated_reaches": 9000,
+        "min_validated_reaches": 5000,
+        "min_steps": 200000,
+        "description": "Phase1 L1: Stand + 7cm (30% rate)",
+    })
+
+    # Level 2: Tighter — 6cm
+    levels.append({
+        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
+        "pos_threshold": 0.06,
+        "min_target_distance": 0.10,
+        "min_displacement": 0.04,
+        "max_reach_steps": 200,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.40),
+        "validated_reach_rate": 0.28,
+        "min_validated_reaches": 5000,
+        "min_steps": 250000,
+        "description": "Phase1 L2: Stand + 6cm (28% rate)",
+    })
+
+    # Level 3: Precise — 5cm
+    levels.append({
+        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
+        "pos_threshold": 0.05,
+        "min_target_distance": 0.12,
+        "min_displacement": 0.05,
+        "max_reach_steps": 200,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.40),
+        "validated_reach_rate": 0.25,
+        "min_validated_reaches": 6000,
+        "min_steps": 300000,
+        "description": "Phase1 L3: Stand + 5cm (25% rate)",
+    })
+
+    # Level 4: Target precision — 4cm!
+    levels.append({
+        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
+        "pos_threshold": 0.04,
+        "min_target_distance": 0.12,
+        "min_displacement": 0.05,
+        "max_reach_steps": 250,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.40),
+        "validated_reach_rate": 0.20,
+        "min_validated_reaches": 6000,
         "min_steps": 400000,
-        "description": "Phase1: Walk(0.5) + 4cm reach (30% rate)",
+        "description": "Phase1 L4: Stand + 4cm (20% rate)",
+    })
+
+    # Level 5: Walking + 4cm
+    levels.append({
+        "vx_range": (0.0, 0.3), "vy_range": (-0.05, 0.05), "vyaw_range": (-0.10, 0.10),
+        "pos_threshold": 0.04,
+        "min_target_distance": 0.12,
+        "min_displacement": 0.05,
+        "max_reach_steps": 250,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.40),
+        "validated_reach_rate": 0.18,
+        "min_validated_reaches": 6000,
+        "min_steps": 400000,
+        "description": "Phase1 L5: Walk(0.3) + 4cm (18% rate)",
+    })
+
+    # Level 6: Faster walking + 4cm
+    levels.append({
+        "vx_range": (0.0, 0.5), "vy_range": (-0.07, 0.07), "vyaw_range": (-0.13, 0.13),
+        "pos_threshold": 0.04,
+        "min_target_distance": 0.14,
+        "min_displacement": 0.05,
+        "max_reach_steps": 250,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.40),
+        "validated_reach_rate": 0.15,
+        "min_validated_reaches": 7000,
+        "min_steps": 400000,
+        "description": "Phase1 L6: Walk(0.5) + 4cm (15% rate)",
     })
 
     # ============================================================
-    # PHASE 2: ORIENTATION (Levels 6-10)
+    # PHASE 2: ORIENTATION (Levels 7-11)
     # Position threshold relaxed to 5cm, orientation progressively tightens
     # ============================================================
 
-    # Level 6: Stand + Easy orientation (palm down, very loose)
+    # Level 7: Stand + Easy orientation (palm down, very loose)
     levels.append({
         "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
         "pos_threshold": 0.05,
         "orient_threshold": 2.5,  # ~143 deg — very loose
-        "min_target_distance": 0.12,
-        "min_displacement": 0.08,
-        "max_reach_steps": 150,
+        "min_target_distance": 0.10,
+        "min_displacement": 0.04,
+        "max_reach_steps": 200,
         "use_orientation": True,
         "variable_orientation": False,  # Palm down only
         "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.25,
-        "min_validated_reaches": 8000,
+        "validated_reach_rate": 0.20,
+        "min_validated_reaches": 6000,
         "min_steps": 400000,
-        "description": "Phase2: Stand + Orient palm_down (2.5rad, 25% rate)",
+        "description": "Phase2 L7: Stand + Orient palm_down (2.5rad, 20% rate)",
     })
 
-    # Level 7: Tighter palm down
+    # Level 8: Tighter palm down
     levels.append({
         "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
         "pos_threshold": 0.05,
         "orient_threshold": 2.0,  # ~115 deg
-        "min_target_distance": 0.14,
-        "min_displacement": 0.08,
-        "max_reach_steps": 150,
+        "min_target_distance": 0.12,
+        "min_displacement": 0.04,
+        "max_reach_steps": 200,
         "use_orientation": True,
         "variable_orientation": False,
         "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.22,
-        "min_validated_reaches": 8000,
+        "validated_reach_rate": 0.18,
+        "min_validated_reaches": 6000,
         "min_steps": 400000,
-        "description": "Phase2: Stand + Orient palm_down (2.0rad, 22% rate)",
+        "description": "Phase2 L8: Stand + Orient palm_down (2.0rad, 18% rate)",
     })
 
-    # Level 8: Variable orient — 20 deg cone
+    # Level 9: Variable orient — 20 deg cone
     levels.append({
         "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
         "pos_threshold": 0.05,
         "orient_threshold": 1.5,  # ~86 deg
-        "min_target_distance": 0.14,
-        "min_displacement": 0.08,
-        "max_reach_steps": 160,
+        "min_target_distance": 0.12,
+        "min_displacement": 0.04,
+        "max_reach_steps": 250,
         "use_orientation": True,
         "variable_orientation": True,
         "orient_sample_range": 0.35,  # ~20 deg cone
         "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.20,
-        "min_validated_reaches": 9000,
+        "validated_reach_rate": 0.15,
+        "min_validated_reaches": 7000,
         "min_steps": 450000,
-        "description": "Phase2: Stand + Variable orient 20deg (1.5rad, 20% rate)",
+        "description": "Phase2 L9: Stand + Variable orient 20deg (1.5rad, 15% rate)",
     })
 
-    # Level 9: Walk + 40 deg cone
+    # Level 10: Walk + 40 deg cone
     levels.append({
         "vx_range": (0.0, 0.3), "vy_range": (-0.05, 0.05), "vyaw_range": (-0.10, 0.10),
         "pos_threshold": 0.05,
         "orient_threshold": 1.2,  # ~69 deg
-        "min_target_distance": 0.15,
-        "min_displacement": 0.10,
-        "max_reach_steps": 170,
+        "min_target_distance": 0.14,
+        "min_displacement": 0.05,
+        "max_reach_steps": 250,
         "use_orientation": True,
         "variable_orientation": True,
         "orient_sample_range": 0.70,  # ~40 deg cone
         "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.18,
-        "min_validated_reaches": 9000,
+        "validated_reach_rate": 0.12,
+        "min_validated_reaches": 7000,
         "min_steps": 450000,
-        "description": "Phase2: Walk(0.3) + Variable orient 40deg (1.2rad, 18% rate)",
+        "description": "Phase2 L10: Walk(0.3) + Variable orient 40deg (1.2rad, 12% rate)",
     })
 
-    # Level 10: Walk + 60 deg cone (FINAL)
+    # Level 11: Walk + 60 deg cone (FINAL)
     levels.append({
         "vx_range": (0.0, 0.5), "vy_range": (-0.07, 0.07), "vyaw_range": (-0.13, 0.13),
         "pos_threshold": 0.05,
         "orient_threshold": 1.0,  # ~57 deg
-        "min_target_distance": 0.16,
-        "min_displacement": 0.10,
-        "max_reach_steps": 180,
+        "min_target_distance": 0.14,
+        "min_displacement": 0.05,
+        "max_reach_steps": 250,
         "use_orientation": True,
         "variable_orientation": True,
         "orient_sample_range": 1.05,  # ~60 deg cone
@@ -305,7 +326,7 @@ def create_antigaming_curriculum():
         "validated_reach_rate": None,  # FINAL level
         "min_validated_reaches": None,
         "min_steps": None,
-        "description": "Phase2 FINAL: Walk(0.5) + Variable orient 60deg (1.0rad)",
+        "description": "Phase2 FINAL L11: Walk(0.5) + Variable orient 60deg (1.0rad)",
     })
 
     return levels
@@ -321,7 +342,7 @@ CURRICULUM = create_antigaming_curriculum()
 def parse_args():
     parser = argparse.ArgumentParser(description="ULC G1 Stage 8: Position Perfection + Orientation Training")
     parser.add_argument("--num_envs", type=int, default=4096)
-    parser.add_argument("--max_iterations", type=int, default=15000)
+    parser.add_argument("--max_iterations", type=int, default=30000)
     parser.add_argument("--stage7_checkpoint", type=str, default=None,
                         help="Stage 7 checkpoint (arm fine-tuned, loco frozen). Required for fresh start.")
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -396,14 +417,14 @@ print("  1. Absolute-only sampling + min distance enforcement")
 print("  2. 3-condition reach validation (position + displacement + time)")
 print("  3. Validated reach rate for curriculum advancement")
 print("  4. Movement-centric rewards (velocity_toward, progress, stillness_penalty)")
-print("  5. Strict 11-level curriculum (2 phases)")
+print("  5. Strict 12-level curriculum (2 phases)")
 print()
 print("Architecture:")
 print("  LocoActor (57->12) FROZEN    + LocoCritic (57->1) FROZEN")
 print("  ArmActor  (55->5)  FINE-TUNE + ArmCritic  (55->1) FINE-TUNE")
 print(f"\nCurriculum: {len(CURRICULUM)} levels")
-print("  Phase 1 (0-5): Position Perfection (4cm threshold)")
-print("  Phase 2 (6-10): Palm Orientation (progressive cone)")
+print("  Phase 1 (0-6): Position Perfection (8cm->4cm gradual)")
+print("  Phase 2 (7-11): Palm Orientation (progressive cone)")
 print("=" * 80)
 
 
@@ -1118,7 +1139,7 @@ def create_env(num_envs, device):
             self.prev_leg_actions = leg_actions.clone()
             self.prev_arm_actions = arm_actions.clone()
 
-            self.stage_steps += 1
+            self.stage_steps += self.num_envs  # Count total env steps, not iterations
 
         def _apply_action(self):
             pass
@@ -1505,9 +1526,9 @@ def create_env(num_envs, device):
                     new_lv = CURRICULUM[self.curr_level]
 
                     phase_msg = ""
-                    if self.curr_level == 4:
+                    if self.curr_level == 5:
                         phase_msg = " -- WALKING STARTS!"
-                    elif self.curr_level == 6:
+                    elif self.curr_level == 7:
                         phase_msg = " -- PHASE 2: ORIENTATION LEARNING!"
 
                     print(f"\n{'='*60}")
@@ -1627,7 +1648,7 @@ def train():
         load_stage7_and_setup(net, args_cli.stage7_checkpoint, device)
 
     # Phase 2 tracking — needed to prevent exploration/LR overrides
-    phase2_started = env.curr_level >= 6  # True if resuming from Phase 2
+    phase2_started = env.curr_level >= 7  # True if resuming from Phase 2
     phase2_start_iter = start_iter if phase2_started else None
 
     if phase2_started:
@@ -1653,8 +1674,8 @@ def train():
 
     print("\n" + "=" * 80)
     print("STARTING STAGE 8: POSITION PERFECTION + ORIENTATION TRAINING")
-    print("  Phase 1 (Level 0-5): Position Perfection (4cm threshold)")
-    print("  Phase 2 (Level 6-10): Palm Orientation (progressive cone)")
+    print("  Phase 1 (Level 0-6): Position Perfection (8cm->4cm gradual)")
+    print("  Phase 2 (Level 7-11): Palm Orientation (progressive cone)")
     print("  LOCO: FROZEN | ARM: FINE-TUNED from Stage 7 (55 obs)")
     print("=" * 80 + "\n")
 
@@ -1730,7 +1751,7 @@ def train():
         new_level = env.update_curriculum(mean_reward)
 
         # Phase 2 transition: orientation learning activation
-        if new_level == 6 and not phase2_started:
+        if new_level == 7 and not phase2_started:
             phase2_started = True
             phase2_start_iter = iteration
             print(f"\n{'='*70}")

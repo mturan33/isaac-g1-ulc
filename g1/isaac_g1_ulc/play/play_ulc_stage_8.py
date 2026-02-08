@@ -250,39 +250,44 @@ class FrameRecorder:
 # Used to set correct thresholds for observation computation
 # ============================================================================
 TRAINING_CURRICULUM = [
-    # Level 0: Stand + Easy reach
-    {"pos_threshold": 0.08, "min_target_distance": 0.10, "min_displacement": 0.05,
-     "max_reach_steps": 150, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
-    # Level 1: Stand + Medium reach
-    {"pos_threshold": 0.06, "min_target_distance": 0.12, "min_displacement": 0.07,
-     "max_reach_steps": 140, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
-    # Level 2: Stand + Precise reach
-    {"pos_threshold": 0.05, "min_target_distance": 0.14, "min_displacement": 0.08,
-     "max_reach_steps": 130, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
-    # Level 3: Stand + 4cm reach
-    {"pos_threshold": 0.04, "min_target_distance": 0.15, "min_displacement": 0.10,
-     "max_reach_steps": 120, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
-    # Level 4: Walk(0.3) + 4cm reach
-    {"pos_threshold": 0.04, "min_target_distance": 0.15, "min_displacement": 0.10,
-     "max_reach_steps": 130, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
-    # Level 5: Walk(0.5) + 4cm reach
-    {"pos_threshold": 0.04, "min_target_distance": 0.16, "min_displacement": 0.10,
-     "max_reach_steps": 140, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
-    # Level 6: Stand + Orient palm_down (2.5 rad)
-    {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.08,
-     "max_reach_steps": 150, "orient_threshold": 2.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
-    # Level 7: Stand + Orient palm_down (2.0 rad)
-    {"pos_threshold": 0.05, "min_target_distance": 0.14, "min_displacement": 0.08,
-     "max_reach_steps": 150, "orient_threshold": 2.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
-    # Level 8: Stand + Variable orient 20deg (1.5 rad)
-    {"pos_threshold": 0.05, "min_target_distance": 0.14, "min_displacement": 0.08,
-     "max_reach_steps": 160, "orient_threshold": 1.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
-    # Level 9: Walk + Variable orient 40deg (1.2 rad)
-    {"pos_threshold": 0.05, "min_target_distance": 0.15, "min_displacement": 0.10,
-     "max_reach_steps": 170, "orient_threshold": 1.2, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
-    # Level 10: Walk + Variable orient 60deg FINAL (1.0 rad)
-    {"pos_threshold": 0.05, "min_target_distance": 0.16, "min_displacement": 0.10,
-     "max_reach_steps": 180, "orient_threshold": 1.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Phase 1: Position Perfection (Level 0-6)
+    # Level 0: Stand + 8cm (warm-up)
+    {"pos_threshold": 0.08, "min_target_distance": 0.10, "min_displacement": 0.04,
+     "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 1: Stand + 7cm
+    {"pos_threshold": 0.07, "min_target_distance": 0.10, "min_displacement": 0.04,
+     "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 2: Stand + 6cm
+    {"pos_threshold": 0.06, "min_target_distance": 0.10, "min_displacement": 0.04,
+     "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 3: Stand + 5cm
+    {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.05,
+     "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 4: Stand + 4cm
+    {"pos_threshold": 0.04, "min_target_distance": 0.12, "min_displacement": 0.05,
+     "max_reach_steps": 250, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 5: Walk(0.3) + 4cm
+    {"pos_threshold": 0.04, "min_target_distance": 0.12, "min_displacement": 0.05,
+     "max_reach_steps": 250, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Level 6: Walk(0.5) + 4cm
+    {"pos_threshold": 0.04, "min_target_distance": 0.14, "min_displacement": 0.05,
+     "max_reach_steps": 250, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
+    # Phase 2: Orientation (Level 7-11)
+    # Level 7: Stand + Orient palm_down (2.5 rad)
+    {"pos_threshold": 0.05, "min_target_distance": 0.10, "min_displacement": 0.04,
+     "max_reach_steps": 200, "orient_threshold": 2.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Level 8: Stand + Orient palm_down (2.0 rad)
+    {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.04,
+     "max_reach_steps": 200, "orient_threshold": 2.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Level 9: Stand + Variable orient 20deg (1.5 rad)
+    {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.04,
+     "max_reach_steps": 250, "orient_threshold": 1.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Level 10: Walk + Variable orient 40deg (1.2 rad)
+    {"pos_threshold": 0.05, "min_target_distance": 0.14, "min_displacement": 0.05,
+     "max_reach_steps": 250, "orient_threshold": 1.2, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Level 11: Walk + Variable orient 60deg FINAL (1.0 rad)
+    {"pos_threshold": 0.05, "min_target_distance": 0.14, "min_displacement": 0.05,
+     "max_reach_steps": 250, "orient_threshold": 1.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
 ]
 
 
