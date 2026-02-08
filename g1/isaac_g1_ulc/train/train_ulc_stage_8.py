@@ -16,9 +16,9 @@ ARCHITECTURE:
 
 ARM OBS: 55 (same as Stage 7)
 
-CURRICULUM (12 levels, 2 phases):
+CURRICULUM (14 levels, 2 phases):
 - Phase 1 (Level 0-6): Position perfection (8cm→4cm, gradual)
-- Phase 2 (Level 7-11): Palm orientation (progressive cone widening)
+- Phase 2 (Level 7-13): Palm orientation (progressive cone widening)
 
 KEY DIFFERENCE FROM STAGE 7:
 - Arm weights FINE-TUNED (not fresh) — preserves reaching skill
@@ -108,7 +108,7 @@ ARM_REWARD_WEIGHTS = {
 
 
 # ============================================================================
-# ANTI-GAMING CURRICULUM (12 levels, 2 phases)
+# ANTI-GAMING CURRICULUM (14 levels, 2 phases)
 # ============================================================================
 
 def create_antigaming_curriculum():
@@ -116,7 +116,7 @@ def create_antigaming_curriculum():
     12-level curriculum with 2 phases
 
     Phase 1 (Level 0-6): Position perfection — gradual 8cm→4cm, smoother steps
-    Phase 2 (Level 7-11): Palm orientation — progressive cone widening
+    Phase 2 (Level 7-13): Palm orientation — progressive cone widening
 
     Key design decisions (learned from failed v1):
     - Gradual threshold: 8→7→6→5→4cm (not 8→6 jumps!)
@@ -275,7 +275,42 @@ def create_antigaming_curriculum():
         "description": "Phase2 L8: Stand + Orient palm_down (2.0rad, 18% rate)",
     })
 
-    # Level 9: Variable orient — 20 deg cone
+    # Level 9: Even tighter palm down (bridge to variable orient)
+    levels.append({
+        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
+        "pos_threshold": 0.05,
+        "orient_threshold": 1.5,  # ~86 deg — palm_down still fixed
+        "min_target_distance": 0.12,
+        "min_displacement": 0.04,
+        "max_reach_steps": 250,
+        "use_orientation": True,
+        "variable_orientation": False,  # Still fixed palm_down!
+        "workspace_radius": (0.18, 0.40),
+        "validated_reach_rate": 0.15,
+        "min_validated_reaches": 6000,
+        "min_steps": 400000,
+        "description": "Phase2 L9: Stand + Orient palm_down (1.5rad, 15% rate)",
+    })
+
+    # Level 10: Variable orient — very small cone, very loose threshold
+    levels.append({
+        "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
+        "pos_threshold": 0.05,
+        "orient_threshold": 2.0,  # ~115 deg — LOOSE for first variable orient
+        "min_target_distance": 0.12,
+        "min_displacement": 0.04,
+        "max_reach_steps": 250,
+        "use_orientation": True,
+        "variable_orientation": True,
+        "orient_sample_range": 0.35,  # ~20 deg cone
+        "workspace_radius": (0.18, 0.40),
+        "validated_reach_rate": 0.15,
+        "min_validated_reaches": 6000,
+        "min_steps": 450000,
+        "description": "Phase2 L10: Stand + Variable orient 20deg (2.0rad, 15% rate)",
+    })
+
+    # Level 11: Variable orient — tighter
     levels.append({
         "vx_range": (0.0, 0.0), "vy_range": (0.0, 0.0), "vyaw_range": (0.0, 0.0),
         "pos_threshold": 0.05,
@@ -285,15 +320,15 @@ def create_antigaming_curriculum():
         "max_reach_steps": 250,
         "use_orientation": True,
         "variable_orientation": True,
-        "orient_sample_range": 0.35,  # ~20 deg cone
+        "orient_sample_range": 0.52,  # ~30 deg cone
         "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.15,
-        "min_validated_reaches": 7000,
+        "validated_reach_rate": 0.12,
+        "min_validated_reaches": 6000,
         "min_steps": 450000,
-        "description": "Phase2 L9: Stand + Variable orient 20deg (1.5rad, 15% rate)",
+        "description": "Phase2 L11: Stand + Variable orient 30deg (1.5rad, 12% rate)",
     })
 
-    # Level 10: Walk + 40 deg cone
+    # Level 12: Walk + wider cone
     levels.append({
         "vx_range": (0.0, 0.3), "vy_range": (-0.05, 0.05), "vyaw_range": (-0.10, 0.10),
         "pos_threshold": 0.05,
@@ -305,13 +340,13 @@ def create_antigaming_curriculum():
         "variable_orientation": True,
         "orient_sample_range": 0.70,  # ~40 deg cone
         "workspace_radius": (0.18, 0.40),
-        "validated_reach_rate": 0.12,
-        "min_validated_reaches": 7000,
+        "validated_reach_rate": 0.10,
+        "min_validated_reaches": 6000,
         "min_steps": 450000,
-        "description": "Phase2 L10: Walk(0.3) + Variable orient 40deg (1.2rad, 12% rate)",
+        "description": "Phase2 L12: Walk(0.3) + Variable orient 40deg (1.2rad, 10% rate)",
     })
 
-    # Level 11: Walk + 60 deg cone (FINAL)
+    # Level 13: Walk + 60 deg cone (FINAL)
     levels.append({
         "vx_range": (0.0, 0.5), "vy_range": (-0.07, 0.07), "vyaw_range": (-0.13, 0.13),
         "pos_threshold": 0.05,
@@ -326,7 +361,7 @@ def create_antigaming_curriculum():
         "validated_reach_rate": None,  # FINAL level
         "min_validated_reaches": None,
         "min_steps": None,
-        "description": "Phase2 FINAL L11: Walk(0.5) + Variable orient 60deg (1.0rad)",
+        "description": "Phase2 FINAL L13: Walk(0.5) + Variable orient 60deg (1.0rad)",
     })
 
     return levels
@@ -424,7 +459,7 @@ print("  LocoActor (57->12) FROZEN    + LocoCritic (57->1) FROZEN")
 print("  ArmActor  (55->5)  FINE-TUNE + ArmCritic  (55->1) FINE-TUNE")
 print(f"\nCurriculum: {len(CURRICULUM)} levels")
 print("  Phase 1 (0-6): Position Perfection (8cm->4cm gradual)")
-print("  Phase 2 (7-11): Palm Orientation (progressive cone)")
+print("  Phase 2 (7-13): Palm Orientation (progressive cone)")
 print("=" * 80)
 
 
@@ -1507,10 +1542,10 @@ def create_env(num_envs, device):
             # ANTI-GAMING: Gaming detection
             if stage_attempts > 100:
                 timeout_ratio = self.stage_timed_out / stage_attempts
-                if timeout_ratio > 0.90:
+                if timeout_ratio > 0.95:
                     print(f"\n{'!'*60}")
                     print(f"  GAMING DETECTED at Level {self.curr_level}!")
-                    print(f"  Timeout ratio: {timeout_ratio:.1%} (>{90}%)")
+                    print(f"  Timeout ratio: {timeout_ratio:.1%} (>{95}%)")
                     print(f"  Validated: {self.stage_validated_reaches}, Timed out: {self.stage_timed_out}")
                     print(f"  NOT advancing. Robot needs to actually reach targets!")
                     print(f"{'!'*60}\n")
@@ -1675,7 +1710,7 @@ def train():
     print("\n" + "=" * 80)
     print("STARTING STAGE 8: POSITION PERFECTION + ORIENTATION TRAINING")
     print("  Phase 1 (Level 0-6): Position Perfection (8cm->4cm gradual)")
-    print("  Phase 2 (Level 7-11): Palm Orientation (progressive cone)")
+    print("  Phase 2 (Level 7-13): Palm Orientation (progressive cone)")
     print("  LOCO: FROZEN | ARM: FINE-TUNED from Stage 7 (55 obs)")
     print("=" * 80 + "\n")
 
