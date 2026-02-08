@@ -597,12 +597,13 @@ def create_env(num_envs, device):
         def _get_dones(self):
             pos = self.robot.data.root_pos_w
             q = self.robot.data.root_quat_w
-            g = quat_apply_inverse(q, torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1))
+            gravity_vec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
+            proj_gravity = quat_apply_inverse(q, gravity_vec)
 
-            # Fall detection
-            fallen = pos[:, 2] < 0.4
-            tilted = g[:, 2] < 0.5  # Gravity z component too small = tilted
-            terminated = fallen | tilted
+            # Fall detection (same as Stage 7)
+            fallen = (pos[:, 2] < 0.4) | (pos[:, 2] > 1.2)
+            bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
+            terminated = fallen | bad_orientation
 
             # Time limit
             time_out = self.episode_length_buf >= self.max_episode_length
