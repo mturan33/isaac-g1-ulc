@@ -365,10 +365,11 @@ def create_env(num_envs, device):
         def _get_dones(self):
             pos = self.robot.data.root_pos_w
             q = self.robot.data.root_quat_w
-            g = quat_apply_inverse(q, torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1))
-            fallen = pos[:, 2] < 0.4
-            tilted = g[:, 2] < 0.5
-            terminated = fallen | tilted
+            gravity_vec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
+            proj_gravity = quat_apply_inverse(q, gravity_vec)
+            fallen = (pos[:, 2] < 0.4) | (pos[:, 2] > 1.2)
+            bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
+            terminated = fallen | bad_orientation
             if terminated.any():
                 self.total_falls += terminated.sum().item()
             time_out = self.episode_length_buf >= self.max_episode_length
@@ -433,8 +434,10 @@ def main():
         if step % 200 == 0 and step > 0:
             height = env.robot.data.root_pos_w[:, 2].mean().item()
             q = env.robot.data.root_quat_w
-            g = quat_apply_inverse(q, torch.tensor([0, 0, -1.], device=device).expand(env.num_envs, -1))
-            tilt = torch.acos(g[:, 2].clamp(-1, 1)).mean().item() * 180 / np.pi
+            gravity_vec = torch.tensor([0, 0, -1.], device=device).expand(env.num_envs, -1)
+            pg = quat_apply_inverse(q, gravity_vec)
+            # Tilt = how much xy components deviate from 0 (upright → pg≈[0,0,-1])
+            tilt = torch.sqrt(pg[:, 0]**2 + pg[:, 1]**2).mean().item() * 180 / np.pi
             print(f"  [Step {step:5d}] H={height:.3f}m, Tilt={tilt:.1f}deg, "
                   f"Falls={env.total_falls}, Pushes={env.total_pushes}")
 
