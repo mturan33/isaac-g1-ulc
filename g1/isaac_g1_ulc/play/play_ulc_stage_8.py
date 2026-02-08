@@ -272,20 +272,26 @@ TRAINING_CURRICULUM = [
     # Level 6: Walk(0.5) + 4cm
     {"pos_threshold": 0.04, "min_target_distance": 0.14, "min_displacement": 0.05,
      "max_reach_steps": 250, "use_orientation": False, "workspace_radius": (0.18, 0.40)},
-    # Phase 2: Orientation (Level 7-11)
+    # Phase 2: Orientation (Level 7-13)
     # Level 7: Stand + Orient palm_down (2.5 rad)
     {"pos_threshold": 0.05, "min_target_distance": 0.10, "min_displacement": 0.04,
      "max_reach_steps": 200, "orient_threshold": 2.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
     # Level 8: Stand + Orient palm_down (2.0 rad)
     {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.04,
      "max_reach_steps": 200, "orient_threshold": 2.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
-    # Level 9: Stand + Variable orient 20deg (1.5 rad)
+    # Level 9: Stand + Orient palm_down (1.5 rad) — bridge
     {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.04,
      "max_reach_steps": 250, "orient_threshold": 1.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
-    # Level 10: Walk + Variable orient 40deg (1.2 rad)
+    # Level 10: Stand + Variable orient 20deg (2.0 rad — loose for first variable)
+    {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.04,
+     "max_reach_steps": 250, "orient_threshold": 2.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Level 11: Stand + Variable orient 30deg (1.5 rad)
+    {"pos_threshold": 0.05, "min_target_distance": 0.12, "min_displacement": 0.04,
+     "max_reach_steps": 250, "orient_threshold": 1.5, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
+    # Level 12: Walk + Variable orient 40deg (1.2 rad)
     {"pos_threshold": 0.05, "min_target_distance": 0.14, "min_displacement": 0.05,
      "max_reach_steps": 250, "orient_threshold": 1.2, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
-    # Level 11: Walk + Variable orient 60deg FINAL (1.0 rad)
+    # Level 13: Walk + Variable orient 60deg FINAL (1.0 rad)
     {"pos_threshold": 0.05, "min_target_distance": 0.14, "min_displacement": 0.05,
      "max_reach_steps": 250, "orient_threshold": 1.0, "use_orientation": True, "workspace_radius": (0.18, 0.40)},
 ]
