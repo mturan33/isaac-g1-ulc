@@ -57,7 +57,7 @@ ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
 CURRICULUM = [
     {
         "description": "L0: Stable stand, small perturbation",
-        "threshold": 12.0,
+        "threshold": 20.0,   # Raised from 12.0 — more reward channels now
         "push_force": (0, 10),
         "push_interval": (200, 500),
         "mass_scale": (0.95, 1.05),
@@ -80,7 +80,11 @@ REWARD_WEIGHTS = {
     "orientation": 4.0,
     "lin_vel_penalty": 3.0,
     "ang_vel_penalty": 2.0,
-    "joint_posture": 2.0,
+    "joint_posture": 3.0,       # Increased (was 2.0) — stronger default pose tracking
+    "ankle_penalty": 4.0,       # NEW — per-joint penalty for ankle roll (prevents inverted foot)
+    "foot_flatness": 3.0,       # NEW — foot sole parallel to ground
+    "symmetry": 2.0,            # NEW — left/right leg symmetry
+    "hip_roll_penalty": 2.0,    # NEW — prevent excessive hip roll (leaning)
     "action_rate": -0.03,
     "jerk": -0.02,
     "energy": -0.0005,
@@ -390,6 +394,47 @@ def create_env(num_envs, device):
             self.hand_idx = torch.tensor(self.hand_idx, device=self.device)
             print(f"  Hand joints: {len(self.hand_idx)} / {NUM_HAND_JOINTS}")
 
+            # Specific joint indices within loco_idx for per-joint rewards
+            # Ankle roll: index within LOCO_JOINT_NAMES
+            ankle_roll_names = ["left_ankle_roll_joint", "right_ankle_roll_joint"]
+            self.ankle_roll_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in ankle_roll_names if n in LOCO_JOINT_NAMES],
+                device=self.device)
+
+            # Ankle pitch: for foot flatness
+            ankle_pitch_names = ["left_ankle_pitch_joint", "right_ankle_pitch_joint"]
+            self.ankle_pitch_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in ankle_pitch_names if n in LOCO_JOINT_NAMES],
+                device=self.device)
+
+            # Hip roll: prevent leaning
+            hip_roll_names = ["left_hip_roll_joint", "right_hip_roll_joint"]
+            self.hip_roll_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in hip_roll_names if n in LOCO_JOINT_NAMES],
+                device=self.device)
+
+            # Symmetry pairs: (left_idx, right_idx) within LOCO_JOINT_NAMES
+            sym_pairs = [
+                ("left_hip_pitch_joint", "right_hip_pitch_joint"),
+                ("left_hip_roll_joint", "right_hip_roll_joint"),
+                ("left_hip_yaw_joint", "right_hip_yaw_joint"),
+                ("left_knee_joint", "right_knee_joint"),
+                ("left_ankle_pitch_joint", "right_ankle_pitch_joint"),
+                ("left_ankle_roll_joint", "right_ankle_roll_joint"),
+            ]
+            self.sym_left_idx = []
+            self.sym_right_idx = []
+            for ln, rn in sym_pairs:
+                if ln in LOCO_JOINT_NAMES and rn in LOCO_JOINT_NAMES:
+                    self.sym_left_idx.append(LOCO_JOINT_NAMES.index(ln))
+                    self.sym_right_idx.append(LOCO_JOINT_NAMES.index(rn))
+            self.sym_left_idx = torch.tensor(self.sym_left_idx, device=self.device)
+            self.sym_right_idx = torch.tensor(self.sym_right_idx, device=self.device)
+            # Signs for symmetry: hip_roll has opposite sign for left/right
+            # left_hip_roll default=0, right_hip_roll default=0 → same sign OK for standing
+            print(f"  Ankle roll idx: {self.ankle_roll_loco_idx.tolist()}")
+            print(f"  Symmetry pairs: {len(self.sym_left_idx)}")
+
             # Default poses as tensors
             self.default_loco = torch.tensor(DEFAULT_LOCO_LIST, device=self.device, dtype=torch.float32)
             self.default_arm = torch.tensor(DEFAULT_ARM_LIST, device=self.device, dtype=torch.float32)
@@ -560,10 +605,37 @@ def create_env(num_envs, device):
             # Angular velocity penalty (want zero)
             r_ang = torch.exp(-2.0 * (av_b ** 2).sum(-1))
 
-            # Joint posture (close to default)
+            # Joint posture (close to default) — all loco joints
             jp = r.data.joint_pos[:, self.loco_idx]
             pose_err = (jp - self.default_loco) ** 2
-            r_posture = torch.exp(-2.0 * pose_err.sum(-1))
+            r_posture = torch.exp(-3.0 * pose_err.sum(-1))
+
+            # === NEW POSTURE REWARDS ===
+
+            # Ankle roll penalty — strongest per-joint constraint
+            # Ankle roll default = 0. Any deviation = inverted foot.
+            ankle_roll_err = (jp[:, self.ankle_roll_loco_idx] - self.default_loco[self.ankle_roll_loco_idx]) ** 2
+            r_ankle = torch.exp(-20.0 * ankle_roll_err.sum(-1))  # Very steep penalty
+
+            # Foot flatness — ankle pitch should be near default (-0.23 rad)
+            # Deviation from default = foot not flat on ground
+            ankle_pitch_err = (jp[:, self.ankle_pitch_loco_idx] - self.default_loco[self.ankle_pitch_loco_idx]) ** 2
+            r_foot_flat = torch.exp(-10.0 * ankle_pitch_err.sum(-1))
+
+            # Symmetry reward — left and right legs should have similar joint angles
+            # For standing, both legs should be in symmetric configuration
+            # Note: hip_roll has opposite sign convention (left +, right -)
+            # but for standing both defaults are 0, so abs diff works
+            left_pos = jp[:, self.sym_left_idx]
+            right_pos = jp[:, self.sym_right_idx]
+            sym_err = (left_pos - right_pos) ** 2
+            r_symmetry = torch.exp(-5.0 * sym_err.sum(-1))
+
+            # Hip roll penalty — prevent leaning/tilting
+            hip_roll_err = (jp[:, self.hip_roll_loco_idx] - self.default_loco[self.hip_roll_loco_idx]) ** 2
+            r_hip_roll = torch.exp(-15.0 * hip_roll_err.sum(-1))
+
+            # === END NEW REWARDS ===
 
             # Action rate
             dact = self.prev_act - self._prev_act
@@ -586,6 +658,10 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["lin_vel_penalty"] * r_lin
                 + REWARD_WEIGHTS["ang_vel_penalty"] * r_ang
                 + REWARD_WEIGHTS["joint_posture"] * r_posture
+                + REWARD_WEIGHTS["ankle_penalty"] * r_ankle
+                + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
+                + REWARD_WEIGHTS["symmetry"] * r_symmetry
+                + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
@@ -770,12 +846,30 @@ def main():
             height = env.robot.data.root_pos_w[:, 2].mean().item()
             writer.add_scalar("robot/height", height, iteration)
 
+            # Posture stats
+            jp = env.robot.data.joint_pos[:, env.loco_idx]
+            ankle_roll_err = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
+            ankle_pitch_err = (jp[:, env.ankle_pitch_loco_idx] - env.default_loco[env.ankle_pitch_loco_idx]).abs().mean().item()
+            hip_roll_err = (jp[:, env.hip_roll_loco_idx] - env.default_loco[env.hip_roll_loco_idx]).abs().mean().item()
+            left_p = jp[:, env.sym_left_idx]
+            right_p = jp[:, env.sym_right_idx]
+            sym_err = (left_p - right_p).abs().mean().item()
+            writer.add_scalar("posture/ankle_roll_err", ankle_roll_err, iteration)
+            writer.add_scalar("posture/ankle_pitch_err", ankle_pitch_err, iteration)
+            writer.add_scalar("posture/hip_roll_err", hip_roll_err, iteration)
+            writer.add_scalar("posture/symmetry_err", sym_err, iteration)
+
         if iteration % 50 == 0:
             avg_ep = np.mean(completed_rewards[-100:]) if completed_rewards else 0
             height = env.robot.data.root_pos_w[:, 2].mean().item()
+            # Quick posture check
+            jp = env.robot.data.joint_pos[:, env.loco_idx]
+            ankR = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
+            symE = (jp[:, env.sym_left_idx] - jp[:, env.sym_right_idx]).abs().mean().item()
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
                   f"H={height:.3f} Lv={env.curr_level} "
+                  f"ankR={ankR:.3f} sym={symE:.3f} "
                   f"LR={losses['lr']:.2e} std={np.exp(net.log_std.data.mean().item()):.3f}")
 
         # Save checkpoints
