@@ -238,6 +238,18 @@ def create_env(num_envs, device):
     class Env(DirectRLEnv):
         def __init__(self, cfg, **kw):
             super().__init__(cfg, **kw)
+
+            # Add lighting for visualization
+            import omni.usd
+            stage = omni.usd.get_context().get_stage()
+            if not stage.GetPrimAtPath("/World/Light").IsValid():
+                light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+                light_cfg.func("/World/Light", light_cfg)
+            if not stage.GetPrimAtPath("/World/DistantLight").IsValid():
+                dist_light = sim_utils.DistantLightCfg(
+                    intensity=3000.0, color=(1.0, 1.0, 1.0), angle=0.53)
+                dist_light.func("/World/DistantLight", dist_light, translation=(0, 0, 10))
+
             jn = self.robot.joint_names
             print(f"\n[Play] Robot joints ({len(jn)}): {jn}")
 
@@ -269,6 +281,36 @@ def create_env(num_envs, device):
             leg_scales = [LEG_ACTION_SCALE] * 12
             waist_scales = [WAIST_ACTION_SCALE] * 3
             self.action_scales = torch.tensor(leg_scales + waist_scales, device=self.device, dtype=torch.float32)
+
+            # Posture tracking indices (within LOCO_JOINT_NAMES order)
+            ankle_roll_names = ["left_ankle_roll_joint", "right_ankle_roll_joint"]
+            self.ankle_roll_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in ankle_roll_names if n in LOCO_JOINT_NAMES],
+                device=self.device)
+            ankle_pitch_names = ["left_ankle_pitch_joint", "right_ankle_pitch_joint"]
+            self.ankle_pitch_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in ankle_pitch_names if n in LOCO_JOINT_NAMES],
+                device=self.device)
+            hip_roll_names = ["left_hip_roll_joint", "right_hip_roll_joint"]
+            self.hip_roll_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in hip_roll_names if n in LOCO_JOINT_NAMES],
+                device=self.device)
+            sym_pairs = [
+                ("left_hip_pitch_joint", "right_hip_pitch_joint"),
+                ("left_hip_roll_joint", "right_hip_roll_joint"),
+                ("left_hip_yaw_joint", "right_hip_yaw_joint"),
+                ("left_knee_joint", "right_knee_joint"),
+                ("left_ankle_pitch_joint", "right_ankle_pitch_joint"),
+                ("left_ankle_roll_joint", "right_ankle_roll_joint"),
+            ]
+            self.sym_left_idx = []
+            self.sym_right_idx = []
+            for ln, rn in sym_pairs:
+                if ln in LOCO_JOINT_NAMES and rn in LOCO_JOINT_NAMES:
+                    self.sym_left_idx.append(LOCO_JOINT_NAMES.index(ln))
+                    self.sym_right_idx.append(LOCO_JOINT_NAMES.index(rn))
+            self.sym_left_idx = torch.tensor(self.sym_left_idx, device=self.device)
+            self.sym_right_idx = torch.tensor(self.sym_right_idx, device=self.device)
 
             # State
             self.height_cmd = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
@@ -436,19 +478,34 @@ def main():
             q = env.robot.data.root_quat_w
             gravity_vec = torch.tensor([0, 0, -1.], device=device).expand(env.num_envs, -1)
             pg = quat_apply_inverse(q, gravity_vec)
-            # Tilt = how much xy components deviate from 0 (upright → pg≈[0,0,-1])
             tilt = torch.sqrt(pg[:, 0]**2 + pg[:, 1]**2).mean().item() * 180 / np.pi
+
+            # Posture metrics
+            jp = env.robot.data.joint_pos[:, env.loco_idx]
+            ankR = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
+            ankP = (jp[:, env.ankle_pitch_loco_idx] - env.default_loco[env.ankle_pitch_loco_idx]).abs().mean().item()
+            hipR = (jp[:, env.hip_roll_loco_idx] - env.default_loco[env.hip_roll_loco_idx]).abs().mean().item()
+            symE = (jp[:, env.sym_left_idx] - jp[:, env.sym_right_idx]).abs().mean().item()
+            pose_err = (jp - env.default_loco).abs().mean().item()
+
             print(f"  [Step {step:5d}] H={height:.3f}m, Tilt={tilt:.1f}deg, "
                   f"Falls={env.total_falls}, Pushes={env.total_pushes}")
+            print(f"              AnkRoll={ankR:.3f} AnkPitch={ankP:.3f} "
+                  f"HipRoll={hipR:.3f} Sym={symE:.3f} Pose={pose_err:.3f}")
 
     # Final stats
     print("-" * 60)
     height = env.robot.data.root_pos_w[:, 2].mean().item()
+    jp = env.robot.data.joint_pos[:, env.loco_idx]
+    ankR = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
+    symE = (jp[:, env.sym_left_idx] - jp[:, env.sym_right_idx]).abs().mean().item()
+    pose_err = (jp - env.default_loco).abs().mean().item()
     print(f"\n[Sonuc] {args_cli.max_steps} step tamamlandi")
     print(f"  Final height: {height:.3f}m (target: {HEIGHT_DEFAULT}m)")
     print(f"  Total falls: {env.total_falls}")
     print(f"  Total pushes: {env.total_pushes}")
     print(f"  Mode: {args_cli.mode}")
+    print(f"  Posture — AnkRoll: {ankR:.3f}, Symmetry: {symE:.3f}, PoseErr: {pose_err:.3f}")
 
     # Keep window open
     print("\n[Play] Simulasyon acik. Ctrl+C ile kapat.")
