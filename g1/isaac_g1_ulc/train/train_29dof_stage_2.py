@@ -141,13 +141,14 @@ REWARD_WEIGHTS = {
     "gait_contact": 2.0,        # Alternating foot contact pattern
     # Stability
     "height": 3.0,              # Height tracking
-    "orientation": 3.0,         # Upright orientation
+    "orientation": 5.0,         # Upright orientation — INCREASED (was 3.0, tilt problem)
     "ang_vel_penalty": 1.0,     # Angular velocity penalty (reduced from Stage 1)
     # Posture (from Stage 1 V2 — keep feet/legs healthy)
     "ankle_penalty": 2.0,       # Ankle roll (reduced from 4.0 — some roll needed for walking)
     "foot_flatness": 1.5,       # Foot flatness (reduced — dynamic gait needs ankle flexibility)
     "symmetry_gait": 1.5,       # Gait symmetry (NOT standing symmetry — phase-shifted)
     "hip_roll_penalty": 1.5,    # Hip roll (reduced — some roll needed for walking)
+    "knee_positive": 3.0,       # NEW: knee must stay positive (prevent backward bending)
     # Penalties
     "action_rate": -0.02,       # Slightly less than Stage 1
     "jerk": -0.01,
@@ -748,6 +749,7 @@ def create_env(num_envs, device):
             # --- Knee alternation ---
             # Swing leg: knee bends MORE (0.65 rad)
             # Stance leg: knee at default (0.42 rad)
+            # IMPORTANT: Knee must ALWAYS be positive (>= 0.1) — negative = backward bend
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
             knee_swing_target = 0.65     # Increased bend for swing
@@ -758,6 +760,14 @@ def create_env(num_envs, device):
 
             knee_err = (lk - left_knee_target) ** 2 + (rk - right_knee_target) ** 2
             r_gait_knee = torch.exp(-5.0 * knee_err)
+
+            # --- Knee positive constraint ---
+            # CRITICAL: Punish negative knee angles — causes backward walking + heel walking
+            # Knee should always be >= 0.1 rad (slight bend minimum)
+            knee_min = 0.1
+            lk_violation = torch.clamp(knee_min - lk, min=0.0) ** 2  # >0 when knee < 0.1
+            rk_violation = torch.clamp(knee_min - rk, min=0.0) ** 2
+            r_knee_positive = torch.exp(-30.0 * (lk_violation + rk_violation))
 
             # --- Foot clearance ---
             # During swing, hip pitch should be more negative (lift leg forward+up)
@@ -781,15 +791,13 @@ def create_env(num_envs, device):
             rk_vel = jv[:, self.right_knee_idx].abs()
 
             # Reward movement during swing, stillness during stance
-            # Swing foot should have velocity > 0.5 rad/s
-            # Stance foot should have velocity < 0.5 rad/s
             swing_activity = l_swing * lk_vel + r_swing * rk_vel  # Should be high
             stance_stability = (1 - l_swing) * lk_vel + (1 - r_swing) * rk_vel  # Should be low
 
             # Combine: high swing_activity + low stance_stability = good
             r_gait_contact = torch.tanh(swing_activity * 0.5) * torch.exp(-2.0 * stance_stability)
 
-            # Scale velocity reward by command magnitude — don't expect gait when standing
+            # Scale gait rewards by command magnitude — don't expect gait when standing
             vel_magnitude = self.vel_cmd[:, 0].abs() + self.vel_cmd[:, 1].abs()
             gait_scale = torch.clamp(vel_magnitude / 0.2, 0.0, 1.0)  # 0 when standing, 1 when walking
 
@@ -880,6 +888,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
                 + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
+                + REWARD_WEIGHTS["knee_positive"] * r_knee_positive
                 # Penalties
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
@@ -1111,6 +1120,12 @@ def main():
             writer.add_scalar("posture/hip_roll_err", hip_roll_err, iteration)
             writer.add_scalar("posture/gait_sym_err", sym_err, iteration)
 
+            # Knee angles — monitor for backward bending
+            knee_l = jp[:, env.left_knee_idx].mean().item()
+            knee_r = jp[:, env.right_knee_idx].mean().item()
+            writer.add_scalar("posture/knee_left", knee_l, iteration)
+            writer.add_scalar("posture/knee_right", knee_r, iteration)
+
         if iteration % 50 == 0:
             avg_ep = np.mean(completed_rewards[-100:]) if completed_rewards else 0
             height = env.robot.data.root_pos_w[:, 2].mean().item()
@@ -1120,10 +1135,13 @@ def main():
             # Posture
             jp = env.robot.data.joint_pos[:, env.loco_idx]
             ankR = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
+            knee_l_p = jp[:, env.left_knee_idx].mean().item()
+            knee_r_p = jp[:, env.right_knee_idx].mean().item()
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
                   f"H={height:.3f} vx={avg_vx:.3f}(cmd:{cmd_vx:.3f}) "
                   f"Lv={env.curr_level} ankR={ankR:.3f} "
+                  f"knL={knee_l_p:.2f} knR={knee_r_p:.2f} "
                   f"LR={losses['lr']:.2e} std={np.exp(net.log_std.data.mean().item()):.3f}")
 
         # Save checkpoints
