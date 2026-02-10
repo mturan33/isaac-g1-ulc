@@ -148,7 +148,7 @@ REWARD_WEIGHTS = {
     "foot_flatness": 1.5,       # Foot flatness (reduced — dynamic gait needs ankle flexibility)
     "symmetry_gait": 1.5,       # Gait symmetry (NOT standing symmetry — phase-shifted)
     "hip_roll_penalty": 1.5,    # Hip roll (reduced — some roll needed for walking)
-    "knee_positive": 3.0,       # NEW: knee must stay positive (prevent backward bending)
+    "knee_negative_penalty": -8.0,  # HARD penalty for knee < 0.1 rad (backward bending)
     # Penalties
     "action_rate": -0.02,       # Slightly less than Stage 1
     "jerk": -0.01,
@@ -761,13 +761,14 @@ def create_env(num_envs, device):
             knee_err = (lk - left_knee_target) ** 2 + (rk - right_knee_target) ** 2
             r_gait_knee = torch.exp(-5.0 * knee_err)
 
-            # --- Knee positive constraint ---
-            # CRITICAL: Punish negative knee angles — causes backward walking + heel walking
-            # Knee should always be >= 0.1 rad (slight bend minimum)
+            # --- Knee negative penalty ---
+            # CRITICAL: Hard penalty for negative knee angles — causes backward walking + heel walking
+            # Knee should always be >= 0.1 rad. Below that → escalating linear penalty
+            # At knee=-0.09: violation = 0.19, penalty = 0.19 * (-8.0) = -1.52 per knee
             knee_min = 0.1
-            lk_violation = torch.clamp(knee_min - lk, min=0.0) ** 2  # >0 when knee < 0.1
-            rk_violation = torch.clamp(knee_min - rk, min=0.0) ** 2
-            r_knee_positive = torch.exp(-30.0 * (lk_violation + rk_violation))
+            lk_violation = torch.clamp(knee_min - lk, min=0.0)  # linear, not squared
+            rk_violation = torch.clamp(knee_min - rk, min=0.0)
+            r_knee_neg_penalty = lk_violation + rk_violation  # total violation magnitude
 
             # --- Foot clearance ---
             # During swing, hip pitch should be more negative (lift leg forward+up)
@@ -888,7 +889,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
                 + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
-                + REWARD_WEIGHTS["knee_positive"] * r_knee_positive
+                + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 # Penalties
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
@@ -907,7 +908,14 @@ def create_env(num_envs, device):
             # Fall detection
             fallen = (pos[:, 2] < 0.35) | (pos[:, 2] > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
-            terminated = fallen | bad_orientation
+
+            # Knee hyperextension termination — knee < -0.05 rad is physically invalid
+            jp = self.robot.data.joint_pos[:, self.loco_idx]
+            lk = jp[:, self.left_knee_idx]
+            rk = jp[:, self.right_knee_idx]
+            knee_hyperextended = (lk < -0.05) | (rk < -0.05)
+
+            terminated = fallen | bad_orientation | knee_hyperextended
 
             # Time limit
             time_out = self.episode_length_buf >= self.max_episode_length
