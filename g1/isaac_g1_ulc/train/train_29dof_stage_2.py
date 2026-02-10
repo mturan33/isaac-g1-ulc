@@ -70,14 +70,15 @@ ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
 # CURRICULUM
 # ============================================================================
 
-# NOTE: G1 coordinate system — vx < 0 = FORWARD, vx > 0 = BACKWARD
-# vel_cmd is given in BODY frame to the policy
-# The commands below are in BODY frame: negative vx = forward walking
+# NOTE: 29DoF G1 body frame — vx > 0 = FORWARD, vx < 0 = BACKWARD
+# Confirmed by WORLD position tracking: robot faces +Y at spawn,
+# body-frame +X is the robot's forward direction.
+# The old 23DoF model had -X as forward — this model is DIFFERENT!
 CURRICULUM = [
     {
         "description": "L0: Slow forward walk, no push",
         "threshold": 16.0,
-        "vx": (-0.3, 0.0),      # Slow forward (negative = forward in G1)
+        "vx": (0.0, 0.3),       # Slow forward (positive = forward in 29DoF G1)
         "vy": (-0.05, 0.05),    # Nearly zero lateral
         "vyaw": (-0.1, 0.1),    # Nearly zero turning
         "push_force": (0, 0),
@@ -87,7 +88,7 @@ CURRICULUM = [
     {
         "description": "L1: Medium forward walk, light push",
         "threshold": 18.0,
-        "vx": (-0.5, 0.0),      # Medium forward
+        "vx": (0.0, 0.5),       # Medium forward
         "vy": (-0.1, 0.1),      # Small lateral
         "vyaw": (-0.3, 0.3),    # Small turning
         "push_force": (0, 10),
@@ -97,7 +98,7 @@ CURRICULUM = [
     {
         "description": "L2: Forward+backward+lateral, medium push",
         "threshold": 19.0,
-        "vx": (-0.7, 0.2),      # Forward + small backward
+        "vx": (-0.2, 0.7),      # Forward + small backward
         "vy": (-0.2, 0.2),      # Lateral
         "vyaw": (-0.5, 0.5),    # Turning
         "push_force": (0, 15),
@@ -107,7 +108,7 @@ CURRICULUM = [
     {
         "description": "L3: Full velocity range, medium push",
         "threshold": 20.0,
-        "vx": (-1.0, 0.3),      # Full range
+        "vx": (-0.3, 1.0),      # Full range
         "vy": (-0.3, 0.3),      # Full lateral
         "vyaw": (-0.8, 0.8),    # Full turning
         "push_force": (0, 20),
@@ -117,7 +118,7 @@ CURRICULUM = [
     {
         "description": "L4: Aggressive velocity + strong push (FINAL)",
         "threshold": None,
-        "vx": (-1.2, 0.5),
+        "vx": (-0.5, 1.2),
         "vy": (-0.4, 0.4),
         "vyaw": (-1.0, 1.0),
         "push_force": (0, 30),
@@ -133,8 +134,8 @@ CURRICULUM = [
 REWARD_WEIGHTS = {
     # Velocity tracking (primary task)
     "vx": 5.0,                  # Forward velocity tracking (most important)
-    "vy": 2.0,                  # Lateral velocity tracking
-    "vyaw": 2.0,                # Yaw rate tracking
+    "vy": 3.0,                  # Lateral velocity tracking — INCREASED (was 2.0, drift problem)
+    "vyaw": 3.0,                # Yaw rate tracking — INCREASED (was 2.0, rotation problem)
     # Gait control
     "gait_knee": 3.0,           # Alternating knee bend pattern
     "gait_clearance": 2.0,      # Foot clearance during swing
@@ -815,8 +816,8 @@ def create_env(num_envs, device):
             h_err = (height - self.height_cmd).abs()
             r_height = torch.exp(-10.0 * h_err)
 
-            # Orientation (upright)
-            r_orient = torch.exp(-5.0 * (g[:, :2] ** 2).sum(-1))
+            # Orientation (upright) — scale 8.0 for strong uprightness signal
+            r_orient = torch.exp(-8.0 * (g[:, :2] ** 2).sum(-1))
 
             # Angular velocity penalty (want low)
             r_ang = torch.exp(-1.0 * (av_b ** 2).sum(-1))
