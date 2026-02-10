@@ -5,13 +5,14 @@ Gorsel test icin. Checkpoint yukleyip robotu izle.
 
 MODES:
 - standing: vx=0, sadece ayakta durma (Stage 1 uyumu)
-- slow: vx=-0.2 (yavas ileri yurume)
-- walk: vx=-0.4 (normal yurume)
-- fast: vx=-0.8 (hizli yurume)
+- slow: vx=0.2 (yavas ileri yurume)
+- walk: vx=0.4 (normal yurume)
+- fast: vx=0.8 (hizli yurume)
 - mixed: Degisen hiz komutlari (demo)
 - push: walk + periyodik itme kuvvetleri
 
-IMPORTANT: vx < 0 = FORWARD in G1 coordinate system!
+IMPORTANT: 29DoF G1 body frame — vx > 0 = FORWARD, vx < 0 = BACKWARD
+(23DoF model was opposite! This 29DoF USD has +X as robot's forward.)
 """
 
 import torch
@@ -91,11 +92,11 @@ from isaaclab.utils.math import quat_apply_inverse
 # vx < 0 = FORWARD in G1!
 MODE_CONFIGS = {
     "standing": {"vx": 0.0, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
-    "slow":     {"vx": -0.2, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
-    "walk":     {"vx": -0.4, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
-    "fast":     {"vx": -0.8, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
-    "mixed":    {"vx": -0.3, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
-    "push":     {"vx": -0.4, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 30), "push_interval": (100, 300)},
+    "slow":     {"vx": 0.2, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
+    "walk":     {"vx": 0.4, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
+    "fast":     {"vx": 0.8, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
+    "mixed":    {"vx": 0.3, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
+    "push":     {"vx": 0.4, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 30), "push_interval": (100, 300)},
 }
 
 mode_cfg = MODE_CONFIGS[args_cli.mode]
@@ -103,14 +104,14 @@ mode_cfg = MODE_CONFIGS[args_cli.mode]
 # Mixed mode schedule (step, vx, vy, vyaw)
 MIXED_SCHEDULE = [
     (0,    0.0,  0.0, 0.0),    # Stand
-    (300, -0.2,  0.0, 0.0),    # Slow forward
-    (600, -0.5,  0.0, 0.0),    # Medium forward
-    (900, -0.5,  0.0, 0.3),    # Forward + turn right
-    (1200,-0.5,  0.0, -0.3),   # Forward + turn left
-    (1500,-0.3,  0.15, 0.0),   # Forward + sidestep right
-    (1800,-0.3, -0.15, 0.0),   # Forward + sidestep left
-    (2100,-0.8,  0.0, 0.0),    # Fast forward
-    (2400, 0.2,  0.0, 0.0),    # Slow backward
+    (300,  0.2,  0.0, 0.0),    # Slow forward
+    (600,  0.5,  0.0, 0.0),    # Medium forward
+    (900,  0.5,  0.0, 0.3),    # Forward + turn right
+    (1200, 0.5,  0.0, -0.3),   # Forward + turn left
+    (1500, 0.3,  0.15, 0.0),   # Forward + sidestep right
+    (1800, 0.3, -0.15, 0.0),   # Forward + sidestep left
+    (2100, 0.8,  0.0, 0.0),    # Fast forward
+    (2400,-0.2,  0.0, 0.0),    # Slow backward
     (2700, 0.0,  0.0, 0.0),    # Stop
 ]
 
@@ -568,11 +569,19 @@ def main():
 
             dist = env.distance_traveled.mean().item()
 
+            # World position for direction debugging
+            wx = env.robot.data.root_pos_w[:, 0].mean().item()
+            wy = env.robot.data.root_pos_w[:, 1].mean().item()
+            # World frame velocity
+            wvx = env.robot.data.root_lin_vel_w[:, 0].mean().item()
+            wvy = env.robot.data.root_lin_vel_w[:, 1].mean().item()
+
             print(f"  [Step {step:5d}] H={height:.3f}m Tilt={tilt:.1f}deg "
                   f"vx={actual_vx:.3f}(cmd:{cmd_vx:.3f}) vy={actual_vy:.3f}(cmd:{cmd_vy:.3f})")
             print(f"              Knees: L={lk:.2f} R={rk:.2f} | "
                   f"ankR={ankR:.3f} hipR={hipR:.3f} | "
                   f"Falls={env.total_falls} Pushes={env.total_pushes} Dist={dist:.2f}m")
+            print(f"              WORLD: pos=({wx:.2f}, {wy:.2f}) vel=({wvx:.3f}, {wvy:.3f})")
 
     # Final stats
     print("-" * 70)
