@@ -203,8 +203,8 @@ ACTUATOR_PARAMS = {
             ".*_hip_pitch_joint": 88.0,
             ".*_knee_joint": 139.0,
             ".*waist_yaw_joint": 88.0,
-            ".*waist_roll_joint": 35.0,
-            ".*waist_pitch_joint": 35.0,
+            ".*waist_roll_joint": 88.0,    # Was 35.0 — too weak, waist drifted causing torso tilt
+            ".*waist_pitch_joint": 88.0,   # Was 35.0 — increased to match hip_pitch level
         },
         "velocity_limit": {
             ".*_hip_yaw_joint": 32.0,
@@ -227,7 +227,7 @@ ACTUATOR_PARAMS = {
             ".*_hip_roll_joint": 5.0,
             ".*_hip_pitch_joint": 5.0,
             ".*_knee_joint": 5.0,
-            ".*waist.*": 5.0,
+            ".*waist.*": 10.0,  # Was 5.0 — increased to reduce waist oscillation during walking
         },
         "armature": 0.01,
     },
