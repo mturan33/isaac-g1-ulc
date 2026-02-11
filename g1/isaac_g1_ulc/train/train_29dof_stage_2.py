@@ -670,6 +670,16 @@ def create_env(num_envs, device):
             tgt = self.robot.data.default_joint_pos.clone()
             tgt[:, self.loco_idx] = self.default_loco + act * self.action_scales
 
+            # CLAMP waist joints to prevent extreme lean
+            # waist indices in loco: 12=yaw, 13=roll, 14=pitch
+            # Default is 0.0 for all three. Limit deviations:
+            waist_yaw_idx = self.loco_idx[12]
+            waist_roll_idx = self.loco_idx[13]
+            waist_pitch_idx = self.loco_idx[14]
+            tgt[:, waist_yaw_idx].clamp_(-0.3, 0.3)    # ±17° yaw
+            tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)  # ±8.6° roll (tight — lateral lean kills posture)
+            tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)   # ±11.5° pitch (prevents forward lean exploit)
+
             # Hold arms at default
             tgt[:, self.arm_idx] = self.default_arm
 
@@ -986,7 +996,14 @@ def create_env(num_envs, device):
             rk = jp[:, self.right_knee_idx]
             knee_hyperextended = (lk < -0.05) | (rk < -0.05)
 
-            terminated = fallen | bad_orientation | knee_hyperextended
+            # Waist excessive lean termination — prevents forward lean exploit
+            # waist_pitch (loco idx 14): |pitch| > 0.35 rad (~20°) = too far
+            # waist_roll (loco idx 13): |roll| > 0.25 rad (~14°) = too far
+            waist_pitch_val = jp[:, 14]
+            waist_roll_val = jp[:, 13]
+            waist_excessive = (waist_pitch_val.abs() > 0.35) | (waist_roll_val.abs() > 0.25)
+
+            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
 
             # Time limit
             time_out = self.episode_length_buf >= self.max_episode_length
