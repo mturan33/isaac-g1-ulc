@@ -154,9 +154,12 @@ REWARD_WEIGHTS = {
     "waist_posture": 3.0,       # Penalize waist_roll and waist_pitch deviation from 0
     # Standing posture — when vel_cmd ~0, all leg joints should return to default
     "standing_posture": 3.0,    # Conditional: full weight when standing, 0 when walking
-    # Penalties
+    # Physics-based penalties (from literature review)
+    "vz_penalty": -2.0,        # Vertical velocity penalty — prevents bouncing/oscillation (Booster Gym: -2.0)
+    "feet_slip": -0.1,         # Stance foot sliding penalty (Booster Gym: -0.1)
+    # Smoothness penalties
     "action_rate": -0.02,       # Slightly less than Stage 1
-    "jerk": -0.01,
+    "jerk": -0.05,              # Joint acceleration penalty — INCREASED (was -0.01, literature: -0.01~-1e-7)
     "energy": -0.0003,
     "alive": 1.0,
 }
@@ -591,19 +594,35 @@ def create_env(num_envs, device):
             self.vel_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (vyaw_hi - vyaw_lo) + vyaw_lo
 
         def update_curriculum(self, r):
+            """Multi-criteria curriculum gating (from literature: ULC paper).
+            Advancement requires BOTH:
+              1. Mean reward > threshold
+              2. vx tracking ratio > 0.6 (actual/cmd)
+            This prevents gaming where robot gets high reward without proper walking.
+            """
             self.curr_hist.append(r)
             if len(self.curr_hist) >= 100:
                 avg = np.mean(self.curr_hist[-100:])
                 thr = CURRICULUM[self.curr_level]["threshold"]
+
+                # Multi-criteria check
                 if thr is not None and avg > thr and self.curr_level < len(CURRICULUM) - 1:
-                    self.curr_level += 1
-                    lv = CURRICULUM[self.curr_level]
-                    print(f"\n*** LEVEL UP! Now {self.curr_level}: {lv['description']} ***")
-                    print(f"    vx={lv['vx']}, vy={lv['vy']}, vyaw={lv['vyaw']}")
-                    print(f"    push={lv['push_force']}, mass_scale={lv['mass_scale']}")
-                    self.curr_hist = []
-                    # Resample all commands for new level
-                    self._sample_commands(torch.arange(self.num_envs, device=self.device))
+                    # Additional gate: vx tracking quality
+                    lv_b = quat_apply_inverse(self.robot.data.root_quat_w, self.robot.data.root_lin_vel_w)
+                    vx_actual = lv_b[:, 0].mean().item()
+                    vx_cmd = self.vel_cmd[:, 0].mean().item()
+                    vx_ratio = vx_actual / max(abs(vx_cmd), 0.05)  # tracking ratio
+
+                    if vx_ratio > 0.6:  # at least 60% of commanded velocity achieved
+                        self.curr_level += 1
+                        lv = CURRICULUM[self.curr_level]
+                        print(f"\n*** LEVEL UP! Now {self.curr_level}: {lv['description']} ***")
+                        print(f"    vx={lv['vx']}, vy={lv['vy']}, vyaw={lv['vyaw']}")
+                        print(f"    push={lv['push_force']}, mass_scale={lv['mass_scale']}")
+                        print(f"    (vx_ratio={vx_ratio:.2f}, reward={avg:.1f})")
+                        self.curr_hist = []
+                        # Resample all commands for new level
+                        self._sample_commands(torch.arange(self.num_envs, device=self.device))
 
         def _apply_push(self):
             """Apply random perturbation forces to robot."""
@@ -877,14 +896,35 @@ def create_env(num_envs, device):
             r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
 
             # ============================================
-            # PENALTIES
+            # PHYSICS PENALTIES (from literature: Booster Gym, Humanoid-Gym)
+            # ============================================
+
+            # Vertical velocity penalty — prevents bouncing/oscillation during walking
+            vz = lv_b[:, 2]  # body-frame vertical velocity
+            r_vz_penalty = vz ** 2
+
+            # Feet slip penalty — stance foot should not slide on ground
+            # Use ankle joint velocities as proxy for foot sliding
+            # During stance phase, ankle velocities should be near zero
+            ankle_pitch_vel = jv[:, self.ankle_pitch_loco_idx].abs()  # [N, 2]
+            ankle_roll_vel = jv[:, self.ankle_roll_loco_idx].abs()    # [N, 2]
+            # Stance mask: 1-swing = stance (low velocity expected)
+            left_stance = 1.0 - l_swing   # 1 during stance, 0 during swing
+            right_stance = 1.0 - r_swing
+            # Left foot slip: stance * (left_ankle_pitch_vel + left_ankle_roll_vel)
+            left_slip = left_stance * (ankle_pitch_vel[:, 0] + ankle_roll_vel[:, 0])
+            right_slip = right_stance * (ankle_pitch_vel[:, 1] + ankle_roll_vel[:, 1])
+            r_feet_slip = left_slip + right_slip
+
+            # ============================================
+            # SMOOTHNESS PENALTIES
             # ============================================
 
             # Action rate
             dact = self.prev_act - self._prev_act
             r_action_rate = (dact ** 2).sum(-1)
 
-            # Jerk
+            # Jerk (joint acceleration)
             if self._prev_jvel is None:
                 self._prev_jvel = jv.clone()
             jerk = ((jv - self._prev_jvel) ** 2).sum(-1)
@@ -918,7 +958,10 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
                 + REWARD_WEIGHTS["standing_posture"] * r_standing_posture
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
-                # Penalties
+                # Physics penalties
+                + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
+                + REWARD_WEIGHTS["feet_slip"] * r_feet_slip
+                # Smoothness penalties
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
