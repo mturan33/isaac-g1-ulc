@@ -152,6 +152,8 @@ REWARD_WEIGHTS = {
     "knee_negative_penalty": -8.0,  # HARD penalty for knee < 0.1 rad (backward bending)
     # Waist posture — keep torso upright (NEW: fixes torso tilt problem)
     "waist_posture": 3.0,       # Penalize waist_roll and waist_pitch deviation from 0
+    # Standing posture — when vel_cmd ~0, all leg joints should return to default
+    "standing_posture": 3.0,    # Conditional: full weight when standing, 0 when walking
     # Penalties
     "action_rate": -0.02,       # Slightly less than Stage 1
     "jerk": -0.01,
@@ -856,7 +858,7 @@ def create_env(num_envs, device):
             hip_roll_err = (jp[:, self.hip_roll_loco_idx] - self.default_loco[self.hip_roll_loco_idx]) ** 2
             r_hip_roll = torch.exp(-10.0 * hip_roll_err.sum(-1))
 
-            # Waist posture — keep waist_roll and waist_pitch near 0
+            # Waist posture — keep waist_roll and waist_pitch near 0 (ALWAYS active)
             # waist indices in loco: 12=yaw, 13=roll, 14=pitch
             waist_roll_val = jp[:, 13]   # waist_roll in loco space
             waist_pitch_val = jp[:, 14]  # waist_pitch in loco space
@@ -864,6 +866,15 @@ def create_env(num_envs, device):
             waist_pitch_err = (waist_pitch_val - self.default_loco[14]) ** 2
             # Penalize roll more heavily (causes lateral lean) + pitch (causes forward lean)
             r_waist_posture = torch.exp(-20.0 * waist_roll_err) * torch.exp(-15.0 * waist_pitch_err)
+
+            # Standing posture — when vel_cmd ~0, ALL leg joints should be at default
+            # When walking, gait rewards take over and legs are free to follow gait pattern
+            # standing_scale: 1.0 when standing (vel_mag=0), 0.0 when walking (vel_mag>0.2)
+            standing_scale = 1.0 - gait_scale  # gait_scale computed above: 0=standing, 1=walking
+            leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2  # all 12 leg joints
+            r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))
+            # Blend: standing_scale * default_posture + (1-standing_scale) * perfect_score
+            r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
 
             # ============================================
             # PENALTIES
@@ -905,6 +916,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
                 + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
+                + REWARD_WEIGHTS["standing_posture"] * r_standing_posture
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 # Penalties
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
