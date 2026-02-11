@@ -142,7 +142,7 @@ REWARD_WEIGHTS = {
     "gait_contact": 2.0,        # Alternating foot contact pattern
     # Stability
     "height": 3.0,              # Height tracking
-    "orientation": 5.0,         # Upright orientation — INCREASED (was 3.0, tilt problem)
+    "orientation": 6.0,         # Upright orientation — INCREASED (was 5.0→6.0, scale 8→15, torso tilt fix)
     "ang_vel_penalty": 1.0,     # Angular velocity penalty (reduced from Stage 1)
     # Posture (from Stage 1 V2 — keep feet/legs healthy)
     "ankle_penalty": 2.0,       # Ankle roll (reduced from 4.0 — some roll needed for walking)
@@ -150,6 +150,8 @@ REWARD_WEIGHTS = {
     "symmetry_gait": 1.5,       # Gait symmetry (NOT standing symmetry — phase-shifted)
     "hip_roll_penalty": 1.5,    # Hip roll (reduced — some roll needed for walking)
     "knee_negative_penalty": -8.0,  # HARD penalty for knee < 0.1 rad (backward bending)
+    # Waist posture — keep torso upright (NEW: fixes torso tilt problem)
+    "waist_posture": 3.0,       # Penalize waist_roll and waist_pitch deviation from 0
     # Penalties
     "action_rate": -0.02,       # Slightly less than Stage 1
     "jerk": -0.01,
@@ -816,8 +818,11 @@ def create_env(num_envs, device):
             h_err = (height - self.height_cmd).abs()
             r_height = torch.exp(-10.0 * h_err)
 
-            # Orientation (upright) — scale 8.0 for strong uprightness signal
-            r_orient = torch.exp(-8.0 * (g[:, :2] ** 2).sum(-1))
+            # Orientation (upright) — scale 15.0 for very strong uprightness signal
+            # At 3° tilt: g[:,:2]~0.052, sum=0.0027 → exp(-15*0.0027)=0.96 (was 0.98 with scale 8)
+            # At 5° tilt: g[:,:2]~0.087, sum=0.0076 → exp(-15*0.0076)=0.89 (was 0.94 with scale 8)
+            # At 10° tilt: g[:,:2]~0.17, sum=0.030 → exp(-15*0.030)=0.64 (was 0.79 with scale 8)
+            r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))
 
             # Angular velocity penalty (want low)
             r_ang = torch.exp(-1.0 * (av_b ** 2).sum(-1))
@@ -850,6 +855,15 @@ def create_env(num_envs, device):
             # Hip roll — prevent leaning
             hip_roll_err = (jp[:, self.hip_roll_loco_idx] - self.default_loco[self.hip_roll_loco_idx]) ** 2
             r_hip_roll = torch.exp(-10.0 * hip_roll_err.sum(-1))
+
+            # Waist posture — keep waist_roll and waist_pitch near 0
+            # waist indices in loco: 12=yaw, 13=roll, 14=pitch
+            waist_roll_val = jp[:, 13]   # waist_roll in loco space
+            waist_pitch_val = jp[:, 14]  # waist_pitch in loco space
+            waist_roll_err = (waist_roll_val - self.default_loco[13]) ** 2
+            waist_pitch_err = (waist_pitch_val - self.default_loco[14]) ** 2
+            # Penalize roll more heavily (causes lateral lean) + pitch (causes forward lean)
+            r_waist_posture = torch.exp(-20.0 * waist_roll_err) * torch.exp(-15.0 * waist_pitch_err)
 
             # ============================================
             # PENALTIES
@@ -890,6 +904,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
                 + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
+                + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 # Penalties
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
@@ -1135,6 +1150,29 @@ def main():
             writer.add_scalar("posture/knee_left", knee_l, iteration)
             writer.add_scalar("posture/knee_right", knee_r, iteration)
 
+            # Waist joints — monitor for torso tilt
+            waist_yaw = jp[:, 12].mean().item()   # waist_yaw in loco space
+            waist_roll = jp[:, 13].mean().item()   # waist_roll — lateral lean
+            waist_pitch = jp[:, 14].mean().item()  # waist_pitch — forward lean
+            writer.add_scalar("posture/waist_yaw", waist_yaw, iteration)
+            writer.add_scalar("posture/waist_roll", waist_roll, iteration)
+            writer.add_scalar("posture/waist_pitch", waist_pitch, iteration)
+
+            # Torso tilt angle (degrees) — from projected gravity
+            q_root = env.robot.data.root_quat_w
+            gvec = torch.tensor([0, 0, -1.], device=env.device).expand(env.num_envs, -1)
+            proj_g = quat_apply_inverse(q_root, gvec)
+            tilt_rad = torch.asin(torch.clamp((proj_g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))
+            tilt_deg = torch.rad2deg(tilt_rad).mean().item()
+            writer.add_scalar("posture/tilt_deg", tilt_deg, iteration)
+
+            # Lateral velocity tracking (vy)
+            vy_actual = lv_b[:, 1].mean().item()
+            vy_cmd = env.vel_cmd[:, 1].mean().item()
+            writer.add_scalar("robot/vy_actual", vy_actual, iteration)
+            writer.add_scalar("robot/vy_cmd", vy_cmd, iteration)
+            writer.add_scalar("robot/vy_err", abs(vy_actual - vy_cmd), iteration)
+
         if iteration % 50 == 0:
             avg_ep = np.mean(completed_rewards[-100:]) if completed_rewards else 0
             height = env.robot.data.root_pos_w[:, 2].mean().item()
@@ -1146,11 +1184,19 @@ def main():
             ankR = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
             knee_l_p = jp[:, env.left_knee_idx].mean().item()
             knee_r_p = jp[:, env.right_knee_idx].mean().item()
+            # Waist and tilt for terminal monitoring
+            w_roll = jp[:, 13].mean().item()
+            w_pitch = jp[:, 14].mean().item()
+            q_root = env.robot.data.root_quat_w
+            gvec = torch.tensor([0, 0, -1.], device=env.device).expand(env.num_envs, -1)
+            proj_g = quat_apply_inverse(q_root, gvec)
+            tilt_d = torch.rad2deg(torch.asin(torch.clamp((proj_g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))).mean().item()
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
                   f"H={height:.3f} vx={avg_vx:.3f}(cmd:{cmd_vx:.3f}) "
                   f"Lv={env.curr_level} ankR={ankR:.3f} "
                   f"knL={knee_l_p:.2f} knR={knee_r_p:.2f} "
+                  f"tilt={tilt_d:.1f}° wR={w_roll:.3f} wP={w_pitch:.3f} "
                   f"LR={losses['lr']:.2e} std={np.exp(net.log_std.data.mean().item()):.3f}")
 
         # Save checkpoints
