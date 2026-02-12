@@ -83,13 +83,14 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply_inverse, quat_from_angle_axis
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 # ============================================================================
 # MODE CONFIGS
 # ============================================================================
 
-# vx < 0 = FORWARD in G1!
+# NOTE: 29DoF G1 — vx > 0 = FORWARD (confirmed by training and CLAUDE.md)
 MODE_CONFIGS = {
     "standing": {"vx": 0.0, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
     "slow":     {"vx": 0.2, "vy": 0.0, "vyaw": 0.0, "push_force": (0, 0), "push_interval": (9999, 9999)},
@@ -372,6 +373,25 @@ def create_env(num_envs, device):
             self.distance_traveled = torch.zeros(self.num_envs, device=self.device)
             self.prev_pos = None
 
+            # --- Velocity direction arrow marker ---
+            # Red cone above robot head, shows commanded velocity direction
+            # Only visible when vx_cmd != 0
+            # Using ConeCfg (no Nucleus dependency) — cone tip = forward direction
+            arrow_cfg = VisualizationMarkersCfg(
+                prim_path="/Visuals/velArrow",
+                markers={
+                    "arrow": sim_utils.ConeCfg(
+                        radius=0.06,
+                        height=0.3,
+                        axis="X",  # Cone points along +X (forward in body frame)
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(1.0, 0.1, 0.1)),  # Red
+                    ),
+                },
+            )
+            self.vel_arrow = VisualizationMarkers(arrow_cfg)
+            self._arrow_visible = False
+
             print(f"[Play] {self.num_envs} envs, mode={args_cli.mode}")
 
         @property
@@ -560,6 +580,43 @@ def main():
 
         obs_dict, _, _, _, _ = env.step(action)
         obs_t = obs_dict["policy"]
+
+        # --- Update velocity direction arrow ---
+        vx_cmd = env.vel_cmd[:, 0]
+        vy_cmd = env.vel_cmd[:, 1]
+        vel_mag = torch.sqrt(vx_cmd**2 + vy_cmd**2)
+        has_vel = vel_mag > 0.01  # Only show arrow when there's a nonzero velocity command
+
+        if has_vel.any():
+            # Position: above robot head (root_pos + z offset)
+            arrow_pos = env.robot.data.root_pos_w.clone()
+            arrow_pos[:, 2] += 0.45  # ~45cm above root (above head)
+
+            # Heading: velocity command direction in world frame
+            # vel_cmd is in body frame, need to rotate to world frame for arrow orientation
+            q_root = env.robot.data.root_quat_w
+            euler = quat_to_euler_xyz(q_root)
+            root_yaw = euler[:, 2]  # robot's heading in world frame
+
+            # Command direction = body-frame vel_cmd rotated by root_yaw
+            cmd_heading = torch.atan2(vy_cmd, vx_cmd) + root_yaw
+            z_axis = torch.tensor([[0.0, 0.0, 1.0]], device=device).expand(env.num_envs, -1)
+            arrow_quat = quat_from_angle_axis(cmd_heading, z_axis)
+
+            # Scale arrow length by velocity magnitude
+            default_scale = torch.tensor([0.5, 0.15, 0.15], device=device)
+            arrow_scale = default_scale.unsqueeze(0).expand(env.num_envs, -1).clone()
+            arrow_scale[:, 0] *= vel_mag * 2.0  # Length proportional to speed
+
+            env.vel_arrow.visualize(
+                translations=arrow_pos, orientations=arrow_quat, scales=arrow_scale)
+            if not env._arrow_visible:
+                env.vel_arrow.set_visibility(True)
+                env._arrow_visible = True
+        else:
+            if env._arrow_visible:
+                env.vel_arrow.set_visibility(False)
+                env._arrow_visible = False
 
         # Track velocity
         lv_b = quat_apply_inverse(env.robot.data.root_quat_w, env.robot.data.root_lin_vel_w)
