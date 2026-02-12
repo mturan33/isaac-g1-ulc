@@ -1242,11 +1242,6 @@ def main():
             writer.add_scalar("posture/waist_roll", waist_roll, iteration)
             writer.add_scalar("posture/waist_pitch", waist_pitch, iteration)
 
-            # Yaw rate — monitor for oscillation
-            av_log = quat_apply_inverse(q_root, env.robot.data.root_ang_vel_w)
-            yaw_rate_log = av_log[:, 2].abs().mean().item()
-            writer.add_scalar("posture/yaw_rate", yaw_rate_log, iteration)
-
             # Torso tilt angle (degrees) — from projected gravity
             q_root = env.robot.data.root_quat_w
             gvec = torch.tensor([0, 0, -1.], device=env.device).expand(env.num_envs, -1)
@@ -1254,6 +1249,11 @@ def main():
             tilt_rad = torch.asin(torch.clamp((proj_g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))
             tilt_deg = torch.rad2deg(tilt_rad).mean().item()
             writer.add_scalar("posture/tilt_deg", tilt_deg, iteration)
+
+            # Yaw rate — monitor for oscillation
+            av_log = quat_apply_inverse(q_root, env.robot.data.root_ang_vel_w)
+            yaw_rate_log = av_log[:, 2].abs().mean().item()
+            writer.add_scalar("posture/yaw_rate", yaw_rate_log, iteration)
 
             # Lateral velocity tracking (vy)
             vy_actual = lv_b[:, 1].mean().item()
