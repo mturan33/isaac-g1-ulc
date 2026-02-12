@@ -414,7 +414,7 @@ def create_env(num_envs, device):
             waist_yaw_idx = self.loco_idx[12]
             waist_roll_idx = self.loco_idx[13]
             waist_pitch_idx = self.loco_idx[14]
-            tgt[:, waist_yaw_idx].clamp_(-0.3, 0.3)
+            tgt[:, waist_yaw_idx].clamp_(-0.15, 0.15)
             tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)
             tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)
 
@@ -566,6 +566,25 @@ def main():
         env.vx_history.append(lv_b[:, 0].mean().item())
         env.vx_cmd_history.append(env.vel_cmd[:, 0].mean().item())
 
+        # High-frequency oscillation log (every 20 steps, first 400 steps only)
+        if step % 20 == 0 and step <= 400 and step > 0:
+            jp_hf = env.robot.data.joint_pos[:, env.loco_idx]
+            euler_hf = quat_to_euler_xyz(env.robot.data.root_quat_w)
+            ryaw_hf = euler_hf[:, 2].mean().item() * 180 / np.pi
+            wY_hf = jp_hf[:, 12].mean().item()
+            wR_hf = jp_hf[:, 13].mean().item()
+            lhr_hf = jp_hf[:, 2].mean().item()
+            rhr_hf = jp_hf[:, 3].mean().item()
+            lhy_hf = jp_hf[:, 4].mean().item()
+            rhy_hf = jp_hf[:, 5].mean().item()
+            av_hf = quat_apply_inverse(env.robot.data.root_quat_w, env.robot.data.root_ang_vel_w)
+            yr_hf = av_hf[:, 2].mean().item()
+            rr_hf = av_hf[:, 0].mean().item()  # roll rate
+            print(f"    [{step:3d}] wY={wY_hf:+.3f} wR={wR_hf:+.3f} "
+                  f"hRoll L={lhr_hf:+.3f} R={rhr_hf:+.3f} "
+                  f"hYaw L={lhy_hf:+.3f} R={rhy_hf:+.3f} "
+                  f"rootYaw={ryaw_hf:+.1f}° yR={yr_hf:+.3f} rR={rr_hf:+.3f}")
+
         # Periodic status
         if step % 200 == 0 and step > 0:
             height = env.robot.data.root_pos_w[:, 2].mean().item()
@@ -597,11 +616,43 @@ def main():
             wvx = env.robot.data.root_lin_vel_w[:, 0].mean().item()
             wvy = env.robot.data.root_lin_vel_w[:, 1].mean().item()
 
+            # Detailed joint logging for oscillation/yaw diagnosis
+            # Loco indices: 0-1=hip_pitch, 2-3=hip_roll, 4-5=hip_yaw,
+            #   6-7=knee, 8-9=ankle_pitch, 10-11=ankle_roll, 12=waist_yaw, 13=waist_roll, 14=waist_pitch
+            lhp = jp[:, 0].mean().item()   # left_hip_pitch
+            rhp = jp[:, 1].mean().item()   # right_hip_pitch
+            lhr = jp[:, 2].mean().item()   # left_hip_roll
+            rhr = jp[:, 3].mean().item()   # right_hip_roll
+            lhy = jp[:, 4].mean().item()   # left_hip_yaw
+            rhy = jp[:, 5].mean().item()   # right_hip_yaw
+            lap = jp[:, 8].mean().item()   # left_ankle_pitch
+            rap = jp[:, 9].mean().item()   # right_ankle_pitch
+            lar = jp[:, 10].mean().item()  # left_ankle_roll
+            rar = jp[:, 11].mean().item()  # right_ankle_roll
+            wY = jp[:, 12].mean().item()   # waist_yaw
+            wR = jp[:, 13].mean().item()   # waist_roll
+            wP = jp[:, 14].mean().item()   # waist_pitch
+
+            # Root yaw from quaternion
+            euler = quat_to_euler_xyz(q)
+            root_yaw = euler[:, 2].mean().item() * 180 / np.pi  # degrees
+
+            # Angular velocity (yaw rate)
+            av_b = quat_apply_inverse(q, env.robot.data.root_ang_vel_w)
+            yaw_rate = av_b[:, 2].mean().item()
+
             print(f"  [Step {step:5d}] H={height:.3f}m Tilt={tilt:.1f}deg "
                   f"vx={actual_vx:.3f}(cmd:{cmd_vx:.3f}) vy={actual_vy:.3f}(cmd:{cmd_vy:.3f})")
             print(f"              Knees: L={lk:.2f} R={rk:.2f} | "
                   f"ankR={ankR:.3f} hipR={hipR:.3f} | "
                   f"Falls={env.total_falls} Pushes={env.total_pushes} Dist={dist:.2f}m")
+            print(f"              HipPitch: L={lhp:.3f} R={rhp:.3f} | "
+                  f"HipRoll: L={lhr:.3f} R={rhr:.3f} | "
+                  f"HipYaw: L={lhy:.3f} R={rhy:.3f}")
+            print(f"              AnklePitch: L={lap:.3f} R={rap:.3f} | "
+                  f"AnkleRoll: L={lar:.3f} R={rar:.3f}")
+            print(f"              Waist: yaw={wY:.3f} roll={wR:.3f} pitch={wP:.3f}")
+            print(f"              RootYaw={root_yaw:.1f}deg YawRate={yaw_rate:.3f} rad/s")
             print(f"              WORLD: pos=({wx:.2f}, {wy:.2f}) vel=({wvx:.3f}, {wvy:.3f})")
 
     # Final stats
