@@ -1,7 +1,23 @@
 """
-29DoF G1 Stage 2: Locomotion with Gait Control
-================================================
+29DoF G1 Stage 2: Omnidirectional Locomotion with Gait Control (V5)
+====================================================================
 Stage 1 checkpoint'tan fine-tune ile yurume egitimi.
+
+V5 (2026-02-12): Omnidirectional rewrite — robot her yone yuruyebilir, donebilir,
+durabilir ve geri gidebilir. Onemli degisiklikler:
+- 7-level curriculum (L0'dan itibaren vy ve vyaw aktif)
+- Multi-axis curriculum gating (vx + vy + vyaw hepsi kontrol edilir)
+- Conditional yaw_rate_penalty (sadece vyaw_cmd ~0 iken aktif)
+- Balanced reward weights (vx=4, vy=4, vyaw=4)
+- ang_vel_penalty z-axis haric (donme penalize edilmesin)
+- gait_scale vyaw dahil (donmede gait aktif)
+- Standing %15 sample (standing unutulmasin)
+- Random resample interval (150-400)
+- vyaw exp scale -3 -> -5 (daha siki tracking)
+- max_iterations 35000 (7 level icin yeterli)
+
+V4 (2026-02-12): Waist yaw fix, oscillation fix, orientation tuning.
+V3 (2026-02-11): Gait control, posture from Stage 1 V2, knee constraint.
 
 ARCHITECTURE: Single Actor-Critic (Loco only) — same as Stage 1
 - LocoActor: 66 obs -> 15 act (12 leg + 3 waist)
@@ -12,20 +28,24 @@ GAIT CONTROL:
 - Phase-based alternating gait (sin/cos @ 1.5 Hz)
 - Knee alternation: swing leg 0.6rad, stance leg default(0.42)
 - Foot clearance: hip lift during swing phase
-- Velocity tracking: vx, vy, vyaw
+- Velocity tracking: vx, vy, vyaw (omnidirectional)
 
-CURRICULUM (5 levels):
-- L0: Slow forward walk (vx=0~0.3), no push
-- L1: Medium forward walk (vx=0~0.5), light push
-- L2: Forward+backward+lateral (vx=-0.2~0.7, vy, vyaw), medium push
-- L3: Full velocity range (vx=-0.3~1.0, vy, vyaw), medium push
-- L4: Aggressive velocity + strong push (FINAL)
+CURRICULUM (7 levels):
+- L0: Standing + Slow (vx=0~0.3, vy=+-0.1, vyaw=+-0.2)
+- L1: Medium Walk (vx=0~0.5, vy=+-0.15, vyaw=+-0.4)
+- L2: Turning Focus (vx=0~0.5, vy=+-0.2, vyaw=+-0.7) — TURNING HEAVY
+- L3: Omnidirectional (vx=-0.2~0.7, vy=+-0.3, vyaw=+-0.8) — backward + lateral
+- L4: Full Range (vx=-0.3~1.0, vy=+-0.3, vyaw=+-1.0)
+- L5: Aggressive (push 0-20N)
+- L6: Final (push 0-30N, mass +-15%)
 
 REWARD DESIGN:
-- Velocity tracking: vx, vy, vyaw (exp-decay)
+- Velocity tracking: vx=4, vy=4, vyaw=4 (balanced, exp-decay)
 - Gait: knee alternation + foot clearance + foot contact pattern
 - Posture: ankle_roll, symmetry, hip_roll (from Stage 1 V2)
-- Stability: height, orientation, angular velocity
+- Stability: height, orientation, angular velocity (z-axis excluded)
+- Conditional yaw_rate_penalty (only when vyaw_cmd ~0)
+- Physics: vz_penalty, feet_slip
 - Penalties: action_rate, jerk, energy
 """
 
@@ -67,7 +87,7 @@ GAIT_FREQUENCY = _cfg_mod.GAIT_FREQUENCY
 ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
 
 # ============================================================================
-# CURRICULUM
+# CURRICULUM — 7 LEVELS (V5: Omnidirectional from L0)
 # ============================================================================
 
 # NOTE: 29DoF G1 body frame — vx > 0 = FORWARD, vx < 0 = BACKWARD
@@ -76,47 +96,67 @@ ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
 # The old 23DoF model had -X as forward — this model is DIFFERENT!
 CURRICULUM = [
     {
-        "description": "L0: Slow forward walk, no push",
-        "threshold": 16.0,
-        "vx": (0.0, 0.3),       # Slow forward (positive = forward in 29DoF G1)
-        "vy": (-0.05, 0.05),    # Nearly zero lateral
-        "vyaw": (-0.1, 0.1),    # Nearly zero turning
+        "description": "L0: Standing + Slow walk, vy/vyaw introduced",
+        "threshold": 18.0,
+        "vx": (0.0, 0.3),       # Slow forward only
+        "vy": (-0.1, 0.1),      # Lateral from the start (was +-0.05)
+        "vyaw": (-0.2, 0.2),    # Turning from the start (was +-0.1)
         "push_force": (0, 0),
         "push_interval": (9999, 9999),
         "mass_scale": (0.97, 1.03),
     },
     {
-        "description": "L1: Medium forward walk, light push",
-        "threshold": 18.0,
+        "description": "L1: Medium walk, vy/vyaw growing",
+        "threshold": 20.0,
         "vx": (0.0, 0.5),       # Medium forward
-        "vy": (-0.1, 0.1),      # Small lateral
-        "vyaw": (-0.3, 0.3),    # Small turning
-        "push_force": (0, 10),
-        "push_interval": (300, 600),
+        "vy": (-0.15, 0.15),    # Growing lateral (was +-0.1)
+        "vyaw": (-0.4, 0.4),    # Growing turning (was +-0.3)
+        "push_force": (0, 0),
+        "push_interval": (9999, 9999),
+        "mass_scale": (0.96, 1.04),
+    },
+    {
+        "description": "L2: Turning Focus — vyaw aggressive, vx still low",
+        "threshold": 21.0,
+        "vx": (0.0, 0.5),       # Same vx as L1 — focus on turning
+        "vy": (-0.2, 0.2),      # More lateral
+        "vyaw": (-0.7, 0.7),    # AGGRESSIVE turning (was +-0.5)
+        "push_force": (0, 0),
+        "push_interval": (9999, 9999),
         "mass_scale": (0.95, 1.05),
     },
     {
-        "description": "L2: Forward+backward+lateral, medium push",
-        "threshold": 19.0,
-        "vx": (-0.2, 0.7),      # Forward + small backward
-        "vy": (-0.2, 0.2),      # Lateral
-        "vyaw": (-0.5, 0.5),    # Turning
-        "push_force": (0, 15),
-        "push_interval": (200, 500),
+        "description": "L3: Omnidirectional — backward + full lateral",
+        "threshold": 22.0,
+        "vx": (-0.2, 0.7),      # Backward introduced
+        "vy": (-0.3, 0.3),      # Full lateral
+        "vyaw": (-0.8, 0.8),    # Near-full turning
+        "push_force": (0, 5),
+        "push_interval": (400, 800),
         "mass_scale": (0.93, 1.07),
     },
     {
-        "description": "L3: Full velocity range, medium push",
-        "threshold": 20.0,
-        "vx": (-0.3, 1.0),      # Full range
+        "description": "L4: Full velocity range",
+        "threshold": 23.0,
+        "vx": (-0.3, 1.0),      # Full forward + backward
         "vy": (-0.3, 0.3),      # Full lateral
-        "vyaw": (-0.8, 0.8),    # Full turning
-        "push_force": (0, 20),
-        "push_interval": (150, 400),
+        "vyaw": (-1.0, 1.0),    # Full turning
+        "push_force": (0, 10),
+        "push_interval": (300, 600),
         "mass_scale": (0.90, 1.10),
     },
     {
-        "description": "L4: Aggressive velocity + strong push (FINAL)",
+        "description": "L5: Aggressive + push",
+        "threshold": 24.0,
+        "vx": (-0.5, 1.2),      # Aggressive range
+        "vy": (-0.4, 0.4),      # Full lateral
+        "vyaw": (-1.0, 1.0),    # Full turning
+        "push_force": (0, 20),
+        "push_interval": (200, 500),
+        "mass_scale": (0.88, 1.12),
+    },
+    {
+        "description": "L6: FINAL — strong push + mass randomization",
         "threshold": None,
         "vx": (-0.5, 1.2),
         "vy": (-0.4, 0.4),
@@ -128,22 +168,22 @@ CURRICULUM = [
 ]
 
 # ============================================================================
-# REWARD WEIGHTS
+# REWARD WEIGHTS — V5: Balanced omnidirectional
 # ============================================================================
 
 REWARD_WEIGHTS = {
-    # Velocity tracking (primary task)
-    "vx": 5.0,                  # Forward velocity tracking (most important)
-    "vy": 3.0,                  # Lateral velocity tracking — INCREASED (was 2.0, drift problem)
-    "vyaw": 3.0,                # Yaw rate tracking — INCREASED (was 2.0, rotation problem)
+    # Velocity tracking (BALANCED — all three axes equally important)
+    "vx": 4.0,                  # Forward velocity tracking (was 5.0 — reduced for balance)
+    "vy": 4.0,                  # Lateral velocity tracking (was 3.0 — INCREASED)
+    "vyaw": 4.0,                # Yaw rate tracking (was 3.0 — INCREASED)
     # Gait control
     "gait_knee": 3.0,           # Alternating knee bend pattern
     "gait_clearance": 2.0,      # Foot clearance during swing
     "gait_contact": 2.0,        # Alternating foot contact pattern
     # Stability
     "height": 3.0,              # Height tracking
-    "orientation": 6.0,         # Upright orientation — INCREASED (was 5.0→6.0, scale 8→15, torso tilt fix)
-    "ang_vel_penalty": 1.0,     # Angular velocity penalty (reduced from Stage 1)
+    "orientation": 6.0,         # Upright orientation (scale 15.0)
+    "ang_vel_penalty": 1.0,     # Angular velocity penalty (ONLY roll+pitch, z-axis excluded in V5)
     # Posture (from Stage 1 V2 — keep feet/legs healthy)
     "ankle_penalty": 2.0,       # Ankle roll (reduced from 4.0 — some roll needed for walking)
     "foot_flatness": 1.5,       # Foot flatness (reduced — dynamic gait needs ankle flexibility)
@@ -154,14 +194,15 @@ REWARD_WEIGHTS = {
     "waist_posture": 3.0,       # Penalize waist_roll, waist_pitch AND waist_yaw deviation from 0
     # Standing posture — when vel_cmd ~0, all leg joints should return to default
     "standing_posture": 3.0,    # Conditional: full weight when standing, 0 when walking
-    # Yaw stability — prevent body oscillation around vertical axis
-    "yaw_rate_penalty": -2.0,   # Penalize angular velocity around z-axis (prevents learned sway)
+    # Yaw stability — CONDITIONAL: only penalize when vyaw_cmd is near zero
+    # When vyaw_cmd > 0.3, penalty is fully disabled (robot should be turning!)
+    "yaw_rate_penalty": -2.0,   # Penalize z-axis ang_vel ONLY when not commanded to turn
     # Physics-based penalties (from literature review)
-    "vz_penalty": -2.0,        # Vertical velocity penalty — prevents bouncing/oscillation (Booster Gym: -2.0)
-    "feet_slip": -0.1,         # Stance foot sliding penalty (Booster Gym: -0.1)
+    "vz_penalty": -2.0,        # Vertical velocity penalty — prevents bouncing/oscillation
+    "feet_slip": -0.1,         # Stance foot sliding penalty
     # Smoothness penalties
     "action_rate": -0.02,       # Slightly less than Stage 1
-    "jerk": -0.05,              # Joint acceleration penalty — INCREASED (was -0.01, literature: -0.01~-1e-7)
+    "jerk": -0.05,              # Joint acceleration penalty
     "energy": -0.0003,
     "alive": 1.0,
 }
@@ -183,9 +224,9 @@ ACT_DIM = NUM_LOCO_JOINTS  # 15
 # ============================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="29DoF G1 Stage 2: Locomotion")
+    parser = argparse.ArgumentParser(description="29DoF G1 Stage 2: Omnidirectional Locomotion (V5)")
     parser.add_argument("--num_envs", type=int, default=4096)
-    parser.add_argument("--max_iterations", type=int, default=10000)
+    parser.add_argument("--max_iterations", type=int, default=35000)
     parser.add_argument("--stage1_checkpoint", type=str, default=None,
                         help="Stage 1 checkpoint to fine-tune from")
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -211,11 +252,12 @@ from isaaclab.utils.math import quat_apply_inverse
 from torch.utils.tensorboard import SummaryWriter
 
 print("=" * 80)
-print("29DoF G1 STAGE 2: LOCOMOTION with GAIT CONTROL")
+print("29DoF G1 STAGE 2: OMNIDIRECTIONAL LOCOMOTION (V5)")
 print(f"USD: {G1_29DOF_USD}")
 print(f"Obs: {OBS_DIM}, Act: {ACT_DIM}")
 print(f"Joints: {NUM_LOCO_JOINTS} loco + {NUM_ARM_JOINTS} arm + {NUM_HAND_JOINTS} hand = {NUM_LOCO_JOINTS + NUM_ARM_JOINTS + NUM_HAND_JOINTS}")
 print(f"Gait frequency: {GAIT_FREQUENCY} Hz")
+print(f"Reward weights: vx={REWARD_WEIGHTS['vx']}, vy={REWARD_WEIGHTS['vy']}, vyaw={REWARD_WEIGHTS['vyaw']}")
 print("=" * 80)
 for i, lv in enumerate(CURRICULUM):
     print(f"  Level {i}: {lv['description']}")
@@ -481,7 +523,6 @@ def create_env(num_envs, device):
             # ============================================================
 
             # Knee indices (for gait alternation)
-            # left_knee_joint = index 6, right_knee_joint = index 7 in LEG_JOINT_NAMES
             self.left_knee_idx = LOCO_JOINT_NAMES.index("left_knee_joint")
             self.right_knee_idx = LOCO_JOINT_NAMES.index("right_knee_joint")
 
@@ -565,10 +606,20 @@ def create_env(num_envs, device):
                 (self.num_envs,), device=self.device)
             self.step_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
-            # Command resample timer (resample vel_cmd periodically)
-            self.cmd_resample_interval = 300  # Resample every 300 steps (~6 sec)
-            self.cmd_timer = torch.randint(0, self.cmd_resample_interval,
+            # Command resample timer — RANDOM interval (V5: 150-400 instead of fixed 300)
+            self.cmd_resample_lo = 150
+            self.cmd_resample_hi = 400
+            self.cmd_timer = torch.randint(0, self.cmd_resample_hi,
                                            (self.num_envs,), device=self.device)
+            self.cmd_resample_targets = torch.randint(
+                self.cmd_resample_lo, self.cmd_resample_hi + 1,
+                (self.num_envs,), device=self.device)
+
+            # Tracking buffers for multi-axis curriculum gating (V5)
+            self._vx_err_accum = torch.zeros(self.num_envs, device=self.device)
+            self._vy_err_accum = torch.zeros(self.num_envs, device=self.device)
+            self._vyaw_err_accum = torch.zeros(self.num_envs, device=self.device)
+            self._tracking_count = torch.zeros(self.num_envs, device=self.device)
 
             # Sample initial commands
             self._sample_commands(torch.arange(self.num_envs, device=self.device))
@@ -576,13 +627,16 @@ def create_env(num_envs, device):
             print(f"\n[Env] {self.num_envs} envs, level {self.curr_level}")
             print(f"  Obs: {OBS_DIM}, Act: {ACT_DIM}")
             print(f"  Height default: {HEIGHT_DEFAULT}m, Gait freq: {GAIT_FREQUENCY}Hz")
+            print(f"  Resample interval: {self.cmd_resample_lo}-{self.cmd_resample_hi} steps (random)")
 
         @property
         def robot(self):
             return self.scene["robot"]
 
         def _sample_commands(self, env_ids):
-            """Sample velocity commands from current curriculum level."""
+            """Sample velocity commands from current curriculum level.
+            V5: 15% standing samples (all-zero commands) to prevent standing drift.
+            """
             lv = CURRICULUM[self.curr_level]
             n = len(env_ids)
             # vx
@@ -595,36 +649,71 @@ def create_env(num_envs, device):
             vyaw_lo, vyaw_hi = lv["vyaw"]
             self.vel_cmd[env_ids, 2] = torch.rand(n, device=self.device) * (vyaw_hi - vyaw_lo) + vyaw_lo
 
+            # V5: Standing samples — 15% probability all commands are zero
+            # This teaches the policy to stand still without drift
+            standing_mask = torch.rand(n, device=self.device) < 0.15
+            if standing_mask.any():
+                standing_ids = env_ids[standing_mask]
+                self.vel_cmd[standing_ids] = 0.0
+
         def update_curriculum(self, r):
-            """Multi-criteria curriculum gating (from literature: ULC paper).
-            Advancement requires BOTH:
+            """V5: Multi-axis curriculum gating.
+            Advancement requires ALL of:
               1. Mean reward > threshold
-              2. vx tracking ratio > 0.6 (actual/cmd)
-            This prevents gaming where robot gets high reward without proper walking.
+              2. vx tracking quality OK
+              3. vy tracking quality OK (when vy_cmd is significant)
+              4. vyaw tracking quality OK (when vyaw_cmd is significant)
+            This prevents the policy from ignoring lateral/yaw commands.
             """
             self.curr_hist.append(r)
             if len(self.curr_hist) >= 100:
                 avg = np.mean(self.curr_hist[-100:])
                 thr = CURRICULUM[self.curr_level]["threshold"]
 
-                # Multi-criteria check
                 if thr is not None and avg > thr and self.curr_level < len(CURRICULUM) - 1:
-                    # Additional gate: vx tracking quality
+                    # Compute tracking quality for all three axes
                     lv_b = quat_apply_inverse(self.robot.data.root_quat_w, self.robot.data.root_lin_vel_w)
+                    av_b = quat_apply_inverse(self.robot.data.root_quat_w, self.robot.data.root_ang_vel_w)
+
+                    # vx tracking — relative error
                     vx_actual = lv_b[:, 0].mean().item()
                     vx_cmd = self.vel_cmd[:, 0].mean().item()
-                    vx_ratio = vx_actual / max(abs(vx_cmd), 0.05)  # tracking ratio
+                    vx_err_rel = abs(vx_actual - vx_cmd) / max(abs(vx_cmd), 0.1)
+                    vx_ok = vx_err_rel < 0.5  # less than 50% relative error
 
-                    if vx_ratio > 0.6:  # at least 60% of commanded velocity achieved
+                    # vy tracking — absolute error (skip if cmd is tiny)
+                    vy_actual = lv_b[:, 1].mean().item()
+                    vy_cmd = self.vel_cmd[:, 1].mean().item()
+                    vy_err_abs = abs(vy_actual - vy_cmd)
+                    vy_ok = vy_err_abs < 0.1 or abs(vy_cmd) < 0.05  # skip check for tiny cmd
+
+                    # vyaw tracking — absolute error (skip if cmd is tiny)
+                    vyaw_actual = av_b[:, 2].mean().item()
+                    vyaw_cmd = self.vel_cmd[:, 2].mean().item()
+                    vyaw_err_abs = abs(vyaw_actual - vyaw_cmd)
+                    vyaw_ok = vyaw_err_abs < 0.3 or abs(vyaw_cmd) < 0.1  # skip check for tiny cmd
+
+                    if vx_ok and vy_ok and vyaw_ok:
                         self.curr_level += 1
                         lv = CURRICULUM[self.curr_level]
                         print(f"\n*** LEVEL UP! Now {self.curr_level}: {lv['description']} ***")
                         print(f"    vx={lv['vx']}, vy={lv['vy']}, vyaw={lv['vyaw']}")
                         print(f"    push={lv['push_force']}, mass_scale={lv['mass_scale']}")
-                        print(f"    (vx_ratio={vx_ratio:.2f}, reward={avg:.1f})")
+                        print(f"    (vx_err={vx_err_rel:.2f}, vy_err={vy_err_abs:.3f}, vyaw_err={vyaw_err_abs:.3f}, reward={avg:.1f})")
                         self.curr_hist = []
                         # Resample all commands for new level
                         self._sample_commands(torch.arange(self.num_envs, device=self.device))
+                    else:
+                        # Log why gating failed (every 200 iterations)
+                        if len(self.curr_hist) % 200 == 0:
+                            reasons = []
+                            if not vx_ok:
+                                reasons.append(f"vx_err={vx_err_rel:.2f}>0.5")
+                            if not vy_ok:
+                                reasons.append(f"vy_err={vy_err_abs:.3f}>0.1")
+                            if not vyaw_ok:
+                                reasons.append(f"vyaw_err={vyaw_err_abs:.3f}>0.3")
+                            print(f"  [Gate] Level {self.curr_level} blocked: {', '.join(reasons)} (R={avg:.1f})")
 
         def _apply_push(self):
             """Apply random perturbation forces to robot."""
@@ -632,13 +721,17 @@ def create_env(num_envs, device):
             self.step_count += 1
             push_mask = self.step_count >= self.push_timer
 
-            # Command resample
+            # Command resample — V5: random interval per-environment
             self.cmd_timer += 1
-            cmd_mask = self.cmd_timer >= self.cmd_resample_interval
+            cmd_mask = self.cmd_timer >= self.cmd_resample_targets
             if cmd_mask.any():
                 cmd_ids = cmd_mask.nonzero(as_tuple=False).squeeze(-1)
                 self._sample_commands(cmd_ids)
                 self.cmd_timer[cmd_ids] = 0
+                # New random resample target for each env
+                self.cmd_resample_targets[cmd_ids] = torch.randint(
+                    self.cmd_resample_lo, self.cmd_resample_hi + 1,
+                    (len(cmd_ids),), device=self.device)
 
             # Push forces
             forces = torch.zeros(self.num_envs, 1, 3, device=self.device)
@@ -678,9 +771,9 @@ def create_env(num_envs, device):
             waist_yaw_idx = self.loco_idx[12]
             waist_roll_idx = self.loco_idx[13]
             waist_pitch_idx = self.loco_idx[14]
-            tgt[:, waist_yaw_idx].clamp_(-0.15, 0.15)   # ±8.6° yaw (tightened from ±0.3 — prevents sideways gaze)
-            tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)  # ±8.6° roll (tight — lateral lean kills posture)
-            tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)   # ±11.5° pitch (prevents forward lean exploit)
+            tgt[:, waist_yaw_idx].clamp_(-0.15, 0.15)   # +-8.6 deg yaw
+            tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)  # +-8.6 deg roll
+            tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)   # +-11.5 deg pitch
 
             # Hold arms at default
             tgt[:, self.arm_idx] = self.default_arm
@@ -759,20 +852,20 @@ def create_env(num_envs, device):
             jv = r.data.joint_vel[:, self.loco_idx]
 
             # ============================================
-            # VELOCITY TRACKING REWARDS
+            # VELOCITY TRACKING REWARDS (V5: balanced)
             # ============================================
 
-            # vx tracking (most important — forward walking)
+            # vx tracking
             vx_err = (lv_b[:, 0] - self.vel_cmd[:, 0]) ** 2
             r_vx = torch.exp(-3.0 * vx_err)
 
-            # vy tracking (lateral)
+            # vy tracking
             vy_err = (lv_b[:, 1] - self.vel_cmd[:, 1]) ** 2
             r_vy = torch.exp(-4.0 * vy_err)
 
-            # vyaw tracking (yaw rate)
+            # vyaw tracking — V5: tighter tracking (scale -3.0 -> -5.0)
             vyaw_err = (av_b[:, 2] - self.vel_cmd[:, 2]) ** 2
-            r_vyaw = torch.exp(-3.0 * vyaw_err)
+            r_vyaw = torch.exp(-5.0 * vyaw_err)
 
             # ============================================
             # GAIT CONTROL REWARDS
@@ -783,12 +876,9 @@ def create_env(num_envs, device):
             r_swing = (ph >= 0.5).float()   # Right leg swings at phase 0.5~1.0
 
             # --- Knee alternation ---
-            # Swing leg: knee bends MORE (0.65 rad)
-            # Stance leg: knee at default (0.42 rad)
-            # IMPORTANT: Knee must ALWAYS be positive (>= 0.1) — negative = backward bend
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
-            knee_swing_target = 0.65     # Increased bend for swing
+            knee_swing_target = 0.65
             knee_stance_target = self.default_knee  # 0.42
 
             left_knee_target = l_swing * knee_swing_target + (1 - l_swing) * knee_stance_target
@@ -798,17 +888,12 @@ def create_env(num_envs, device):
             r_gait_knee = torch.exp(-5.0 * knee_err)
 
             # --- Knee negative penalty ---
-            # CRITICAL: Hard penalty for negative knee angles — causes backward walking + heel walking
-            # Knee should always be >= 0.1 rad. Below that → escalating linear penalty
-            # At knee=-0.09: violation = 0.19, penalty = 0.19 * (-8.0) = -1.52 per knee
             knee_min = 0.1
-            lk_violation = torch.clamp(knee_min - lk, min=0.0)  # linear, not squared
+            lk_violation = torch.clamp(knee_min - lk, min=0.0)
             rk_violation = torch.clamp(knee_min - rk, min=0.0)
-            r_knee_neg_penalty = lk_violation + rk_violation  # total violation magnitude
+            r_knee_neg_penalty = lk_violation + rk_violation
 
             # --- Foot clearance ---
-            # During swing, hip pitch should be more negative (lift leg forward+up)
-            # Default hip_pitch = -0.20, swing target = -0.35 (more forward)
             lh = jp[:, self.left_hip_pitch_idx]
             rh = jp[:, self.right_hip_pitch_idx]
             hip_swing_target = -0.35
@@ -821,26 +906,24 @@ def create_env(num_envs, device):
             r_gait_clearance = torch.exp(-4.0 * hip_err)
 
             # --- Foot contact pattern ---
-            # We want the stance foot to be on the ground (low foot velocity)
-            # and swing foot to be moving (higher velocity).
-            # Approximate: knee velocity should be higher during swing.
             lk_vel = jv[:, self.left_knee_idx].abs()
             rk_vel = jv[:, self.right_knee_idx].abs()
 
-            # Reward movement during swing, stillness during stance
-            swing_activity = l_swing * lk_vel + r_swing * rk_vel  # Should be high
-            stance_stability = (1 - l_swing) * lk_vel + (1 - r_swing) * rk_vel  # Should be low
+            swing_activity = l_swing * lk_vel + r_swing * rk_vel
+            stance_stability = (1 - l_swing) * lk_vel + (1 - r_swing) * rk_vel
 
-            # Combine: high swing_activity + low stance_stability = good
             r_gait_contact = torch.tanh(swing_activity * 0.5) * torch.exp(-2.0 * stance_stability)
 
             # Scale gait rewards by command magnitude — don't expect gait when standing
-            vel_magnitude = self.vel_cmd[:, 0].abs() + self.vel_cmd[:, 1].abs()
-            gait_scale = torch.clamp(vel_magnitude / 0.2, 0.0, 1.0)  # 0 when standing, 1 when walking
+            # V5: Include vyaw in gait_scale — turning also needs gait!
+            vel_magnitude = (self.vel_cmd[:, 0].abs()
+                           + self.vel_cmd[:, 1].abs()
+                           + self.vel_cmd[:, 2].abs() * 0.3)  # vyaw contributes 30%
+            gait_scale = torch.clamp(vel_magnitude / 0.2, 0.0, 1.0)
 
-            r_gait_knee = r_gait_knee * gait_scale + (1 - gait_scale) * 1.0  # Perfect score when standing
+            r_gait_knee = r_gait_knee * gait_scale + (1 - gait_scale) * 1.0
             r_gait_clearance = r_gait_clearance * gait_scale + (1 - gait_scale) * 1.0
-            r_gait_contact = r_gait_contact * gait_scale  # Zero when standing is fine
+            r_gait_contact = r_gait_contact * gait_scale
 
             # ============================================
             # STABILITY REWARDS
@@ -851,35 +934,29 @@ def create_env(num_envs, device):
             h_err = (height - self.height_cmd).abs()
             r_height = torch.exp(-10.0 * h_err)
 
-            # Orientation (upright) — scale 15.0 for very strong uprightness signal
-            # At 3° tilt: g[:,:2]~0.052, sum=0.0027 → exp(-15*0.0027)=0.96 (was 0.98 with scale 8)
-            # At 5° tilt: g[:,:2]~0.087, sum=0.0076 → exp(-15*0.0076)=0.89 (was 0.94 with scale 8)
-            # At 10° tilt: g[:,:2]~0.17, sum=0.030 → exp(-15*0.030)=0.64 (was 0.79 with scale 8)
+            # Orientation (upright) — scale 15.0 for strong uprightness signal
             r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))
 
-            # Angular velocity penalty (want low)
-            r_ang = torch.exp(-1.0 * (av_b ** 2).sum(-1))
+            # Angular velocity penalty — V5: ONLY roll + pitch (z-axis EXCLUDED)
+            # The z-axis (yaw rate) is handled separately by conditional yaw_rate_penalty
+            # and by the vyaw tracking reward. Including it here conflicts with turning.
+            r_ang = torch.exp(-1.0 * (av_b[:, :2] ** 2).sum(-1))
 
             # ============================================
             # POSTURE REWARDS (from Stage 1 V2)
             # ============================================
 
-            # Ankle roll — prevent inverted foot (still critical during walking)
+            # Ankle roll — prevent inverted foot
             ankle_roll_err = (jp[:, self.ankle_roll_loco_idx] - self.default_loco[self.ankle_roll_loco_idx]) ** 2
-            r_ankle = torch.exp(-15.0 * ankle_roll_err.sum(-1))  # Slightly less steep than Stage 1
+            r_ankle = torch.exp(-15.0 * ankle_roll_err.sum(-1))
 
             # Foot flatness — ankle pitch near default
             ankle_pitch_err = (jp[:, self.ankle_pitch_loco_idx] - self.default_loco[self.ankle_pitch_loco_idx]) ** 2
             r_foot_flat = torch.exp(-8.0 * ankle_pitch_err.sum(-1))
 
-            # Gait symmetry — during walking, legs should be phase-shifted mirrors
-            # At any time: left(t) ≈ right(t + T/2)
-            # Approximate: left_action ≈ right_action delayed by half phase
-            # Simple version: action amplitude should be similar for both legs
+            # Gait symmetry — action amplitude similar for both legs
             left_pos = jp[:, self.sym_left_idx]
             right_pos = jp[:, self.sym_right_idx]
-            # For walking, we want similar RANGE of motion (not identical positions)
-            # Compare absolute deviations from default
             left_dev = (left_pos - self.default_loco[self.sym_left_idx]).abs()
             right_dev = (right_pos - self.default_loco[self.sym_right_idx]).abs()
             sym_range_err = (left_dev - right_dev) ** 2
@@ -890,49 +967,44 @@ def create_env(num_envs, device):
             r_hip_roll = torch.exp(-10.0 * hip_roll_err.sum(-1))
 
             # Waist posture — keep ALL waist joints near 0 (ALWAYS active)
-            # waist indices in loco: 12=yaw, 13=roll, 14=pitch
-            waist_yaw_val = jp[:, 12]    # waist_yaw in loco space
-            waist_roll_val = jp[:, 13]   # waist_roll in loco space
-            waist_pitch_val = jp[:, 14]  # waist_pitch in loco space
+            waist_yaw_val = jp[:, 12]
+            waist_roll_val = jp[:, 13]
+            waist_pitch_val = jp[:, 14]
             waist_yaw_err = (waist_yaw_val - self.default_loco[12]) ** 2
             waist_roll_err = (waist_roll_val - self.default_loco[13]) ** 2
             waist_pitch_err = (waist_pitch_val - self.default_loco[14]) ** 2
-            # Penalize yaw (prevents looking sideways), roll (lateral lean), pitch (forward lean)
             r_waist_posture = (torch.exp(-25.0 * waist_yaw_err)
                              * torch.exp(-20.0 * waist_roll_err)
                              * torch.exp(-15.0 * waist_pitch_err))
 
-            # Standing posture — when vel_cmd ~0, ALL leg joints should be at default
-            # When walking, gait rewards take over and legs are free to follow gait pattern
-            # standing_scale: 1.0 when standing (vel_mag=0), 0.0 when walking (vel_mag>0.2)
-            standing_scale = 1.0 - gait_scale  # gait_scale computed above: 0=standing, 1=walking
-            leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2  # all 12 leg joints
+            # Standing posture — when vel_cmd ~0, ALL leg joints at default
+            standing_scale = 1.0 - gait_scale
+            leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2
             r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))
-            # Blend: standing_scale * default_posture + (1-standing_scale) * perfect_score
             r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
 
             # ============================================
-            # PHYSICS PENALTIES (from literature: Booster Gym, Humanoid-Gym)
+            # PHYSICS PENALTIES
             # ============================================
 
-            # Vertical velocity penalty — prevents bouncing/oscillation during walking
-            vz = lv_b[:, 2]  # body-frame vertical velocity
+            # Vertical velocity penalty — prevents bouncing
+            vz = lv_b[:, 2]
             r_vz_penalty = vz ** 2
 
-            # Yaw rate penalty — prevents learned body sway/oscillation around z-axis
-            # Without this, policy learns to oscillate waist/hips for momentum transfer
-            yaw_rate = av_b[:, 2]  # angular velocity around z-axis (rad/s)
-            r_yaw_rate_penalty = yaw_rate ** 2
+            # Yaw rate penalty — V5: CONDITIONAL on vyaw_cmd magnitude
+            # When vyaw_cmd=0 → full penalty (prevent unwanted rotation)
+            # When vyaw_cmd>=0.3 → penalty disabled (robot SHOULD be rotating)
+            # Linear interpolation between 0.0 and 0.3 rad/s
+            yaw_rate = av_b[:, 2]
+            vyaw_cmd_mag = self.vel_cmd[:, 2].abs()
+            yaw_penalty_scale = torch.clamp(1.0 - vyaw_cmd_mag / 0.3, 0.0, 1.0)
+            r_yaw_rate_penalty = yaw_rate ** 2 * yaw_penalty_scale
 
-            # Feet slip penalty — stance foot should not slide on ground
-            # Use ankle joint velocities as proxy for foot sliding
-            # During stance phase, ankle velocities should be near zero
-            ankle_pitch_vel = jv[:, self.ankle_pitch_loco_idx].abs()  # [N, 2]
-            ankle_roll_vel = jv[:, self.ankle_roll_loco_idx].abs()    # [N, 2]
-            # Stance mask: 1-swing = stance (low velocity expected)
-            left_stance = 1.0 - l_swing   # 1 during stance, 0 during swing
+            # Feet slip penalty
+            ankle_pitch_vel = jv[:, self.ankle_pitch_loco_idx].abs()
+            ankle_roll_vel = jv[:, self.ankle_roll_loco_idx].abs()
+            left_stance = 1.0 - l_swing
             right_stance = 1.0 - r_swing
-            # Left foot slip: stance * (left_ankle_pitch_vel + left_ankle_roll_vel)
             left_slip = left_stance * (ankle_pitch_vel[:, 0] + ankle_roll_vel[:, 0])
             right_slip = right_stance * (ankle_pitch_vel[:, 1] + ankle_roll_vel[:, 1])
             r_feet_slip = left_slip + right_slip
@@ -959,7 +1031,7 @@ def create_env(num_envs, device):
             # ============================================
 
             reward = (
-                # Velocity tracking
+                # Velocity tracking (balanced: 4/4/4)
                 REWARD_WEIGHTS["vx"] * r_vx
                 + REWARD_WEIGHTS["vy"] * r_vy
                 + REWARD_WEIGHTS["vyaw"] * r_vyaw
@@ -979,7 +1051,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
                 + REWARD_WEIGHTS["standing_posture"] * r_standing_posture
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
-                # Physics penalties
+                # Physics penalties (conditional yaw_rate_penalty in V5)
                 + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
                 + REWARD_WEIGHTS["yaw_rate_penalty"] * r_yaw_rate_penalty
                 + REWARD_WEIGHTS["feet_slip"] * r_feet_slip
@@ -1002,15 +1074,13 @@ def create_env(num_envs, device):
             fallen = (pos[:, 2] < 0.35) | (pos[:, 2] > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
 
-            # Knee hyperextension termination — knee < -0.05 rad is physically invalid
+            # Knee hyperextension termination
             jp = self.robot.data.joint_pos[:, self.loco_idx]
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
             knee_hyperextended = (lk < -0.05) | (rk < -0.05)
 
-            # Waist excessive lean termination — prevents forward lean exploit
-            # waist_pitch (loco idx 14): |pitch| > 0.35 rad (~20°) = too far
-            # waist_roll (loco idx 13): |roll| > 0.25 rad (~14°) = too far
+            # Waist excessive lean termination
             waist_pitch_val = jp[:, 14]
             waist_roll_val = jp[:, 13]
             waist_excessive = (waist_pitch_val.abs() > 0.35) | (waist_roll_val.abs() > 0.25)
@@ -1061,9 +1131,11 @@ def create_env(num_envs, device):
             self.push_timer[env_ids] = torch.randint(pi_lo, pi_hi, (n,), device=self.device)
             self.step_count[env_ids] = 0
 
-            # Sample new commands
+            # Sample new commands + reset resample timer
             self._sample_commands(env_ids)
-            self.cmd_timer[env_ids] = torch.randint(0, self.cmd_resample_interval, (n,), device=self.device)
+            self.cmd_timer[env_ids] = torch.randint(0, self.cmd_resample_hi, (n,), device=self.device)
+            self.cmd_resample_targets[env_ids] = torch.randint(
+                self.cmd_resample_lo, self.cmd_resample_hi + 1, (n,), device=self.device)
 
     return Env(EnvCfg())
 
@@ -1210,12 +1282,27 @@ def main():
             # Robot stats
             height = env.robot.data.root_pos_w[:, 2].mean().item()
             lv_b = quat_apply_inverse(env.robot.data.root_quat_w, env.robot.data.root_lin_vel_w)
+            av_b = quat_apply_inverse(env.robot.data.root_quat_w, env.robot.data.root_ang_vel_w)
             avg_vx = lv_b[:, 0].mean().item()
             cmd_vx = env.vel_cmd[:, 0].mean().item()
             writer.add_scalar("robot/height", height, iteration)
             writer.add_scalar("robot/vx_actual", avg_vx, iteration)
             writer.add_scalar("robot/vx_cmd", cmd_vx, iteration)
             writer.add_scalar("robot/vx_err", abs(avg_vx - cmd_vx), iteration)
+
+            # vy tracking (V5: important for omnidirectional)
+            vy_actual = lv_b[:, 1].mean().item()
+            vy_cmd = env.vel_cmd[:, 1].mean().item()
+            writer.add_scalar("robot/vy_actual", vy_actual, iteration)
+            writer.add_scalar("robot/vy_cmd", vy_cmd, iteration)
+            writer.add_scalar("robot/vy_err", abs(vy_actual - vy_cmd), iteration)
+
+            # vyaw tracking (V5: NEW — critical for turning)
+            vyaw_actual = av_b[:, 2].mean().item()
+            vyaw_cmd = env.vel_cmd[:, 2].mean().item()
+            writer.add_scalar("robot/vyaw_actual", vyaw_actual, iteration)
+            writer.add_scalar("robot/vyaw_cmd", vyaw_cmd, iteration)
+            writer.add_scalar("robot/vyaw_err", abs(vyaw_actual - vyaw_cmd), iteration)
 
             # Posture stats
             jp = env.robot.data.joint_pos[:, env.loco_idx]
@@ -1228,21 +1315,21 @@ def main():
             writer.add_scalar("posture/hip_roll_err", hip_roll_err, iteration)
             writer.add_scalar("posture/gait_sym_err", sym_err, iteration)
 
-            # Knee angles — monitor for backward bending
+            # Knee angles
             knee_l = jp[:, env.left_knee_idx].mean().item()
             knee_r = jp[:, env.right_knee_idx].mean().item()
             writer.add_scalar("posture/knee_left", knee_l, iteration)
             writer.add_scalar("posture/knee_right", knee_r, iteration)
 
-            # Waist joints — monitor for torso tilt
-            waist_yaw = jp[:, 12].mean().item()   # waist_yaw in loco space
-            waist_roll = jp[:, 13].mean().item()   # waist_roll — lateral lean
-            waist_pitch = jp[:, 14].mean().item()  # waist_pitch — forward lean
+            # Waist joints
+            waist_yaw = jp[:, 12].mean().item()
+            waist_roll = jp[:, 13].mean().item()
+            waist_pitch = jp[:, 14].mean().item()
             writer.add_scalar("posture/waist_yaw", waist_yaw, iteration)
             writer.add_scalar("posture/waist_roll", waist_roll, iteration)
             writer.add_scalar("posture/waist_pitch", waist_pitch, iteration)
 
-            # Torso tilt angle (degrees) — from projected gravity
+            # Torso tilt angle
             q_root = env.robot.data.root_quat_w
             gvec = torch.tensor([0, 0, -1.], device=env.device).expand(env.num_envs, -1)
             proj_g = quat_apply_inverse(q_root, gvec)
@@ -1250,30 +1337,27 @@ def main():
             tilt_deg = torch.rad2deg(tilt_rad).mean().item()
             writer.add_scalar("posture/tilt_deg", tilt_deg, iteration)
 
-            # Yaw rate — monitor for oscillation
-            av_log = quat_apply_inverse(q_root, env.robot.data.root_ang_vel_w)
-            yaw_rate_log = av_log[:, 2].abs().mean().item()
+            # Yaw rate
+            yaw_rate_log = av_b[:, 2].abs().mean().item()
             writer.add_scalar("posture/yaw_rate", yaw_rate_log, iteration)
-
-            # Lateral velocity tracking (vy)
-            vy_actual = lv_b[:, 1].mean().item()
-            vy_cmd = env.vel_cmd[:, 1].mean().item()
-            writer.add_scalar("robot/vy_actual", vy_actual, iteration)
-            writer.add_scalar("robot/vy_cmd", vy_cmd, iteration)
-            writer.add_scalar("robot/vy_err", abs(vy_actual - vy_cmd), iteration)
 
         if iteration % 50 == 0:
             avg_ep = np.mean(completed_rewards[-100:]) if completed_rewards else 0
             height = env.robot.data.root_pos_w[:, 2].mean().item()
             lv_b = quat_apply_inverse(env.robot.data.root_quat_w, env.robot.data.root_lin_vel_w)
+            av_b = quat_apply_inverse(env.robot.data.root_quat_w, env.robot.data.root_ang_vel_w)
             avg_vx = lv_b[:, 0].mean().item()
             cmd_vx = env.vel_cmd[:, 0].mean().item()
+            avg_vy = lv_b[:, 1].mean().item()
+            cmd_vy = env.vel_cmd[:, 1].mean().item()
+            avg_vyaw = av_b[:, 2].mean().item()
+            cmd_vyaw = env.vel_cmd[:, 2].mean().item()
             # Posture
             jp = env.robot.data.joint_pos[:, env.loco_idx]
             ankR = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
             knee_l_p = jp[:, env.left_knee_idx].mean().item()
             knee_r_p = jp[:, env.right_knee_idx].mean().item()
-            # Waist and tilt for terminal monitoring
+            # Waist and tilt
             w_yaw = jp[:, 12].mean().item()
             w_roll = jp[:, 13].mean().item()
             w_pitch = jp[:, 14].mean().item()
@@ -1281,14 +1365,16 @@ def main():
             gvec = torch.tensor([0, 0, -1.], device=env.device).expand(env.num_envs, -1)
             proj_g = quat_apply_inverse(q_root, gvec)
             tilt_d = torch.rad2deg(torch.asin(torch.clamp((proj_g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))).mean().item()
-            av_term = quat_apply_inverse(q_root, env.robot.data.root_ang_vel_w)
-            yr_term = av_term[:, 2].abs().mean().item()
+            yr_term = av_b[:, 2].abs().mean().item()
+            # V5: Print all three velocity axes
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
                   f"H={height:.3f} vx={avg_vx:.3f}(cmd:{cmd_vx:.3f}) "
+                  f"vy={avg_vy:.3f}(cmd:{cmd_vy:.3f}) "
+                  f"vyaw={avg_vyaw:.3f}(cmd:{cmd_vyaw:.3f}) "
                   f"Lv={env.curr_level} ankR={ankR:.3f} "
                   f"knL={knee_l_p:.2f} knR={knee_r_p:.2f} "
-                  f"tilt={tilt_d:.1f}° wY={w_yaw:.3f} wR={w_roll:.3f} wP={w_pitch:.3f} "
+                  f"tilt={tilt_d:.1f} wY={w_yaw:.3f} wR={w_roll:.3f} wP={w_pitch:.3f} "
                   f"yR={yr_term:.2f} "
                   f"LR={losses['lr']:.2e} std={np.exp(net.log_std.data.mean().item()):.3f}")
 
