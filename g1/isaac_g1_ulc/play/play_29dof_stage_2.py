@@ -409,6 +409,15 @@ def create_env(num_envs, device):
             self.actions = act.clone()
             tgt = self.robot.data.default_joint_pos.clone()
             tgt[:, self.loco_idx] = self.default_loco + act * self.action_scales
+
+            # CLAMP waist joints — MUST match training!
+            waist_yaw_idx = self.loco_idx[12]
+            waist_roll_idx = self.loco_idx[13]
+            waist_pitch_idx = self.loco_idx[14]
+            tgt[:, waist_yaw_idx].clamp_(-0.3, 0.3)
+            tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)
+            tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)
+
             tgt[:, self.arm_idx] = self.default_arm
             tgt[:, self.hand_idx] = self.default_hand
             self.robot.set_joint_position_target(tgt)
@@ -462,7 +471,19 @@ def create_env(num_envs, device):
             proj_gravity = quat_apply_inverse(q, gravity_vec)
             fallen = (pos[:, 2] < 0.35) | (pos[:, 2] > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
-            terminated = fallen | bad_orientation
+
+            # Knee hyperextension — MUST match training!
+            jp = self.robot.data.joint_pos[:, self.loco_idx]
+            lk = jp[:, self.left_knee_idx]
+            rk = jp[:, self.right_knee_idx]
+            knee_hyperextended = (lk < -0.05) | (rk < -0.05)
+
+            # Waist excessive lean — MUST match training!
+            waist_pitch_val = jp[:, 14]
+            waist_roll_val = jp[:, 13]
+            waist_excessive = (waist_pitch_val.abs() > 0.35) | (waist_roll_val.abs() > 0.25)
+
+            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
             if terminated.any():
                 self.total_falls += terminated.sum().item()
             time_out = self.episode_length_buf >= self.max_episode_length
