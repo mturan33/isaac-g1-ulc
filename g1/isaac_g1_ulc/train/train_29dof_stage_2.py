@@ -150,10 +150,12 @@ REWARD_WEIGHTS = {
     "symmetry_gait": 1.5,       # Gait symmetry (NOT standing symmetry — phase-shifted)
     "hip_roll_penalty": 1.5,    # Hip roll (reduced — some roll needed for walking)
     "knee_negative_penalty": -8.0,  # HARD penalty for knee < 0.1 rad (backward bending)
-    # Waist posture — keep torso upright (NEW: fixes torso tilt problem)
-    "waist_posture": 3.0,       # Penalize waist_roll and waist_pitch deviation from 0
+    # Waist posture — keep torso upright and facing forward
+    "waist_posture": 3.0,       # Penalize waist_roll, waist_pitch AND waist_yaw deviation from 0
     # Standing posture — when vel_cmd ~0, all leg joints should return to default
     "standing_posture": 3.0,    # Conditional: full weight when standing, 0 when walking
+    # Yaw stability — prevent body oscillation around vertical axis
+    "yaw_rate_penalty": -2.0,   # Penalize angular velocity around z-axis (prevents learned sway)
     # Physics-based penalties (from literature review)
     "vz_penalty": -2.0,        # Vertical velocity penalty — prevents bouncing/oscillation (Booster Gym: -2.0)
     "feet_slip": -0.1,         # Stance foot sliding penalty (Booster Gym: -0.1)
@@ -676,7 +678,7 @@ def create_env(num_envs, device):
             waist_yaw_idx = self.loco_idx[12]
             waist_roll_idx = self.loco_idx[13]
             waist_pitch_idx = self.loco_idx[14]
-            tgt[:, waist_yaw_idx].clamp_(-0.3, 0.3)    # ±17° yaw
+            tgt[:, waist_yaw_idx].clamp_(-0.15, 0.15)   # ±8.6° yaw (tightened from ±0.3 — prevents sideways gaze)
             tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)  # ±8.6° roll (tight — lateral lean kills posture)
             tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)   # ±11.5° pitch (prevents forward lean exploit)
 
@@ -887,14 +889,18 @@ def create_env(num_envs, device):
             hip_roll_err = (jp[:, self.hip_roll_loco_idx] - self.default_loco[self.hip_roll_loco_idx]) ** 2
             r_hip_roll = torch.exp(-10.0 * hip_roll_err.sum(-1))
 
-            # Waist posture — keep waist_roll and waist_pitch near 0 (ALWAYS active)
+            # Waist posture — keep ALL waist joints near 0 (ALWAYS active)
             # waist indices in loco: 12=yaw, 13=roll, 14=pitch
+            waist_yaw_val = jp[:, 12]    # waist_yaw in loco space
             waist_roll_val = jp[:, 13]   # waist_roll in loco space
             waist_pitch_val = jp[:, 14]  # waist_pitch in loco space
+            waist_yaw_err = (waist_yaw_val - self.default_loco[12]) ** 2
             waist_roll_err = (waist_roll_val - self.default_loco[13]) ** 2
             waist_pitch_err = (waist_pitch_val - self.default_loco[14]) ** 2
-            # Penalize roll more heavily (causes lateral lean) + pitch (causes forward lean)
-            r_waist_posture = torch.exp(-20.0 * waist_roll_err) * torch.exp(-15.0 * waist_pitch_err)
+            # Penalize yaw (prevents looking sideways), roll (lateral lean), pitch (forward lean)
+            r_waist_posture = (torch.exp(-25.0 * waist_yaw_err)
+                             * torch.exp(-20.0 * waist_roll_err)
+                             * torch.exp(-15.0 * waist_pitch_err))
 
             # Standing posture — when vel_cmd ~0, ALL leg joints should be at default
             # When walking, gait rewards take over and legs are free to follow gait pattern
@@ -912,6 +918,11 @@ def create_env(num_envs, device):
             # Vertical velocity penalty — prevents bouncing/oscillation during walking
             vz = lv_b[:, 2]  # body-frame vertical velocity
             r_vz_penalty = vz ** 2
+
+            # Yaw rate penalty — prevents learned body sway/oscillation around z-axis
+            # Without this, policy learns to oscillate waist/hips for momentum transfer
+            yaw_rate = av_b[:, 2]  # angular velocity around z-axis (rad/s)
+            r_yaw_rate_penalty = yaw_rate ** 2
 
             # Feet slip penalty — stance foot should not slide on ground
             # Use ankle joint velocities as proxy for foot sliding
@@ -970,6 +981,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 # Physics penalties
                 + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
+                + REWARD_WEIGHTS["yaw_rate_penalty"] * r_yaw_rate_penalty
                 + REWARD_WEIGHTS["feet_slip"] * r_feet_slip
                 # Smoothness penalties
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
@@ -1230,6 +1242,11 @@ def main():
             writer.add_scalar("posture/waist_roll", waist_roll, iteration)
             writer.add_scalar("posture/waist_pitch", waist_pitch, iteration)
 
+            # Yaw rate — monitor for oscillation
+            av_log = quat_apply_inverse(q_root, env.robot.data.root_ang_vel_w)
+            yaw_rate_log = av_log[:, 2].abs().mean().item()
+            writer.add_scalar("posture/yaw_rate", yaw_rate_log, iteration)
+
             # Torso tilt angle (degrees) — from projected gravity
             q_root = env.robot.data.root_quat_w
             gvec = torch.tensor([0, 0, -1.], device=env.device).expand(env.num_envs, -1)
@@ -1257,18 +1274,22 @@ def main():
             knee_l_p = jp[:, env.left_knee_idx].mean().item()
             knee_r_p = jp[:, env.right_knee_idx].mean().item()
             # Waist and tilt for terminal monitoring
+            w_yaw = jp[:, 12].mean().item()
             w_roll = jp[:, 13].mean().item()
             w_pitch = jp[:, 14].mean().item()
             q_root = env.robot.data.root_quat_w
             gvec = torch.tensor([0, 0, -1.], device=env.device).expand(env.num_envs, -1)
             proj_g = quat_apply_inverse(q_root, gvec)
             tilt_d = torch.rad2deg(torch.asin(torch.clamp((proj_g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))).mean().item()
+            av_term = quat_apply_inverse(q_root, env.robot.data.root_ang_vel_w)
+            yr_term = av_term[:, 2].abs().mean().item()
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
                   f"H={height:.3f} vx={avg_vx:.3f}(cmd:{cmd_vx:.3f}) "
                   f"Lv={env.curr_level} ankR={ankR:.3f} "
                   f"knL={knee_l_p:.2f} knR={knee_r_p:.2f} "
-                  f"tilt={tilt_d:.1f}° wR={w_roll:.3f} wP={w_pitch:.3f} "
+                  f"tilt={tilt_d:.1f}° wY={w_yaw:.3f} wR={w_roll:.3f} wP={w_pitch:.3f} "
+                  f"yR={yr_term:.2f} "
                   f"LR={losses['lr']:.2e} std={np.exp(net.log_std.data.mean().item()):.3f}")
 
         # Save checkpoints
