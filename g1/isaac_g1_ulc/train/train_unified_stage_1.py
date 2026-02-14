@@ -807,11 +807,15 @@ def create_env(num_envs, device):
                     speed_err = abs(actual_speed - cmd_speed) / max(cmd_speed, 0.3)  # denominator 0.1→0.3 to soften standing gate
                     speed_ok = speed_err < 0.8  # threshold 0.5→0.8 to allow slightly imperfect standing
 
-                    # Heading tracking (skip when speed ~0)
+                    # Heading tracking — per-env speed filter (match reward logic)
+                    # Standing envs (speed_cmd=0) have random atan2 due to near-zero velocity,
+                    # so we must exclude them just like the reward does (heading_active mask).
                     heading_ok = True
-                    if cmd_speed > 0.05:
+                    moving_mask = self.speed_cmd.squeeze() > 0.05  # per-env filter
+                    if moving_mask.any():
                         actual_heading = torch.atan2(lv_b[:, 1], lv_b[:, 0])
-                        heading_err = torch.abs(wrap_to_pi(actual_heading - self.heading_offset)).mean().item()
+                        heading_err_all = torch.abs(wrap_to_pi(actual_heading - self.heading_offset))
+                        heading_err = heading_err_all[moving_mask].mean().item()
                         heading_ok = heading_err < 0.5
 
                     # Yaw tracking
@@ -840,7 +844,7 @@ def create_env(num_envs, device):
                             if not speed_ok:
                                 reasons.append(f"speed_err={speed_err:.2f}>0.5")
                             if not heading_ok:
-                                reasons.append("heading_err>0.5")
+                                reasons.append(f"heading_err={heading_err:.2f}>0.5")
                             if not yaw_ok:
                                 reasons.append("yaw_err>0.3")
                             print(f"  [Gate] Level {self.curr_level} blocked: {', '.join(reasons)} (R={avg:.1f})")
@@ -1416,12 +1420,17 @@ def main():
             writer.add_scalar("robot/speed_cmd", cmd_speed, iteration)
             writer.add_scalar("robot/speed_err", abs(actual_speed - cmd_speed), iteration)
 
-            # Heading tracking
-            if cmd_speed > 0.05:
-                actual_heading = torch.atan2(lv_b[:, 1], lv_b[:, 0]).mean().item()
-                cmd_heading = env.heading_offset.mean().item()
-                writer.add_scalar("robot/heading_actual", actual_heading, iteration)
+            # Heading tracking — per-env filtered (exclude standing envs)
+            moving_mask = env.speed_cmd.squeeze() > 0.05
+            if moving_mask.any():
+                actual_heading = torch.atan2(lv_b[:, 1], lv_b[:, 0])
+                heading_err_all = torch.abs(wrap_to_pi(actual_heading - env.heading_offset))
+                heading_err_filtered = heading_err_all[moving_mask].mean().item()
+                actual_heading_filtered = actual_heading[moving_mask].mean().item()
+                cmd_heading = env.heading_offset[moving_mask].mean().item()
+                writer.add_scalar("robot/heading_actual", actual_heading_filtered, iteration)
                 writer.add_scalar("robot/heading_cmd", cmd_heading, iteration)
+                writer.add_scalar("robot/heading_err", heading_err_filtered, iteration)
 
             # Yaw tracking
             yaw_actual = av_b[:, 2].mean().item()
