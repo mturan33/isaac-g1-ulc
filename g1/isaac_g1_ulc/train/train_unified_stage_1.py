@@ -1309,6 +1309,20 @@ def main():
             best_reward = ckpt["best_reward"]
         if "curriculum_level" in ckpt:
             env.curr_level = min(ckpt["curriculum_level"], len(CURRICULUM) - 1)
+        # Restore optimizer and scheduler state (prevents LR reset on resume)
+        if "optimizer" in ckpt:
+            ppo.opt.load_state_dict(ckpt["optimizer"])
+            print(f"  Optimizer state restored (AdamW momentum preserved)")
+        else:
+            print(f"  [WARN] No optimizer state in checkpoint — LR will restart from 3e-4")
+        if "scheduler" in ckpt:
+            ppo.sched.load_state_dict(ckpt["scheduler"])
+            print(f"  Scheduler state restored (LR={ppo.sched.get_last_lr()[0]:.2e})")
+        else:
+            # Approximate: step scheduler to match resumed iteration
+            for _ in range(start_iter):
+                ppo.sched.step()
+            print(f"  [WARN] No scheduler state — stepped {start_iter}x to approximate LR={ppo.sched.get_last_lr()[0]:.2e}")
         print(f"  Resumed at iter {start_iter}, best_reward={best_reward:.2f}, level={env.curr_level}")
     else:
         print("\n[Train] Sifirdan egitim baslatiliyor (unified obs: 188 dim)")
@@ -1510,6 +1524,8 @@ def main():
             path = os.path.join(log_dir, f"model_{iteration}.pt")
             torch.save({
                 "model": net.state_dict(),
+                "optimizer": ppo.opt.state_dict(),
+                "scheduler": ppo.sched.state_dict(),
                 "iteration": iteration,
                 "best_reward": best_reward,
                 "curriculum_level": env.curr_level,
@@ -1524,6 +1540,8 @@ def main():
             path = os.path.join(log_dir, "model_best.pt")
             torch.save({
                 "model": net.state_dict(),
+                "optimizer": ppo.opt.state_dict(),
+                "scheduler": ppo.sched.state_dict(),
                 "iteration": iteration,
                 "best_reward": best_reward,
                 "curriculum_level": env.curr_level,
@@ -1536,6 +1554,8 @@ def main():
     path = os.path.join(log_dir, "model_final.pt")
     torch.save({
         "model": net.state_dict(),
+        "optimizer": ppo.opt.state_dict(),
+        "scheduler": ppo.sched.state_dict(),
         "iteration": args_cli.max_iterations - 1,
         "best_reward": best_reward,
         "curriculum_level": env.curr_level,
