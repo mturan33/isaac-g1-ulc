@@ -85,6 +85,8 @@ parser.add_argument("--no_plots", action="store_true", default=False,
                     help="Skip plot generation")
 parser.add_argument("--env_spacing", type=float, default=5.0,
                     help="Spacing between environments")
+parser.add_argument("--s6u_own_loco", action="store_true", default=False,
+                    help="Use S6u's own loco weights instead of S7's (for debugging)")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -847,6 +849,16 @@ def run_policy_session(env, net, policy_name, get_arm_obs_fn,
             loco_obs = env.get_loco_obs()
             arm_obs, ee_body, ee_world, dist = get_arm_obs_fn(obs_pos_th, obs_orient_th)
 
+            # Debug: log first 5 steps arm action magnitude
+            if step < 5:
+                _loco_dbg, _arm_dbg = net.get_actions(loco_obs, arm_obs, deterministic=True)
+                print(f"  [DBG step={step}] arm_act: mean={_arm_dbg.abs().mean().item():.4f}, "
+                      f"max={_arm_dbg.abs().max().item():.4f}, "
+                      f"vals={[round(v, 3) for v in _arm_dbg[0].tolist()]}")
+                print(f"  [DBG step={step}] ee_body: {[round(v, 3) for v in ee_body[0].tolist()]}, "
+                      f"target: {[round(v, 3) for v in env.target_pos_body[0].tolist()]}, "
+                      f"dist: {dist[0].item():.4f}")
+
             # Get actions
             leg_act, arm_act = net.get_actions(loco_obs, arm_obs, deterministic=True)
             actions = torch.cat([leg_act, arm_act], dim=-1)
@@ -1504,8 +1516,11 @@ def main():
         )
         if loco_match:
             print("  [VERIFY] S6u loco == S7 loco: ESLESIYOR")
+        elif args.s6u_own_loco:
+            print("  [INFO] S6u loco != S7 loco. --s6u_own_loco aktif, S6u kendi loco'sunu kullaniyor.")
         else:
             print("  [WARNING] S6u loco != S7 loco! S7 loco kopyalaniyor.")
+            print("  [HINT] Kendi loco'sunu kullanmak icin: --s6u_own_loco")
             s6u_net.loco_actor.load_state_dict(ref_loco_state)
 
     # ---- Determine modes ----
