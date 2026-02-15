@@ -143,11 +143,11 @@ MODE_CONFIGS = {
 
 # Camera presets: (eye_position, target_position)
 # NOTE: 23DoF model uses -X as forward direction (opposite of 29DoF)
-# So "front" camera is at +X looking towards -X
+# Robot's right side is -Y in this model
 CAMERA_PRESETS = {
-    "front_right": ((1.8, 1.3, 1.3), (0.0, 0.0, 0.65)),
-    "front_left":  ((1.8, -1.3, 1.3), (0.0, 0.0, 0.65)),
-    "right_side":  ((0.0, 2.0, 1.1), (0.0, 0.0, 0.65)),
+    "front_right": ((1.8, -1.3, 1.3), (0.0, 0.0, 0.65)),
+    "front_left":  ((1.8, 1.3, 1.3), (0.0, 0.0, 0.65)),
+    "right_side":  ((0.0, -2.0, 1.1), (0.0, 0.0, 0.65)),
     "front":       ((2.5, 0.0, 1.3), (0.0, 0.0, 0.65)),
     "top":         ((0.0, 0.0, 3.0), (0.0, 0.0, 0.65)),
 }
@@ -492,7 +492,10 @@ class PlayEnv(DirectRLEnv):
         self.prev_arm_actions = torch.zeros(self.num_envs, 5, device=self.device)
         self.prev_ee_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.total_reaches = 0
+        self.timed_out_targets = 0
         self.reach_threshold = REACH_THRESHOLD
+        self.max_reach_steps = 150  # ~3s timeout per target
+        self.steps_since_target = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         self.mode_cfg = MODE_CONFIGS[args.mode]
 
@@ -661,13 +664,25 @@ class PlayEnv(DirectRLEnv):
         angle = torch.acos(torch.clamp(dot, -1.0, 1.0))
         orient_error = (angle / np.pi).unsqueeze(-1)
 
-        # Check reaches
+        # Check reaches + timeout
         actual_dist = pos_error.norm(dim=-1)
         reached = actual_dist < self.reach_threshold
+        self.steps_since_target += 1
+
+        # Timeout: resample if target not reached within max_reach_steps
+        timed_out = self.steps_since_target >= self.max_reach_steps
+        timed_out_ids = timed_out.nonzero(as_tuple=True)[0]
+        if len(timed_out_ids) > 0:
+            self.timed_out_targets += len(timed_out_ids)
+            self._sample_targets(timed_out_ids)
+            self.steps_since_target[timed_out_ids] = 0
+
         new_reaches = reached.sum().item()
         if new_reaches > 0:
             self.total_reaches += new_reaches
-            self._sample_targets(reached.nonzero(as_tuple=True)[0])
+            reached_ids = reached.nonzero(as_tuple=True)[0]
+            self._sample_targets(reached_ids)
+            self.steps_since_target[reached_ids] = 0
 
         if len(self.finger_idx) > 0:
             finger_pos = robot.data.joint_pos[:, self.finger_idx]
@@ -762,6 +777,7 @@ class PlayEnv(DirectRLEnv):
         self.prev_leg_actions[env_ids] = 0
         self.prev_arm_actions[env_ids] = 0
         self.prev_ee_pos[env_ids] = 0
+        self.steps_since_target[env_ids] = 0
         self._sample_commands(env_ids)
 
 
@@ -907,9 +923,10 @@ def main():
     # Paper mode: relaxed thresholds for better demo
     if args.mode == "paper":
         env.reach_threshold = 0.08
+        env.max_reach_steps = 80  # ~1.6s timeout (matches Stage 7 paper mode)
         env._sample_commands(torch.arange(env.num_envs, device=device))
         print(f"\n[PAPER MODE] {args.steps} steps -> {args.record_duration:.0f}s video (1.67x slow-motion)")
-        print(f"  Standing only, reach_threshold={env.reach_threshold}m")
+        print(f"  Standing only, reach_threshold={env.reach_threshold}m, timeout={env.max_reach_steps} steps")
 
     # Camera rotation for paper mode
     paper_cam_angles = [
@@ -1014,6 +1031,10 @@ def main():
     print("STAGE 6 PLAY COMPLETE")
     print(f"{'=' * 60}")
     print(f"  Total reaches: {env.total_reaches}")
+    print(f"  Timed out: {env.timed_out_targets}")
+    total_attempts = env.total_reaches + env.timed_out_targets
+    if total_attempts > 0:
+        print(f"  Reach rate: {env.total_reaches / total_attempts:.1%}")
     if args.loco_checkpoint:
         print(f"  (Hybrid: Stage 7 loco + Stage 6 arm)")
     print(f"{'=' * 60}\n")
