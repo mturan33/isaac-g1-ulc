@@ -37,6 +37,19 @@ CURRICULUM (10 levels):
 2026-02-12: Expanded obs 143→188 — added all future-needed obs (anti-gaming,
             per-finger forces, ee velocities, payload estimate, etc.) to prevent
             weight surgery in later stages.
+2026-02-15: V2 — Major gait quality fixes:
+            - Quaternion order fix (wxyz for Isaac Lab)
+            - quat_to_euler_xyz fix (wxyz input)
+            - enabled_self_collisions=True
+            - hip_yaw_penalty added (prevents leg crossing/rotation)
+            - feet_air_time reward added (prevents toe-walking, encourages ground contact cycle)
+            - foot_flatness increased (1.5→3.0, scale -8→-15)
+            - height reward reduced (5.0/-15→3.5/-10, was causing toe-walking)
+            - standing_posture reduced (5.0/-5→3.0/-3)
+            - orientation reduced (5.0/-15→4.0/-12)
+            - action clamp on hip_yaw (prevents extreme leg rotation)
+            - solver iterations increased (4→8 for self-collision)
+            - jerk penalty increased (-0.05→-0.08)
 """
 
 import torch
@@ -292,27 +305,30 @@ REWARD_WEIGHTS = {
     "gait_knee": 3.0,               # Alternating knee bend
     "gait_clearance": 2.0,          # Hip pitch swing
     "gait_contact": 2.0,            # Contact pattern matching
-    # Stability
-    "height": 5.0,                  # exp(-15.0 * height_err) — increased from 3.0/10.0 to prevent squat gaming
-    "orientation": 5.0,             # exp(-15.0 * tilt_err)
+    # Stability — V2: reduced from 5.0/15.0 to prevent toe-walking incentive
+    "height": 3.5,                  # exp(-10.0 * height_err) — V1 had 5.0/-15.0 which rewarded tiptoe stance
+    "orientation": 4.0,             # exp(-12.0 * tilt_err) — V1 had 5.0/-15.0
     "ang_vel_penalty": 1.0,         # ONLY roll+pitch (z-axis excluded)
-    # Posture (from Stage 1 V2)
+    # Posture (V2: hip_yaw + stronger foot_flatness)
     "ankle_penalty": 2.0,           # exp(-15.0 * ankle_roll_err)
-    "foot_flatness": 1.5,           # exp(-8.0 * ankle_pitch_err)
+    "foot_flatness": 3.0,           # exp(-15.0 * ankle_pitch_err) — V1 had 1.5/-8.0, doubled to prevent toe-walking
     "symmetry_gait": 1.5,           # Phase-shifted L/R range matching
     "hip_roll_penalty": 1.5,        # exp(-10.0 * hip_roll_err)
+    "hip_yaw_penalty": 2.5,         # exp(-12.0 * hip_yaw_err) — NEW V2: prevents leg crossing/rotation
     "knee_negative_penalty": -8.0,  # Linear, prevents backward bending
     "knee_overbend_penalty": -5.0,  # Linear, prevents deep squat (knee > 1.2 rad)
-    # Waist and standing
+    # Waist and standing — V2: reduced to allow more natural gait flexibility
     "waist_posture": 3.0,           # Waist joints near 0
-    "standing_posture": 5.0,        # Full body near default when speed~0 — increased from 3.0 to prevent squat gaming
+    "standing_posture": 3.0,        # Full body near default when speed~0 — V1 had 5.0 which fought gait
     "yaw_rate_penalty": -2.0,       # CONDITIONAL (off when yaw_cmd active)
     # Physics
     "vz_penalty": -2.0,             # Vertical bouncing
     "feet_slip": -0.1,              # Contact foot sliding
-    # Smoothness
+    # Gait quality — V2: new rewards for natural ground contact
+    "feet_air_time": 1.0,           # NEW V2: reward feet touching ground with proper gait timing
+    # Smoothness — V2: increased jerk penalty for smoother motion
     "action_rate": -0.02,
-    "jerk": -0.05,
+    "jerk": -0.08,                  # V1 had -0.05, increased for smoother joint motion
     "energy": -0.0003,
     "alive": 1.0,
 }
@@ -467,8 +483,11 @@ class PPO:
 # ============================================================================
 
 def quat_to_euler_xyz(quat):
-    """wxyz quaternion to roll, pitch, yaw."""
-    x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    """Convert wxyz quaternion (Isaac Lab convention) to roll, pitch, yaw.
+    Isaac Lab root_quat_w returns (w, x, y, z) — confirmed in articulation_data.py line 455.
+    V2 fix: previously treated col 0 as x, now correctly treats col 0 as w.
+    """
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
     sinr_cosp = 2.0 * (w * x + y * z)
     cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
     roll = torch.atan2(sinr_cosp, cosr_cosp)
@@ -511,9 +530,9 @@ def create_env(num_envs, device):
                     max_depenetration_velocity=1.0,
                 ),
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=False,
-                    solver_position_iteration_count=4,
-                    solver_velocity_iteration_count=1,
+                    enabled_self_collisions=True,   # V2: enabled — prevents leg crossing (was False)
+                    solver_position_iteration_count=8,   # V2: increased from 4 for self-collision stability
+                    solver_velocity_iteration_count=2,    # V2: increased from 1 for self-collision stability
                 ),
             ),
             init_state=ArticulationCfg.InitialStateCfg(
@@ -662,6 +681,11 @@ def create_env(num_envs, device):
             hip_roll_names = ["left_hip_roll_joint", "right_hip_roll_joint"]
             self.hip_roll_loco_idx = torch.tensor(
                 [LOCO_JOINT_NAMES.index(n) for n in hip_roll_names], device=self.device)
+
+            # V2: hip_yaw indices for leg rotation penalty
+            hip_yaw_names = ["left_hip_yaw_joint", "right_hip_yaw_joint"]
+            self.hip_yaw_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in hip_yaw_names], device=self.device)
 
             # Symmetry pairs
             sym_pairs = [
@@ -901,6 +925,12 @@ def create_env(num_envs, device):
             tgt = self.robot.data.default_joint_pos.clone()
             tgt[:, self.loco_idx] = self.default_loco + act * self.action_scales
 
+            # V2: Clamp hip_yaw to prevent extreme leg rotation
+            left_hip_yaw_idx = self.loco_idx[LOCO_JOINT_NAMES.index("left_hip_yaw_joint")]
+            right_hip_yaw_idx = self.loco_idx[LOCO_JOINT_NAMES.index("right_hip_yaw_joint")]
+            tgt[:, left_hip_yaw_idx].clamp_(-0.25, 0.25)    # ~14 degrees max rotation
+            tgt[:, right_hip_yaw_idx].clamp_(-0.25, 0.25)
+
             # Clamp waist
             waist_yaw_idx = self.loco_idx[12]
             waist_roll_idx = self.loco_idx[13]
@@ -1111,9 +1141,9 @@ def create_env(num_envs, device):
             # ===========================================
             height = pos[:, 2]
             h_err = (height - self.height_cmd).abs()
-            r_height = torch.exp(-15.0 * h_err)  # increased from -10.0 to prevent squat gaming
+            r_height = torch.exp(-10.0 * h_err)  # V2: reduced from -15.0; was incentivizing tiptoe stance
 
-            r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))
+            r_orient = torch.exp(-12.0 * (g[:, :2] ** 2).sum(-1))  # V2: reduced from -15.0
 
             # Angular velocity penalty — ONLY roll + pitch (z-axis excluded)
             r_ang = torch.exp(-1.0 * (av_b[:, :2] ** 2).sum(-1))
@@ -1125,7 +1155,7 @@ def create_env(num_envs, device):
             r_ankle = torch.exp(-15.0 * ankle_roll_err.sum(-1))
 
             ankle_pitch_err = (jp[:, self.ankle_pitch_loco_idx] - self.default_loco[self.ankle_pitch_loco_idx]) ** 2
-            r_foot_flat = torch.exp(-8.0 * ankle_pitch_err.sum(-1))
+            r_foot_flat = torch.exp(-15.0 * ankle_pitch_err.sum(-1))  # V2: increased from -8.0 to strongly prevent toe-walking
 
             left_pos = jp[:, self.sym_left_idx]
             right_pos = jp[:, self.sym_right_idx]
@@ -1136,6 +1166,10 @@ def create_env(num_envs, device):
 
             hip_roll_err = (jp[:, self.hip_roll_loco_idx] - self.default_loco[self.hip_roll_loco_idx]) ** 2
             r_hip_roll = torch.exp(-10.0 * hip_roll_err.sum(-1))
+
+            # V2: Hip yaw penalty — prevents legs from rotating/crossing
+            hip_yaw_err = (jp[:, self.hip_yaw_loco_idx] - self.default_loco[self.hip_yaw_loco_idx]) ** 2
+            r_hip_yaw = torch.exp(-12.0 * hip_yaw_err.sum(-1))
 
             # Waist posture
             waist_yaw_err = (jp[:, 12] - self.default_loco[12]) ** 2
@@ -1148,7 +1182,7 @@ def create_env(num_envs, device):
             # Standing posture — when speed ~0
             standing_scale = 1.0 - gait_scale
             leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2
-            r_standing_posture_raw = torch.exp(-5.0 * leg_pos_err.sum(-1))  # increased from -3.0 to prevent squat gaming
+            r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))  # V2: reduced back from -5.0; was fighting gait flexibility
             r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
 
             # ===========================================
@@ -1171,6 +1205,17 @@ def create_env(num_envs, device):
             left_slip = left_stance * (ankle_pitch_vel[:, 0] + ankle_roll_vel[:, 0])
             right_slip = right_stance * (ankle_pitch_vel[:, 1] + ankle_roll_vel[:, 1])
             r_feet_slip = left_slip + right_slip
+
+            # V2: Feet air time reward — encourages proper foot contact cycle
+            # Uses ContactSensor: reward feet that land during stance and lift during swing
+            lf_contact = (self._left_foot_sensor.data.net_forces_w.norm(dim=-1).squeeze(-1) > 5.0).float()
+            rf_contact = (self._right_foot_sensor.data.net_forces_w.norm(dim=-1).squeeze(-1) > 5.0).float()
+            # Stance foot should be on ground, swing foot should be in air
+            left_contact_correct = left_stance * lf_contact + l_swing * (1.0 - lf_contact)
+            right_contact_correct = right_stance * rf_contact + r_swing * (1.0 - rf_contact)
+            r_feet_air_time = (left_contact_correct + right_contact_correct) * 0.5
+            # Only active during walking (scale with gait_scale)
+            r_feet_air_time = r_feet_air_time * gait_scale + (1.0 - gait_scale) * 1.0
 
             # ===========================================
             # SMOOTHNESS
@@ -1202,6 +1247,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
                 + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
+                + REWARD_WEIGHTS["hip_yaw_penalty"] * r_hip_yaw          # V2: prevents leg crossing
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 + REWARD_WEIGHTS["knee_overbend_penalty"] * r_knee_overbend
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
@@ -1209,6 +1255,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["yaw_rate_penalty"] * r_yaw_rate_penalty
                 + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
                 + REWARD_WEIGHTS["feet_slip"] * r_feet_slip
+                + REWARD_WEIGHTS["feet_air_time"] * r_feet_air_time      # V2: proper ground contact
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
@@ -1258,11 +1305,12 @@ def create_env(num_envs, device):
             root_pos = torch.tensor([[0.0, 0.0, HEIGHT_DEFAULT]], device=self.device).expand(n, -1).clone()
             root_pos[:, :2] += torch.randn(n, 2, device=self.device) * 0.05
             yaw = torch.randn(n, device=self.device) * 0.1
+            # V2 fix: Isaac Lab expects wxyz quaternion order
+            qw = torch.cos(yaw / 2)
             qx = torch.zeros(n, device=self.device)
             qy = torch.zeros(n, device=self.device)
             qz = torch.sin(yaw / 2)
-            qw = torch.cos(yaw / 2)
-            root_quat = torch.stack([qx, qy, qz, qw], dim=-1)
+            root_quat = torch.stack([qw, qx, qy, qz], dim=-1)
             self.robot.write_root_pose_to_sim(torch.cat([root_pos, root_quat], dim=-1), env_ids)
             self.robot.write_root_velocity_to_sim(torch.zeros(n, 6, device=self.device), env_ids)
 
@@ -1458,8 +1506,10 @@ def main():
             jp = env.robot.data.joint_pos[:, env.loco_idx]
             ankle_roll_err = (jp[:, env.ankle_roll_loco_idx] - env.default_loco[env.ankle_roll_loco_idx]).abs().mean().item()
             hip_roll_err = (jp[:, env.hip_roll_loco_idx] - env.default_loco[env.hip_roll_loco_idx]).abs().mean().item()
+            hip_yaw_err = (jp[:, env.hip_yaw_loco_idx] - env.default_loco[env.hip_yaw_loco_idx]).abs().mean().item()
             writer.add_scalar("posture/ankle_roll_err", ankle_roll_err, iteration)
             writer.add_scalar("posture/hip_roll_err", hip_roll_err, iteration)
+            writer.add_scalar("posture/hip_yaw_err", hip_yaw_err, iteration)
 
             knee_l = jp[:, env.left_knee_idx].mean().item()
             knee_r = jp[:, env.right_knee_idx].mean().item()

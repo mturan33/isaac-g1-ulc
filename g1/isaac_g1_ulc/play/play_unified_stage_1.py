@@ -15,6 +15,7 @@ MODES:
 
 2026-02-12: Initial implementation.
 2026-02-12: Expanded obs 143->188 to match training.
+2026-02-15: V2 sync — self-collision, quaternion fix, hip_yaw clamp (match training V2).
 """
 
 import torch
@@ -176,7 +177,10 @@ class LocoActorCritic(nn.Module):
 # ============================================================================
 
 def quat_to_euler_xyz(quat):
-    x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    """Convert wxyz quaternion (Isaac Lab convention) to roll, pitch, yaw.
+    V2 fix: correctly treats col 0 as w (was treating as x).
+    """
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
     sinr_cosp = 2.0 * (w * x + y * z)
     cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
     roll = torch.atan2(sinr_cosp, cosr_cosp)
@@ -214,9 +218,9 @@ def create_env(num_envs, device):
                     max_linear_velocity=1000.0, max_angular_velocity=1000.0,
                     max_depenetration_velocity=1.0),
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=False,
-                    solver_position_iteration_count=4,
-                    solver_velocity_iteration_count=1)),
+                    enabled_self_collisions=True,   # V2: match training
+                    solver_position_iteration_count=8,   # V2: match training
+                    solver_velocity_iteration_count=2)),  # V2: match training
             init_state=ArticulationCfg.InitialStateCfg(
                 pos=(0.0, 0.0, 0.80),
                 joint_pos=DEFAULT_ALL_POSES,
@@ -423,6 +427,12 @@ def create_env(num_envs, device):
             tgt = self.robot.data.default_joint_pos.clone()
             tgt[:, self.loco_idx] = self.default_loco + act * self.action_scales
 
+            # V2: Clamp hip_yaw — match training
+            left_hip_yaw_idx = self.loco_idx[LOCO_JOINT_NAMES.index("left_hip_yaw_joint")]
+            right_hip_yaw_idx = self.loco_idx[LOCO_JOINT_NAMES.index("right_hip_yaw_joint")]
+            tgt[:, left_hip_yaw_idx].clamp_(-0.25, 0.25)
+            tgt[:, right_hip_yaw_idx].clamp_(-0.25, 0.25)
+
             # Waist clamp
             waist_yaw_idx = self.loco_idx[12]
             waist_roll_idx = self.loco_idx[13]
@@ -537,7 +547,7 @@ def create_env(num_envs, device):
             default_pos = self.robot.data.default_joint_pos[env_ids].clone()
             self.robot.write_joint_state_to_sim(default_pos, torch.zeros_like(default_pos), None, env_ids)
             root_pos = torch.tensor([[0.0, 0.0, HEIGHT_DEFAULT]], device=self.device).expand(n, -1).clone()
-            default_quat = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(n, -1)
+            default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(n, -1)  # V2: wxyz identity
             self.robot.write_root_pose_to_sim(torch.cat([root_pos, default_quat], dim=-1), env_ids)
             self.robot.write_root_velocity_to_sim(torch.zeros(n, 6, device=self.device), env_ids)
             self.prev_act[env_ids] = 0
