@@ -2,8 +2,13 @@
 """
 Fair Comparison Benchmark: Stage 6 (Gaming) vs Stage 7 (Anti-Gaming)
 =====================================================================
-Runs both arm reaching policies sequentially in the SAME standardized
-environment with identical target sampling, workspace, and reach metrics.
+Runs arm reaching policies sequentially in the SAME standardized environment
+with identical target sampling, workspace, and reach metrics.
+
+Supports up to 3 policies:
+  - S6 Unified (52->12 arm, .actor. naming, gaming checkpoint)
+  - S6 Simplified (52->5 arm, .net. naming)
+  - S7 Anti-Gaming (55->5 arm, .net. naming)
 
 Outputs:
   - per_target.csv: Per-target metrics (initial_dist, displacement, reached, etc.)
@@ -11,7 +16,7 @@ Outputs:
   - plots/: Matplotlib comparison figures (PNG + PDF)
 
 Key standardizations:
-  - Same loco policy (Stage 7 frozen)
+  - Same loco policy (Stage 7 frozen, shared across all)
   - Same target sampling (absolute + min distance 0.12m)
   - Same workspace (spherical, radius 0.18-0.40m)
   - Same timeout (150 steps)
@@ -20,11 +25,19 @@ Key standardizations:
 
 Usage:
     .\\isaaclab.bat -p benchmark_s6_vs_s7.py \\
+        --s6u_checkpoint logs/ulc/.../model_best.pt \\
+        --s7_checkpoint logs/ulc/.../model_best.pt \\
+        --num_envs 1 --steps 3000 --mode both
+
+    # 3-way comparison:
+    .\\isaaclab.bat -p benchmark_s6_vs_s7.py \\
+        --s6u_checkpoint logs/ulc/.../model_best.pt \\
         --s6_checkpoint logs/ulc/.../model_best.pt \\
         --s7_checkpoint logs/ulc/.../model_best.pt \\
         --num_envs 1 --steps 3000 --mode both
 
 V1 (2026-02-15): Initial benchmark script for ICRA 2026 paper.
+V2 (2026-02-15): Added S6 unified support, 3-way comparison, fixed initial_dist=0 bug.
 """
 
 from __future__ import annotations
@@ -1061,6 +1074,7 @@ def save_summary_json(all_results, output_dir):
             "num_envs": args.num_envs,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "s6_checkpoint": args.s6_checkpoint,
+            "s6u_checkpoint": args.s6u_checkpoint,
             "s7_checkpoint": args.s7_checkpoint,
         },
         "results": summaries,
@@ -1072,7 +1086,7 @@ def save_summary_json(all_results, output_dir):
 
 
 def generate_plots(all_results, output_dir):
-    """Generate comparison plots."""
+    """Generate comparison plots. Supports 2 or 3 policies dynamically."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1084,7 +1098,7 @@ def generate_plots(all_results, output_dir):
         "font.size": 12,
         "axes.labelsize": 14,
         "axes.titlesize": 16,
-        "legend.fontsize": 11,
+        "legend.fontsize": 10,
         "figure.dpi": 150,
         "savefig.dpi": 300,
     })
@@ -1098,92 +1112,123 @@ def generate_plots(all_results, output_dir):
             results_by_mode[mode] = {}
         results_by_mode[mode][policy] = r
 
-    # Colors
-    s6_color = "#E63946"  # Red for gaming
-    s7_color = "#457B9D"  # Blue for anti-gaming
-    s6_color_light = "#F4A3A8"
-    s7_color_light = "#A8DADC"
+    # Dynamic color map per policy
+    POLICY_COLORS = {
+        "S6u_gaming":      {"main": "#E63946", "light": "#F4A3A8", "label": "S6u (Gaming)"},
+        "S6s_simplified":  {"main": "#FF9F1C", "light": "#FFD699", "label": "S6s (Simplified)"},
+        "S6_gaming":       {"main": "#E63946", "light": "#F4A3A8", "label": "S6 (Gaming)"},
+        "S7_antigaming":   {"main": "#457B9D", "light": "#A8DADC", "label": "S7 (Anti-Gaming)"},
+    }
+
+    # Get unique policy names from results
+    policy_names = []
+    for mode_data in results_by_mode.values():
+        for pname in mode_data.keys():
+            if pname not in policy_names:
+                policy_names.append(pname)
+
+    def _get_color(pname, variant="main"):
+        if pname in POLICY_COLORS:
+            return POLICY_COLORS[pname][variant]
+        # Fallback
+        fallback = {"main": "#2A9D8F", "light": "#B7E4C7", "label": pname}
+        return fallback[variant]
+
+    def _get_label(pname):
+        if pname in POLICY_COLORS:
+            return POLICY_COLORS[pname]["label"]
+        return pname
+
+    modes = list(results_by_mode.keys())
+    n_policies = len(policy_names)
 
     # ---- PLOT 1: Reach Rate Comparison (Grouped Bar) ----
-    fig, ax = plt.subplots(figsize=(10, 6))
-    modes = list(results_by_mode.keys())
+    fig, ax = plt.subplots(figsize=(max(10, 4 * len(modes)), 6))
     n_modes = len(modes)
     x = np.arange(n_modes)
-    width = 0.18
+    # 2 bars per policy (pos-only + validated), plus gaps
+    total_bars = n_policies * 2
+    width = 0.8 / total_bars
+    offsets = np.linspace(-(total_bars - 1) * width / 2,
+                          (total_bars - 1) * width / 2, total_bars)
 
+    legend_added = set()
     for i, mode in enumerate(modes):
         data = results_by_mode[mode]
-        s6_data = None
-        s7_data = None
-        for key, val in data.items():
-            if "S6" in key:
-                s6_data = val["summary"]
-            elif "S7" in key:
-                s7_data = val["summary"]
+        bar_idx = 0
+        for pname in policy_names:
+            if pname not in data:
+                bar_idx += 2
+                continue
+            pdata = data[pname]["summary"]
+            color_main = _get_color(pname, "main")
+            color_light = _get_color(pname, "light")
+            plabel = _get_label(pname)
 
-        if s6_data:
-            ax.bar(x[i] - 1.5*width, s6_data["position_reach_rate"],
-                   width, color=s6_color_light, edgecolor=s6_color, linewidth=1.5,
-                   label="S6 pos-only" if i == 0 else "")
-            ax.bar(x[i] - 0.5*width, s6_data["validated_reach_rate"],
-                   width, color=s6_color, edgecolor=s6_color, linewidth=1.5,
-                   label="S6 validated" if i == 0 else "")
-            # Annotate
-            ax.text(x[i] - 1.5*width, s6_data["position_reach_rate"] + 1,
-                    f'{s6_data["position_reach_rate"]:.0f}%', ha="center", va="bottom", fontsize=9)
-            ax.text(x[i] - 0.5*width, s6_data["validated_reach_rate"] + 1,
-                    f'{s6_data["validated_reach_rate"]:.0f}%', ha="center", va="bottom", fontsize=9)
+            # Position-only bar
+            lbl_pos = f"{plabel} pos-only" if f"{plabel}_pos" not in legend_added else ""
+            ax.bar(x[i] + offsets[bar_idx], pdata["position_reach_rate"],
+                   width, color=color_light, edgecolor=color_main, linewidth=1.5,
+                   label=lbl_pos)
+            ax.text(x[i] + offsets[bar_idx], pdata["position_reach_rate"] + 1,
+                    f'{pdata["position_reach_rate"]:.0f}%',
+                    ha="center", va="bottom", fontsize=8)
+            if lbl_pos:
+                legend_added.add(f"{plabel}_pos")
 
-        if s7_data:
-            ax.bar(x[i] + 0.5*width, s7_data["position_reach_rate"],
-                   width, color=s7_color_light, edgecolor=s7_color, linewidth=1.5,
-                   label="S7 pos-only" if i == 0 else "")
-            ax.bar(x[i] + 1.5*width, s7_data["validated_reach_rate"],
-                   width, color=s7_color, edgecolor=s7_color, linewidth=1.5,
-                   label="S7 validated" if i == 0 else "")
-            ax.text(x[i] + 0.5*width, s7_data["position_reach_rate"] + 1,
-                    f'{s7_data["position_reach_rate"]:.0f}%', ha="center", va="bottom", fontsize=9)
-            ax.text(x[i] + 1.5*width, s7_data["validated_reach_rate"] + 1,
-                    f'{s7_data["validated_reach_rate"]:.0f}%', ha="center", va="bottom", fontsize=9)
+            # Validated bar
+            lbl_val = f"{plabel} validated" if f"{plabel}_val" not in legend_added else ""
+            ax.bar(x[i] + offsets[bar_idx + 1], pdata["validated_reach_rate"],
+                   width, color=color_main, edgecolor=color_main, linewidth=1.5,
+                   label=lbl_val)
+            ax.text(x[i] + offsets[bar_idx + 1], pdata["validated_reach_rate"] + 1,
+                    f'{pdata["validated_reach_rate"]:.0f}%',
+                    ha="center", va="bottom", fontsize=8)
+            if lbl_val:
+                legend_added.add(f"{plabel}_val")
+
+            bar_idx += 2
 
     ax.set_xticks(x)
     ax.set_xticklabels([m.capitalize() for m in modes])
     ax.set_ylabel("Reach Rate (%)")
-    ax.set_title("Reach Rate: Gaming (S6) vs Anti-Gaming (S7)")
-    ax.legend(loc="upper right")
-    ax.set_ylim(0, 105)
+    ax.set_title("Reach Rate Comparison: Position-Only vs Validated")
+    ax.legend(loc="upper right", ncol=2)
+    ax.set_ylim(0, 110)
     ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
     for ext in ["png", "pdf"]:
         fig.savefig(os.path.join(plot_dir, f"reach_rate_comparison.{ext}"))
     plt.close(fig)
     print(f"[PLOT] reach_rate_comparison saved")
 
     # ---- PLOT 2: EE Displacement Distribution ----
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    for i, mode in enumerate(modes[:1]):  # Use first mode
-        data = results_by_mode[mode]
-        for key, val in data.items():
-            disps = [t["ee_displacement"] for t in val["per_target"]]
-            if not disps:
-                continue
-            if "S6" in key:
-                ax = axes[0]
-                color = s6_color
-                title = f"S6 Gaming ({mode})"
-            else:
-                ax = axes[1]
-                color = s7_color
-                title = f"S7 Anti-Gaming ({mode})"
-            ax.hist(disps, bins=25, range=(0, 0.5), color=color, alpha=0.7, edgecolor="white")
-            ax.axvline(x=args.min_displacement, color="black", linestyle="--",
-                      linewidth=2, label=f"Threshold ({args.min_displacement}m)")
-            ax.set_title(title)
-            ax.set_xlabel("EE Displacement (m)")
-            ax.legend()
-            mean_d = np.mean(disps)
-            ax.axvline(x=mean_d, color=color, linestyle=":", linewidth=1.5,
-                      label=f"Mean: {mean_d:.3f}m")
-            ax.legend()
+    first_mode = modes[0]
+    data = results_by_mode[first_mode]
+    n_plots = len(data)
+    fig, axes = plt.subplots(1, n_plots, figsize=(6 * n_plots, 5), sharey=True)
+    if n_plots == 1:
+        axes = [axes]
+
+    for ax_idx, pname in enumerate(policy_names):
+        if pname not in data:
+            continue
+        val = data[pname]
+        disps = [t["ee_displacement"] for t in val["per_target"]]
+        if not disps:
+            continue
+        color = _get_color(pname, "main")
+        label = _get_label(pname)
+        ax = axes[ax_idx]
+        ax.hist(disps, bins=25, range=(0, 0.5), color=color, alpha=0.7, edgecolor="white")
+        ax.axvline(x=args.min_displacement, color="black", linestyle="--",
+                  linewidth=2, label=f"Threshold ({args.min_displacement}m)")
+        mean_d = np.mean(disps)
+        ax.axvline(x=mean_d, color=color, linestyle=":", linewidth=1.5,
+                  label=f"Mean: {mean_d:.3f}m")
+        ax.set_title(f"{label} ({first_mode})")
+        ax.set_xlabel("EE Displacement (m)")
+        ax.legend(fontsize=9)
     axes[0].set_ylabel("Count")
     fig.suptitle("End-Effector Displacement Distribution", fontsize=16, y=1.02)
     fig.tight_layout()
@@ -1196,58 +1241,59 @@ def generate_plots(all_results, output_dir):
     fig, ax = plt.subplots(figsize=(12, 6))
     for mode in modes:
         data = results_by_mode[mode]
-        for key, val in data.items():
+        for pname in policy_names:
+            if pname not in data:
+                continue
+            val = data[pname]
+            color_main = _get_color(pname, "main")
+            color_light = _get_color(pname, "light")
+            label = _get_label(pname)
             steps_arr = np.arange(len(val["cumulative_pos"]))
-            if "S6" in key:
-                ax.plot(steps_arr, val["cumulative_pos"],
-                       color=s6_color_light, linestyle="--", linewidth=1.5,
-                       label=f"S6 pos-only ({mode})")
-                ax.plot(steps_arr, val["cumulative_val"],
-                       color=s6_color, linestyle="-", linewidth=2,
-                       label=f"S6 validated ({mode})")
-            else:
-                ax.plot(steps_arr, val["cumulative_pos"],
-                       color=s7_color_light, linestyle="--", linewidth=1.5,
-                       label=f"S7 pos-only ({mode})")
-                ax.plot(steps_arr, val["cumulative_val"],
-                       color=s7_color, linestyle="-", linewidth=2,
-                       label=f"S7 validated ({mode})")
+            ax.plot(steps_arr, val["cumulative_pos"],
+                   color=color_light, linestyle="--", linewidth=1.5,
+                   label=f"{label} pos-only ({mode})")
+            ax.plot(steps_arr, val["cumulative_val"],
+                   color=color_main, linestyle="-", linewidth=2,
+                   label=f"{label} validated ({mode})")
     ax.set_xlabel("Steps")
     ax.set_ylabel("Cumulative Reaches")
     ax.set_title("Cumulative Reaches Over Time")
-    ax.legend(loc="upper left")
+    ax.legend(loc="upper left", fontsize=9, ncol=2)
     ax.grid(alpha=0.3)
+    fig.tight_layout()
     for ext in ["png", "pdf"]:
         fig.savefig(os.path.join(plot_dir, f"cumulative_reaches.{ext}"))
     plt.close(fig)
     print(f"[PLOT] cumulative_reaches saved")
 
     # ---- PLOT 4: Time-to-Reach Histogram ----
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    for mode in modes[:1]:
-        data = results_by_mode[mode]
-        for key, val in data.items():
-            times = [t["time_steps"] for t in val["per_target"] if t["validated_reached"]]
-            if "S6" in key:
-                ax = axes[0]
-                color = s6_color
-                title = f"S6 Gaming ({mode})"
-            else:
-                ax = axes[1]
-                color = s7_color
-                title = f"S7 Anti-Gaming ({mode})"
-            if times:
-                ax.hist(times, bins=15, range=(0, args.max_target_steps),
-                       color=color, alpha=0.7, edgecolor="white")
-                mean_t = np.mean(times)
-                ax.axvline(x=mean_t, color="black", linestyle="--",
-                          linewidth=2, label=f"Mean: {mean_t:.0f} steps")
-                ax.legend()
-            else:
-                ax.text(0.5, 0.5, "No validated reaches",
-                       transform=ax.transAxes, ha="center", va="center", fontsize=14)
-            ax.set_title(title)
-            ax.set_xlabel("Steps to Reach")
+    first_mode = modes[0]
+    data = results_by_mode[first_mode]
+    n_plots = len(data)
+    fig, axes = plt.subplots(1, n_plots, figsize=(6 * n_plots, 5), sharey=True)
+    if n_plots == 1:
+        axes = [axes]
+
+    for ax_idx, pname in enumerate(policy_names):
+        if pname not in data:
+            continue
+        val = data[pname]
+        times = [t["time_steps"] for t in val["per_target"] if t["validated_reached"]]
+        color = _get_color(pname, "main")
+        label = _get_label(pname)
+        ax = axes[ax_idx]
+        if times:
+            ax.hist(times, bins=15, range=(0, args.max_target_steps),
+                   color=color, alpha=0.7, edgecolor="white")
+            mean_t = np.mean(times)
+            ax.axvline(x=mean_t, color="black", linestyle="--",
+                      linewidth=2, label=f"Mean: {mean_t:.0f} steps")
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, "No validated reaches",
+                   transform=ax.transAxes, ha="center", va="center", fontsize=14)
+        ax.set_title(f"{label} ({first_mode})")
+        ax.set_xlabel("Steps to Reach")
     axes[0].set_ylabel("Count")
     fig.suptitle("Time to Validated Reach", fontsize=16, y=1.02)
     fig.tight_layout()
@@ -1257,17 +1303,19 @@ def generate_plots(all_results, output_dir):
     print(f"[PLOT] time_to_reach_histogram saved")
 
     # ---- PLOT 5: Timeout Rate ----
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(max(8, 3 * len(policy_names) * len(modes)), 5))
     labels = []
     values = []
     colors = []
     for mode in modes:
         data = results_by_mode[mode]
-        for key, val in data.items():
-            label = f"{'S6' if 'S6' in key else 'S7'}\n{mode}"
-            labels.append(label)
-            values.append(val["summary"]["timeout_rate"])
-            colors.append(s6_color if "S6" in key else s7_color)
+        for pname in policy_names:
+            if pname not in data:
+                continue
+            plabel = _get_label(pname)
+            labels.append(f"{plabel}\n{mode}")
+            values.append(data[pname]["summary"]["timeout_rate"])
+            colors.append(_get_color(pname, "main"))
 
     bars = ax.bar(labels, values, color=colors, edgecolor="white", linewidth=1.5)
     for bar, val in zip(bars, values):
@@ -1277,6 +1325,7 @@ def generate_plots(all_results, output_dir):
     ax.set_title("Target Timeout Rate Comparison")
     ax.set_ylim(0, 105)
     ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
     for ext in ["png", "pdf"]:
         fig.savefig(os.path.join(plot_dir, f"timeout_rate.{ext}"))
     plt.close(fig)
@@ -1285,17 +1334,22 @@ def generate_plots(all_results, output_dir):
 
 def print_comparison_table(all_results):
     """Print final side-by-side comparison table."""
-    print(f"\n{'='*80}")
+    n_cols = len(all_results)
+    col_width = 22
+    label_width = 28
+    total_width = label_width + 3 + (col_width + 3) * n_cols
+
+    print(f"\n{'=' * total_width}")
     print(f"  FINAL KARSILASTIRMA TABLOSU")
-    print(f"{'='*80}")
-    print(f"{'Metrik':<28} | ", end="")
+    print(f"{'=' * total_width}")
+    print(f"{'Metrik':<{label_width}} | ", end="")
 
     # Headers
     for r in all_results:
         label = f"{r['summary']['policy']} ({r['summary']['mode']})"
-        print(f"{label:>20} | ", end="")
+        print(f"{label:>{col_width}} | ", end="")
     print()
-    print("-" * 80)
+    print("-" * total_width)
 
     # Rows
     metrics = [
@@ -1309,29 +1363,67 @@ def print_comparison_table(all_results):
         ("Ort. displacement (m)", "mean_ee_displacement"),
         ("Ort. time-to-reach", "mean_time_to_reach"),
         ("Ort. initial dist (m)", "mean_initial_distance"),
+        ("Ort. final dist (m)", "mean_final_distance"),
         ("Validated/1K steps", "validated_per_1k_steps"),
         ("Dusme", "falls"),
     ]
 
     for label, key in metrics:
-        print(f"{label:<28} | ", end="")
+        print(f"{label:<{label_width}} | ", end="")
         for r in all_results:
             val = r["summary"][key]
             if isinstance(val, float):
-                print(f"{val:>20.4f} | ", end="")
+                print(f"{val:>{col_width}.4f} | ", end="")
             else:
-                print(f"{val:>20} | ", end="")
+                print(f"{val:>{col_width}} | ", end="")
         print()
 
-    print(f"{'='*80}")
+    print(f"{'=' * total_width}")
 
 
 # ============================================================================
 # MAIN
 # ============================================================================
 
+def _load_checkpoint(path, device):
+    """Load checkpoint and extract model state dict."""
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    if "model" in ckpt:
+        state = ckpt["model"]
+    elif "model_state_dict" in ckpt:
+        state = ckpt["model_state_dict"]
+    else:
+        state = ckpt
+    return ckpt, state
+
+
+def _load_into_net(net, state, label):
+    """Load state dict into network with shape matching. Returns (loaded, skipped)."""
+    net_state = net.state_dict()
+    loaded = 0
+    skipped = []
+    for key in net_state.keys():
+        if key in state and state[key].shape == net_state[key].shape:
+            net_state[key] = state[key]
+            loaded += 1
+        else:
+            skipped.append(key)
+    net.load_state_dict(net_state)
+    net.eval()
+    print(f"  {label} loaded: {loaded}/{len(net_state)} keys")
+    if skipped:
+        print(f"  {label} skipped: {skipped}")
+    return loaded, skipped
+
+
 def main():
     device = "cuda:0"
+
+    # Validate: at least one S6 checkpoint must be provided
+    if args.s6_checkpoint is None and args.s6u_checkpoint is None:
+        print("[ERROR] En az bir S6 checkpoint gerekli: --s6_checkpoint veya --s6u_checkpoint")
+        simulation_app.close()
+        return
 
     # Output directory
     if args.output_dir:
@@ -1348,80 +1440,73 @@ def main():
     cfg.scene.env_spacing = args.env_spacing
     env = BenchmarkEnv(cfg)
 
-    # ---- Load Stage 6 network ----
-    print(f"\n[CHECKPOINT] Stage 6 yukleniyor: {args.s6_checkpoint}")
-    s6_ckpt = torch.load(args.s6_checkpoint, map_location=device, weights_only=False)
-    # S6 checkpoint stores model weights under 'model' key
-    if "model" in s6_ckpt:
-        s6_state = s6_ckpt["model"]
-    elif "model_state_dict" in s6_ckpt:
-        s6_state = s6_ckpt["model_state_dict"]
-    else:
-        s6_state = s6_ckpt
-
-    # S6 simplified checkpoint already uses .net. naming, remap only if needed
-    needs_remap = any(k.startswith("loco_actor.actor.") for k in s6_state.keys())
-    if needs_remap:
-        print("  [INFO] S6 uses .actor. naming, applying remap...")
-        s6_state = remap_s6_keys(s6_state)
-
-    s6_net = DualACStage6().to(device)
-    net_state = s6_net.state_dict()
-    s6_loaded = 0
-    s6_skipped = []
-    for key in net_state.keys():
-        if key in s6_state and s6_state[key].shape == net_state[key].shape:
-            net_state[key] = s6_state[key]
-            s6_loaded += 1
-        else:
-            s6_skipped.append(key)
-    s6_net.load_state_dict(net_state)
-    s6_net.eval()
-    print(f"  S6 loaded: {s6_loaded}/{len(net_state)} keys")
-    if s6_skipped:
-        print(f"  S6 skipped: {s6_skipped}")
-    print(f"  S6 curriculum level: {s6_ckpt.get('curriculum_level', 'N/A')}")
-
-    # ---- Load Stage 7 network ----
+    # ---- Load Stage 7 network (always required, also provides reference loco) ----
     print(f"\n[CHECKPOINT] Stage 7 yukleniyor: {args.s7_checkpoint}")
-    s7_ckpt = torch.load(args.s7_checkpoint, map_location=device, weights_only=False)
-    if "model" in s7_ckpt:
-        s7_state = s7_ckpt["model"]
-    elif "model_state_dict" in s7_ckpt:
-        s7_state = s7_ckpt["model_state_dict"]
-    else:
-        s7_state = s7_ckpt
-
+    s7_ckpt, s7_state = _load_checkpoint(args.s7_checkpoint, device)
     s7_net = DualACStage7().to(device)
-    net_state = s7_net.state_dict()
-    s7_loaded = 0
-    s7_skipped = []
-    for key in net_state.keys():
-        if key in s7_state and s7_state[key].shape == net_state[key].shape:
-            net_state[key] = s7_state[key]
-            s7_loaded += 1
-        else:
-            s7_skipped.append(key)
-    s7_net.load_state_dict(net_state)
-    s7_net.eval()
-    print(f"  S7 loaded: {s7_loaded}/{len(net_state)} keys")
-    if s7_skipped:
-        print(f"  S7 skipped: {s7_skipped}")
+    _load_into_net(s7_net, s7_state, "S7")
     print(f"  S7 curriculum level: {s7_ckpt.get('curriculum_level', 'N/A')}")
 
-    # Override S6's loco with S7's loco (they should be identical, but ensure)
-    s6_loco_state = {k: v for k, v in s6_net.loco_actor.state_dict().items()}
-    s7_loco_state = {k: v for k, v in s7_net.loco_actor.state_dict().items()}
-    loco_match = all(
-        torch.allclose(s6_loco_state[k], s7_loco_state[k], atol=1e-6)
-        for k in s6_loco_state if k in s7_loco_state
-    )
-    if loco_match:
-        print("\n[VERIFY] Loco weights S6 == S7: ESLESIYOR (bitwise ayni)")
-    else:
-        print("\n[WARNING] Loco weights S6 != S7! S7 loco kullaniliyor.")
-        s6_net.loco_actor.load_state_dict(s7_net.loco_actor.state_dict())
-        s6_net.loco_critic.load_state_dict(s7_net.loco_critic.state_dict())
+    # Reference loco state from S7 (the frozen Stage 6 loco)
+    ref_loco_state = s7_net.loco_actor.state_dict()
+
+    # ---- Load Stage 6 SIMPLIFIED network (optional) ----
+    s6s_net = None
+    if args.s6_checkpoint:
+        print(f"\n[CHECKPOINT] Stage 6 Simplified yukleniyor: {args.s6_checkpoint}")
+        s6s_ckpt, s6s_state = _load_checkpoint(args.s6_checkpoint, device)
+
+        # Remap if needed (.actor. -> .net.)
+        needs_remap = any(k.startswith("loco_actor.actor.") for k in s6s_state.keys())
+        if needs_remap:
+            print("  [INFO] S6s uses .actor. naming, applying remap...")
+            s6s_state = remap_s6_keys(s6s_state)
+
+        s6s_net = DualACStage6().to(device)
+        _load_into_net(s6s_net, s6s_state, "S6s")
+        print(f"  S6s curriculum level: {s6s_ckpt.get('curriculum_level', 'N/A')}")
+
+        # Verify loco match with S7
+        s6s_loco = s6s_net.loco_actor.state_dict()
+        loco_match = all(
+            torch.allclose(s6s_loco[k], ref_loco_state[k], atol=1e-6)
+            for k in s6s_loco if k in ref_loco_state
+        )
+        if loco_match:
+            print("  [VERIFY] S6s loco == S7 loco: ESLESIYOR")
+        else:
+            print("  [WARNING] S6s loco != S7 loco! S7 loco kopyalaniyor.")
+            s6s_net.loco_actor.load_state_dict(ref_loco_state)
+
+    # ---- Load Stage 6 UNIFIED network (optional) ----
+    s6u_net = None
+    if args.s6u_checkpoint:
+        print(f"\n[CHECKPOINT] Stage 6 Unified yukleniyor: {args.s6u_checkpoint}")
+        s6u_ckpt, s6u_state = _load_checkpoint(args.s6u_checkpoint, device)
+
+        # S6 unified ALWAYS uses .actor. naming
+        needs_remap = any(k.startswith("loco_actor.actor.") for k in s6u_state.keys())
+        if needs_remap:
+            print("  [INFO] S6u uses .actor. naming, applying remap...")
+            s6u_state = remap_s6_keys(s6u_state)
+
+        s6u_net = DualACStage6Unified().to(device)
+        _load_into_net(s6u_net, s6u_state, "S6u")
+        print(f"  S6u curriculum level: {s6u_ckpt.get('curriculum_level', 'N/A')}")
+        print(f"  S6u total_reaches: {s6u_ckpt.get('total_reaches', 'N/A')}")
+        print(f"  S6u best_reward: {s6u_ckpt.get('best_reward', 'N/A')}")
+
+        # Verify loco match with S7
+        s6u_loco = s6u_net.loco_actor.state_dict()
+        loco_match = all(
+            torch.allclose(s6u_loco[k], ref_loco_state[k], atol=1e-6)
+            for k in s6u_loco if k in ref_loco_state
+        )
+        if loco_match:
+            print("  [VERIFY] S6u loco == S7 loco: ESLESIYOR")
+        else:
+            print("  [WARNING] S6u loco != S7 loco! S7 loco kopyalaniyor.")
+            s6u_net.loco_actor.load_state_dict(ref_loco_state)
 
     # ---- Determine modes ----
     if args.mode == "both":
@@ -1429,39 +1514,39 @@ def main():
     else:
         modes = [args.mode]
 
+    # ---- Build policy list ----
+    # Each entry: (net, label, obs_fn, obs_pos_th, obs_orient_th)
+    # Native obs thresholds for each policy:
+    #   S6 Level 12: pos=0.04, orient=1.0
+    #   S6 Unified Level 0: pos=0.04, orient=1.0 (same training code)
+    #   S7 Level 7: pos=0.04, orient=2.0
+    policies = []
+    if s6u_net is not None:
+        policies.append((s6u_net, "S6u_gaming", env.get_arm_obs_s6, 0.04, 1.0))
+    if s6s_net is not None:
+        policies.append((s6s_net, "S6s_simplified", env.get_arm_obs_s6, 0.04, 1.0))
+    policies.append((s7_net, "S7_antigaming", env.get_arm_obs_s7, 0.04, 2.0))
+
+    print(f"\n[BENCHMARK] {len(policies)} policy test edilecek: "
+          f"{[p[1] for p in policies]}")
+    print(f"[BENCHMARK] Modlar: {modes}")
+    print(f"[BENCHMARK] Adim sayisi: {args.steps} per policy per mode")
+
     # ---- Run benchmark ----
     all_results = []
-
-    # Native obs thresholds for each policy
-    # S6 Level 12: pos=0.04, orient=1.0
-    # S7 Level 7: pos=0.04, orient=2.0
-    S6_OBS_POS_TH = 0.04
-    S6_OBS_ORIENT_TH = 1.0
-    S7_OBS_POS_TH = 0.04
-    S7_OBS_ORIENT_TH = 2.0
 
     for mode_name in modes:
         env.set_mode(mode_name)
 
-        # ---- Run S6 ----
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
-        env.full_reset()
-        s6_result = run_policy_session(
-            env, s6_net, "S6_gaming", env.get_arm_obs_s6,
-            S6_OBS_POS_TH, S6_OBS_ORIENT_TH, args.steps, mode_name
-        )
-        all_results.append(s6_result)
-
-        # ---- Run S7 ----
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
-        env.full_reset()
-        s7_result = run_policy_session(
-            env, s7_net, "S7_antigaming", env.get_arm_obs_s7,
-            S7_OBS_POS_TH, S7_OBS_ORIENT_TH, args.steps, mode_name
-        )
-        all_results.append(s7_result)
+        for net, label, obs_fn, obs_pos_th, obs_orient_th in policies:
+            torch.manual_seed(args.seed)
+            np.random.seed(args.seed)
+            env.full_reset()
+            result = run_policy_session(
+                env, net, label, obs_fn,
+                obs_pos_th, obs_orient_th, args.steps, mode_name
+            )
+            all_results.append(result)
 
     # ---- Save outputs ----
     save_per_target_csv(all_results, output_dir)
@@ -1472,6 +1557,8 @@ def main():
             generate_plots(all_results, output_dir)
         except Exception as e:
             print(f"[WARNING] Grafik olusturma hatasi: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ---- Final comparison table ----
     print_comparison_table(all_results)
