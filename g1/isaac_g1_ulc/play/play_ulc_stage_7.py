@@ -30,6 +30,16 @@ Usage:
     ./isaaclab.bat -p play_ulc_stage7.py \
         --checkpoint logs/ulc/.../model_best.pt \
         --num_envs 1 --mode walking --no_orient
+
+    # PAPER MODE: 60s video (30s standing reach + 30s walking reach)
+    ./isaaclab.bat -p play_ulc_stage7.py \
+        --checkpoint logs/ulc/.../model_best.pt \
+        --mode paper
+
+V2 (2026-02-15): Paper mode eklendi. Walking hizi arttirildi (0.1-0.3 -> 0.2-0.5).
+                  Video sure hesaplamasi duzeltildi (frame count based).
+V2.3 (2026-02-15): Video hizi duzeltildi — her step capture + 30fps encode = 1.67x slow-motion.
+                    60s video icin 1800 step (36s sim). Kamera EMA alpha 0.02 -> 0.3 (responsive).
 """
 
 from __future__ import annotations
@@ -46,7 +56,7 @@ parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--steps", type=int, default=3000)
 parser.add_argument("--mode", type=str, default="standing",
-                    choices=["standing", "walking", "fast", "demo", "showcase"])
+                    choices=["standing", "walking", "fast", "demo", "showcase", "paper"])
 parser.add_argument("--stochastic", action="store_true", default=False,
                     help="Use stochastic actions (default: deterministic)")
 parser.add_argument("--reach_threshold", type=float, default=0.08,
@@ -85,6 +95,14 @@ use_deterministic = not args.stochastic
 if args.mode == "showcase":
     args.no_orient = True
     args.num_envs = 1
+
+# Paper mode: force record, no_orient, 1 env, 60s
+if args.mode == "paper":
+    args.no_orient = True
+    args.num_envs = 1
+    args.record = True
+    args.record_duration = 60.0
+    args.fps = 30
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -143,7 +161,7 @@ MODE_CONFIGS = {
         "description": "Standing still, arm reaching only"
     },
     "walking": {
-        "vx_range": (0.1, 0.3),
+        "vx_range": (0.2, 0.5),
         "vy_range": (-0.05, 0.05),
         "vyaw_range": (-0.1, 0.1),
         "workspace_radius": (0.18, 0.40),
@@ -174,6 +192,37 @@ MODE_CONFIGS = {
         "min_target_distance": 0.08,
         "description": "Showcase: full workspace, fast retry, no timeout stalls"
     },
+    "paper": {
+        "vx_range": (0.0, 0.0),
+        "vy_range": (0.0, 0.0),
+        "vyaw_range": (0.0, 0.0),
+        "workspace_radius": (0.18, 0.40),
+        "min_target_distance": 0.10,
+        "description": "Paper video: 30s standing reach + 30s walking reach"
+    },
+}
+
+# Paper mode phase configs (used to switch mid-recording)
+# Video duration split: 30s video each = 900 frames each at 30fps = 900 steps each
+PAPER_PHASES = {
+    "standing": {
+        "vx_range": (0.0, 0.0),
+        "vy_range": (0.0, 0.0),
+        "vyaw_range": (0.0, 0.0),
+        "workspace_radius": (0.18, 0.40),
+        "min_target_distance": 0.10,
+        "video_duration_s": 30.0,
+        "description": "Phase 1: Standing reach (30s video)"
+    },
+    "walking": {
+        "vx_range": (0.3, 0.5),
+        "vy_range": (-0.05, 0.05),
+        "vyaw_range": (-0.1, 0.1),
+        "workspace_radius": (0.18, 0.40),
+        "min_target_distance": 0.12,
+        "video_duration_s": 30.0,
+        "description": "Phase 2: Walking reach (30s video)"
+    },
 }
 
 # Camera presets: (eye_position, target_position)
@@ -191,11 +240,17 @@ CAMERA_PRESETS = {
 # ============================================================================
 
 class FrameRecorder:
-    """Captures viewport frames and converts to MP4 via ffmpeg."""
+    """Captures viewport frames and converts to MP4 via ffmpeg.
 
-    def __init__(self, output_dir: str, fps: int = 30):
+    Slow-motion video: captures every simulation step and encodes at output_fps.
+    Each step = 0.02s simulation time but displayed at 1/30s = 0.033s.
+    This gives 1.67x slow-motion effect which makes robot movements look natural.
+    For 60s video: 1800 frames / 30fps = 60s.
+    """
+
+    def __init__(self, output_dir: str, output_fps: int = 30):
         self.output_dir = output_dir
-        self.fps = fps
+        self.output_fps = output_fps
         self.frame_dir = os.path.join(output_dir, "frames")
         os.makedirs(self.frame_dir, exist_ok=True)
         self.frame_count = 0
@@ -216,9 +271,11 @@ class FrameRecorder:
         output_path = os.path.join(self.output_dir, output_name)
         frame_pattern = os.path.join(self.frame_dir, "frame_%06d.png")
 
+        # Input AND output framerate = output_fps (30)
+        # Each step captured -> 1.67x slow-motion (natural-looking robot speed)
         cmd = [
             "ffmpeg", "-y",
-            "-framerate", str(self.fps),
+            "-framerate", str(self.output_fps),
             "-i", frame_pattern,
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
@@ -226,7 +283,9 @@ class FrameRecorder:
             output_path
         ]
 
-        print(f"\n[VIDEO] {self.frame_count} frame -> MP4 donusturuluyor...")
+        expected_duration = self.frame_count / self.output_fps
+        print(f"\n[VIDEO] {self.frame_count} frames -> MP4 @ {self.output_fps}fps")
+        print(f"  Expected duration: {expected_duration:.1f}s (1.67x slow-motion)")
         try:
             subprocess.run(cmd, check=True, capture_output=True)
             print(f"[VIDEO] Kaydedildi: {output_path}")
@@ -1060,17 +1119,18 @@ def main():
 
     # Video recorder setup
     recorder = None
+    env_dt = 0.02  # 4 decimation * 1/200 physics dt
     if args.record:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         record_dir = os.path.join(os.getcwd(), "recordings", f"stage7_{timestamp}")
-        recorder = FrameRecorder(record_dir, fps=args.fps)
-        # Override steps to match recording duration
-        env_dt = 0.02  # 4 decimation * 1/200 physics dt
-        total_steps = int(args.record_duration / env_dt)
-        args.steps = total_steps
-        record_interval = max(1, int(1.0 / (env_dt * args.fps)))
-        print(f"[Record] {args.record_duration}s = {total_steps} steps, "
-              f"capture every {record_interval} steps")
+        recorder = FrameRecorder(record_dir, output_fps=args.fps)
+        # Slow-motion approach: capture every step, encode at 30fps
+        # 1 step = 0.02s sim time, displayed at 1/30s = 0.033s -> 1.67x slow-motion
+        # For 60s video at 30fps = 1800 frames = 1800 steps = 36s sim time
+        total_frames = int(args.record_duration * args.fps)  # 60s * 30fps = 1800
+        args.steps = total_frames  # 1 frame per step
+        print(f"[Record] {args.record_duration}s video = {total_frames} frames @ {args.fps}fps, "
+              f"1.67x slow-motion ({total_frames * env_dt:.1f}s sim time)")
 
     obs, _ = env.reset()
 
@@ -1079,13 +1139,94 @@ def main():
 
     prev_reaches = 0
 
+    # Paper mode: compute phase transition step
+    # 1.67x slow-motion: 1800 steps -> 1800 frames -> 60s video at 30fps
+    # Phase 1 = 900 steps (30s video), Phase 2 = 900 steps (30s video)
+    paper_phase2_step = None
+    if args.mode == "paper":
+        phase1_vid_dur = PAPER_PHASES["standing"]["video_duration_s"]
+        phase2_vid_dur = PAPER_PHASES["walking"]["video_duration_s"]
+        phase1_steps = int(phase1_vid_dur * args.fps)  # 30s * 30fps = 900 steps
+        phase2_steps = int(phase2_vid_dur * args.fps)  # 30s * 30fps = 900 steps
+        total_paper_steps = phase1_steps + phase2_steps  # 1800
+        paper_phase2_step = phase1_steps  # Transition at step 900
+        args.steps = total_paper_steps
+        # Apply Phase 1 config
+        phase1_cfg = PAPER_PHASES["standing"]
+        env.mode_cfg["vx_range"] = phase1_cfg["vx_range"]
+        env.mode_cfg["vy_range"] = phase1_cfg["vy_range"]
+        env.mode_cfg["vyaw_range"] = phase1_cfg["vyaw_range"]
+        env.mode_cfg["workspace_radius"] = phase1_cfg["workspace_radius"]
+        env.mode_cfg["min_target_distance"] = phase1_cfg["min_target_distance"]
+        env.vel_cmd[:] = 0.0
+        # Relaxed thresholds for paper demo (same as showcase)
+        env.reach_pos_threshold = 0.08
+        env.min_displacement = 0.04
+        env.max_reach_steps = 80  # ~1.6s timeout
+        phase1_sim = phase1_steps * env_dt
+        phase2_sim = phase2_steps * env_dt
+        print(f"\n[PAPER MODE] {total_paper_steps} steps -> 60s video (1.67x slow-motion)")
+        print(f"  Phase 1: Standing reach ({phase1_steps} steps = {phase1_sim:.1f}s sim = {phase1_vid_dur:.0f}s video)")
+        print(f"  Phase 2: Walking reach ({phase2_steps} steps = {phase2_sim:.1f}s sim = {phase2_vid_dur:.0f}s video)")
+        print(f"  Thresholds: pos={env.reach_pos_threshold}m, disp={env.min_displacement}m, timeout={env.max_reach_steps}")
+        env._sample_commands(torch.arange(env.num_envs, device=env.device))
+
     print(f"\n[Play] {args.steps} steps | '{args.mode}' | {'DETERM' if use_deterministic else 'STOCH'}")
     print(f"  Training Level {ckpt_level}: pos_thresh={env.reach_pos_threshold}m, "
           f"min_disp={env.min_displacement}m, max_steps={env.max_reach_steps}")
     print(f"  obs_pos_threshold={env.obs_pos_threshold}m (for target_reached observation)\n")
 
+    paper_phase2_activated = False
+
+    # Camera tracking with responsive EMA smoothing
+    cam_eye_offset = torch.tensor(list(eye), dtype=torch.float32)  # e.g. (-1.8, 1.3, 1.3)
+    cam_target_offset = torch.tensor(list(target_cam), dtype=torch.float32)  # e.g. (0, 0, 0.65)
+    # EMA state: smoothed robot XY position (initialized to spawn position)
+    cam_smooth_x = 0.0
+    cam_smooth_y = 0.0
+    cam_ema_alpha = 0.3  # Responsive: robot stays in frame, slight smoothing to remove jitter
+
     with torch.no_grad():
         for step in range(args.steps):
+            # Camera tracking: responsive EMA follow, update every 2 steps
+            if args.mode == "paper" and step % 2 == 0:
+                robot_pos = env.robot.data.root_pos_w[0].cpu()
+                rx = robot_pos[0].item()
+                ry = robot_pos[1].item()
+                # EMA smooth: camera slowly follows robot, no jerk
+                cam_smooth_x += cam_ema_alpha * (rx - cam_smooth_x)
+                cam_smooth_y += cam_ema_alpha * (ry - cam_smooth_y)
+                cam_eye_world = (cam_smooth_x + cam_eye_offset[0].item(),
+                                 cam_smooth_y + cam_eye_offset[1].item(),
+                                 cam_eye_offset[2].item())
+                cam_target_world = (cam_smooth_x + cam_target_offset[0].item(),
+                                    cam_smooth_y + cam_target_offset[1].item(),
+                                    cam_target_offset[2].item())
+                set_camera_view(eye=cam_eye_world, target=cam_target_world)
+
+            # Paper mode: Phase 2 transition (standing -> walking)
+            if args.mode == "paper" and not paper_phase2_activated and step >= paper_phase2_step:
+                paper_phase2_activated = True
+                phase2_cfg = PAPER_PHASES["walking"]
+                env.mode_cfg["vx_range"] = phase2_cfg["vx_range"]
+                env.mode_cfg["vy_range"] = phase2_cfg["vy_range"]
+                env.mode_cfg["vyaw_range"] = phase2_cfg["vyaw_range"]
+                env.mode_cfg["workspace_radius"] = phase2_cfg["workspace_radius"]
+                env.mode_cfg["min_target_distance"] = phase2_cfg["min_target_distance"]
+                # Set walking velocity commands for all envs
+                all_ids = torch.arange(env.num_envs, device=env.device)
+                n = len(all_ids)
+                env.vel_cmd[all_ids, 0] = torch.empty(n, device=env.device).uniform_(*phase2_cfg["vx_range"])
+                env.vel_cmd[all_ids, 1] = torch.empty(n, device=env.device).uniform_(*phase2_cfg["vy_range"])
+                env.vel_cmd[all_ids, 2] = torch.empty(n, device=env.device).uniform_(*phase2_cfg["vyaw_range"])
+                env._sample_commands(all_ids)
+                elapsed_sim = step * env_dt
+                elapsed_vid = step / args.fps
+                print(f"\n{'='*60}")
+                print(f"[PAPER] PHASE 2 ACTIVATED at step {step} (sim: {elapsed_sim:.1f}s, video: {elapsed_vid:.1f}s)")
+                print(f"  Walking: vx={phase2_cfg['vx_range']}")
+                print(f"{'='*60}\n")
+
             loco_obs = env.get_loco_obs()
             arm_obs = env.get_arm_obs()
 
@@ -1094,15 +1235,19 @@ def main():
 
             obs, reward, terminated, truncated, info = env.step(actions)
 
-            # Capture frame for video
-            if recorder and (step % record_interval == 0):
+            # Capture every step for slow-motion video (30fps encode = 1.67x slo-mo)
+            if recorder:
                 recorder.capture_frame()
 
             if env.validated_reaches > prev_reaches:
                 new = env.validated_reaches - prev_reaches
                 avg_dist = np.mean(env.last_reach_dists) if env.last_reach_dists else 0
                 avg_disp = np.mean(env.last_reach_disps) if env.last_reach_disps else 0
-                print(f"[Step {step:4d}] +{new} REACH (total={env.validated_reaches}) "
+                elapsed = step * env_dt
+                phase_str = ""
+                if args.mode == "paper":
+                    phase_str = " [WALK]" if paper_phase2_activated else " [STAND]"
+                print(f"[{elapsed:5.1f}s Step {step:4d}]{phase_str} +{new} REACH (total={env.validated_reaches}) "
                       f"dist={avg_dist:.3f}m disp={avg_disp:.3f}m")
                 prev_reaches = env.validated_reaches
 
@@ -1125,8 +1270,13 @@ def main():
                 total_attempts = env.validated_reaches + env.timed_out_targets + env.stuck_resample_count
                 v_rate = env.validated_reaches / max(total_attempts, 1) * 100
 
+                elapsed = step * env_dt
+                phase_str = ""
+                if args.mode == "paper":
+                    phase_str = " [WALK]" if paper_phase2_activated else " [STAND]"
+
                 print(
-                    f"[Step {step:4d}] "
+                    f"[{elapsed:5.1f}s Step {step:4d}]{phase_str} "
                     f"H={h:.3f} Vx={vx_b:+.2f}(cmd={cmd_vx:.2f}) "
                     f"EE={ee_d:.3f}m Disp={ee_disp:.3f}m Spd={ee_spd:.3f} "
                     f"Orient={orient_err_debug:.2f}rad "
@@ -1136,9 +1286,17 @@ def main():
 
     # Finalize video
     if recorder:
-        video_path = recorder.finalize_video(f"g1_stage7_reaching_{args.mode}.mp4")
+        if args.mode == "paper":
+            video_name = "g1_stage7_paper_60s.mp4"
+        else:
+            video_name = f"g1_stage7_reaching_{args.mode}.mp4"
+        video_path = recorder.finalize_video(video_name)
         if video_path:
-            print(f"\n[VIDEO] LinkedIn-ready video: {video_path}")
+            video_duration = recorder.frame_count / args.fps
+            sim_duration = recorder.frame_count * env_dt
+            print(f"\n[VIDEO] Saved: {video_path}")
+            print(f"  Frames: {recorder.frame_count}, FPS: {args.fps}")
+            print(f"  Video duration: {video_duration:.1f}s (sim: {sim_duration:.1f}s, 1.67x slow-motion)")
 
     total_attempts = env.validated_reaches + env.timed_out_targets
     print(f"\n{'=' * 70}")
