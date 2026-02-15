@@ -43,8 +43,10 @@ from datetime import datetime
 # ============================================================================
 
 parser = argparse.ArgumentParser(description="S6 vs S7 Benchmark - ICRA 2026")
-parser.add_argument("--s6_checkpoint", type=str, required=True,
-                    help="Stage 6 (gaming) checkpoint path")
+parser.add_argument("--s6_checkpoint", type=str, default=None,
+                    help="Stage 6 SIMPLIFIED (52->5 arm) checkpoint path")
+parser.add_argument("--s6u_checkpoint", type=str, default=None,
+                    help="Stage 6 UNIFIED (52->12 arm+finger) checkpoint path (gaming)")
 parser.add_argument("--s7_checkpoint", type=str, required=True,
                     help="Stage 7 (anti-gaming) checkpoint path")
 parser.add_argument("--num_envs", type=int, default=1,
@@ -272,6 +274,31 @@ class DualACStage6(nn.Module):
         return loco_act, arm_act
 
 
+class DualACStage6Unified(nn.Module):
+    """Stage 6 UNIFIED: LocoActor(57->12) + ArmActor(52->12, includes 7 finger)
+    Uses .actor. naming in checkpoint (needs remap).
+    Has unified critic (109 input) instead of separate loco/arm critics.
+    """
+    def __init__(self):
+        super().__init__()
+        self.loco_actor = LocoActor(57, 12)
+        self.loco_critic = LocoCritic(57)  # Dummy, unified critic won't load here
+        self.arm_actor = ArmActor(52, 12)  # 5 arm + 7 finger
+        self.arm_critic = ArmCritic(52)    # Dummy
+
+    def get_actions(self, loco_obs, arm_obs, deterministic=True):
+        loco_mean = self.loco_actor(loco_obs)
+        arm_out = self.arm_actor(arm_obs)  # [N, 12]
+        arm_mean = arm_out[:, :5]  # Only first 5 (arm joints, ignore fingers)
+        if deterministic:
+            return loco_mean, arm_mean
+        loco_std = self.loco_actor.log_std.clamp(-2, 1).exp()
+        arm_std = self.arm_actor.log_std[:5].clamp(-2, 1).exp()
+        loco_act = torch.distributions.Normal(loco_mean, loco_std).sample()
+        arm_act = torch.distributions.Normal(arm_mean, arm_std).sample()
+        return loco_act, arm_act
+
+
 class DualACStage7(nn.Module):
     """Stage 7: LocoActor(57->12) + ArmActor(55->5)"""
     def __init__(self):
@@ -481,11 +508,20 @@ class BenchmarkEnv(DirectRLEnv):
         env_ids = torch.arange(self.num_envs, device=self.device)
         self._reset_idx(env_ids)
         self.prev_ee_pos[:] = 0
-        # Step once to get valid state
+        # Step once to get valid physics state (robot settled at spawn pose)
         obs, _, _, _, _ = self.step(torch.zeros(self.num_envs, 17, device=self.device))
-        # Initialize prev_ee_pos with actual EE
+        # Now EE position is valid - initialize tracking buffers
         ee_pos, _ = self._compute_palm_ee()
         self.prev_ee_pos = ee_pos.clone()
+        # Re-sample targets with valid EE position (fixes initial_dist=0 bug)
+        # This ensures ee_pos_at_spawn and initial_dist are computed from
+        # the actual EE position, not from zeros
+        self._sample_targets(env_ids)
+        # Update ee_pos_at_spawn with body-frame EE
+        root_pos = self.robot.data.root_pos_w
+        root_quat = self.robot.data.root_quat_w
+        ee_body = quat_apply_inverse(root_quat, ee_pos - root_pos)
+        self.ee_pos_at_spawn = ee_body.clone()
 
     def _compute_palm_ee(self):
         """Compute palm EE position and quaternion."""
@@ -1051,7 +1087,6 @@ def generate_plots(all_results, output_dir):
         "legend.fontsize": 11,
         "figure.dpi": 150,
         "savefig.dpi": 300,
-        "savefig.bbox_inches": "tight",
     })
 
     # Group results by mode
