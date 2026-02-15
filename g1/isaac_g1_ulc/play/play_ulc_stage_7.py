@@ -40,6 +40,8 @@ V2 (2026-02-15): Paper mode eklendi. Walking hizi arttirildi (0.1-0.3 -> 0.2-0.5
                   Video sure hesaplamasi duzeltildi (frame count based).
 V2.3 (2026-02-15): Video hizi duzeltildi — her step capture + 30fps encode = 1.67x slow-motion.
                     60s video icin 1800 step (36s sim). Kamera EMA alpha 0.02 -> 0.3 (responsive).
+V2.4 (2026-02-15): Kamera acisi her 10s'de donuyor: front_right -> front -> top (loop).
+                    3 aci x 10s = 30s cycle, 60s videoda 2 tam tur.
 """
 
 from __future__ import annotations
@@ -1178,22 +1180,43 @@ def main():
 
     paper_phase2_activated = False
 
+    # Camera rotation for paper mode: cycle through angles every 10s video time
+    # 10s video = 10 * fps frames = 10 * 30 = 300 steps per angle
+    paper_cam_angles = [
+        ("front_right", CAMERA_PRESETS["front_right"]),
+        ("front",       CAMERA_PRESETS["front"]),
+        ("top",         CAMERA_PRESETS["top"]),
+    ]
+    paper_cam_interval = int(10.0 * args.fps)  # 300 steps = 10s video time
+    paper_cam_current_idx = -1  # Force first update at step 0
+
     # Camera tracking with responsive EMA smoothing
-    cam_eye_offset = torch.tensor(list(eye), dtype=torch.float32)  # e.g. (-1.8, 1.3, 1.3)
-    cam_target_offset = torch.tensor(list(target_cam), dtype=torch.float32)  # e.g. (0, 0, 0.65)
-    # EMA state: smoothed robot XY position (initialized to spawn position)
     cam_smooth_x = 0.0
     cam_smooth_y = 0.0
     cam_ema_alpha = 0.3  # Responsive: robot stays in frame, slight smoothing to remove jitter
+    # Current camera offsets (updated when angle changes)
+    cam_eye_offset = torch.tensor(list(eye), dtype=torch.float32)
+    cam_target_offset = torch.tensor(list(target_cam), dtype=torch.float32)
 
     with torch.no_grad():
         for step in range(args.steps):
+            # Paper mode: rotate camera angle every 10s video time
+            if args.mode == "paper":
+                angle_idx = (step // paper_cam_interval) % len(paper_cam_angles)
+                if angle_idx != paper_cam_current_idx:
+                    paper_cam_current_idx = angle_idx
+                    angle_name, (new_eye, new_target) = paper_cam_angles[angle_idx]
+                    cam_eye_offset = torch.tensor(list(new_eye), dtype=torch.float32)
+                    cam_target_offset = torch.tensor(list(new_target), dtype=torch.float32)
+                    vid_time = step / args.fps
+                    print(f"[CAMERA] {vid_time:.0f}s -> {angle_name}")
+
             # Camera tracking: responsive EMA follow, update every 2 steps
             if args.mode == "paper" and step % 2 == 0:
                 robot_pos = env.robot.data.root_pos_w[0].cpu()
                 rx = robot_pos[0].item()
                 ry = robot_pos[1].item()
-                # EMA smooth: camera slowly follows robot, no jerk
+                # EMA smooth: camera follows robot, slight smoothing to remove jitter
                 cam_smooth_x += cam_ema_alpha * (rx - cam_smooth_x)
                 cam_smooth_y += cam_ema_alpha * (ry - cam_smooth_y)
                 cam_eye_world = (cam_smooth_x + cam_eye_offset[0].item(),
