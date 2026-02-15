@@ -642,8 +642,16 @@ class BenchmarkEnv(DirectRLEnv):
         ], dim=-1)
         return obs.clamp(-10, 10).nan_to_num()
 
-    def _get_arm_obs_common(self, obs_pos_th: float, obs_orient_th: float):
-        """Compute 52-dim base arm obs. Used by both S6 and S7 obs methods."""
+    def _get_arm_obs_common(self, obs_pos_th: float, obs_orient_th: float,
+                            use_object_rel_ee: bool = False):
+        """Compute 52-dim base arm obs.
+
+        Args:
+            obs_pos_th: Position threshold for target_reached obs signal.
+            obs_orient_th: Orientation threshold for target_reached obs signal.
+            use_object_rel_ee: If True, index 49-51 = zeros (object_rel_ee, as in S6 unified training).
+                               If False, index 49-51 = target_orient_body (as in S6 simplified / S7 training).
+        """
         robot = self.robot
         root_pos = robot.data.root_pos_w
         root_quat = robot.data.root_quat_w
@@ -694,7 +702,12 @@ class BenchmarkEnv(DirectRLEnv):
 
         estimated_load = torch.zeros(self.num_envs, 3, device=self.device)
         object_in_hand = torch.zeros(self.num_envs, 1, device=self.device)
-        target_orient_obs = self.target_orient_body
+
+        # Index 49-51: S6 unified used object_rel_ee (zeros), S6 simplified/S7 use target_orient
+        if use_object_rel_ee:
+            slot_49_51 = torch.zeros(self.num_envs, 3, device=self.device)
+        else:
+            slot_49_51 = self.target_orient_body
 
         lin_vel_b = quat_apply_inverse(root_quat, robot.data.root_lin_vel_w)
         ang_vel_b = quat_apply_inverse(root_quat, robot.data.root_ang_vel_w)
@@ -702,44 +715,51 @@ class BenchmarkEnv(DirectRLEnv):
         ang_vel_z = ang_vel_b[:, 2:3]
 
         base_obs = torch.cat([
-            arm_pos,              # 5
-            arm_vel,              # 5
-            finger_pos,           # 7
-            ee_body,              # 3
-            ee_vel_body,          # 3
-            palm_quat,            # 4
-            grip_force,           # 1
-            gripper_closed_ratio, # 1
-            contact_detected,     # 1
-            self.target_pos_body, # 3
-            pos_error,            # 3
-            pos_dist,             # 1
-            orient_error,         # 1
-            target_reached,       # 1
-            height_cmd_obs,       # 1
-            current_height,       # 1
-            height_err,           # 1
-            estimated_load,       # 3
-            object_in_hand,       # 1
-            target_orient_obs,    # 3
-            lin_vel_xy,           # 2
-            ang_vel_z,            # 1
+            arm_pos,              # 5   [0:5]
+            arm_vel,              # 5   [5:10]
+            finger_pos,           # 7   [10:17]
+            ee_body,              # 3   [17:20]
+            ee_vel_body,          # 3   [20:23]
+            palm_quat,            # 4   [23:27]
+            grip_force,           # 1   [27]
+            gripper_closed_ratio, # 1   [28]
+            contact_detected,     # 1   [29]
+            self.target_pos_body, # 3   [30:33]
+            pos_error,            # 3   [33:36]
+            pos_dist,             # 1   [36]
+            orient_error,         # 1   [37]
+            target_reached,       # 1   [38]
+            height_cmd_obs,       # 1   [39]
+            current_height,       # 1   [40]
+            height_err,           # 1   [41]
+            estimated_load,       # 3   [42:45]
+            object_in_hand,       # 1   [45]
+            slot_49_51,           # 3   [46:49] S6u=zeros, S6s/S7=target_orient
+            lin_vel_xy,           # 2   [49:51]
+            ang_vel_z,            # 1   [51]
         ], dim=-1)  # Total: 52
 
         # Return extra data needed for metrics
         return base_obs, ee_body, ee_world, dist_to_target.squeeze(-1)
 
-    def get_arm_obs_s6(self, obs_pos_th: float, obs_orient_th: float):
-        """52-dim arm obs for Stage 6 policy."""
+    def get_arm_obs_s6u(self, obs_pos_th: float, obs_orient_th: float):
+        """52-dim arm obs for Stage 6 UNIFIED policy (object_rel_ee=zeros at index 46-48)."""
         base_obs, ee_body, ee_world, dist = self._get_arm_obs_common(
-            obs_pos_th, obs_orient_th
+            obs_pos_th, obs_orient_th, use_object_rel_ee=True
+        )
+        return base_obs.clamp(-10, 10).nan_to_num(), ee_body, ee_world, dist
+
+    def get_arm_obs_s6(self, obs_pos_th: float, obs_orient_th: float):
+        """52-dim arm obs for Stage 6 SIMPLIFIED policy (target_orient at index 46-48)."""
+        base_obs, ee_body, ee_world, dist = self._get_arm_obs_common(
+            obs_pos_th, obs_orient_th, use_object_rel_ee=False
         )
         return base_obs.clamp(-10, 10).nan_to_num(), ee_body, ee_world, dist
 
     def get_arm_obs_s7(self, obs_pos_th: float, obs_orient_th: float):
         """55-dim arm obs for Stage 7 policy (52 base + 3 anti-gaming)."""
         base_obs, ee_body, ee_world, dist = self._get_arm_obs_common(
-            obs_pos_th, obs_orient_th
+            obs_pos_th, obs_orient_th, use_object_rel_ee=False
         )
         # 3 anti-gaming observations
         max_steps = float(self.max_target_steps)
@@ -1537,8 +1557,10 @@ def main():
     #   S7 Level 7: pos=0.04, orient=2.0
     policies = []
     if s6u_net is not None:
-        policies.append((s6u_net, "S6u_gaming", env.get_arm_obs_s6, 0.04, 1.0))
+        # S6 unified: uses object_rel_ee (zeros) at index 46-48, NOT target_orient
+        policies.append((s6u_net, "S6u_gaming", env.get_arm_obs_s6u, 0.04, 1.0))
     if s6s_net is not None:
+        # S6 simplified: uses target_orient at index 46-48 (same as S7)
         policies.append((s6s_net, "S6s_simplified", env.get_arm_obs_s6, 0.04, 1.0))
     policies.append((s7_net, "S7_antigaming", env.get_arm_obs_s7, 0.04, 2.0))
 
