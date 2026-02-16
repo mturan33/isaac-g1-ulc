@@ -531,7 +531,7 @@ def create_env(num_envs, device):
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
             knee_hyperextended = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)  # added upper limit to prevent deep squat
-            waist_excessive = (jp[:, 14].abs() > 0.35) | (jp[:, 13].abs() > 0.25)
+            waist_excessive = (jp[:, 14].abs() > 0.20) | (jp[:, 13].abs() > 0.15)  # V3: tightened from 0.35/0.25
 
             terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
             if terminated.any():

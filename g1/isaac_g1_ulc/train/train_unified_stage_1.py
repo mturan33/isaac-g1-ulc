@@ -50,6 +50,20 @@ CURRICULUM (10 levels):
             - action clamp on hip_yaw (prevents extreme leg rotation)
             - solver iterations increased (4→8 for self-collision)
             - jerk penalty increased (-0.05→-0.08)
+2026-02-16: V3 — Anti-gaming posture enforcement (iter ~16400 posture collapse fix):
+            - V2 problem: robot found exploit — bent knees (1.15→0.64), leaned forward
+              (wP=-0.18), rotated waist (wY=-0.14), reward INCREASED (18→24.5) due to
+              alive accumulation (EpLen 24000+) and weak speed penalty (3x overshoot=%74).
+            - Waist termination tightened: pitch 0.35→0.20, roll 0.25→0.15
+            - waist_posture weight 3.0→4.0, scales increased (yaw:-30, roll:-25, pitch:-20)
+            - NEW: knee_min_penalty=-5.0 (knee<0.8 rad = linear penalty, prevents squat)
+            - NEW: gait_stance_posture=2.0 (stance knee must return to default)
+            - speed scale -3.0→-6.0 (3x overshoot now=56% reward, was 74%)
+            - height scale -10.0→-15.0 (tighter height tracking)
+            - orientation 4.0→5.0, scale -12.0→-15.0 (Stage 2 level enforcement)
+            - gait_knee 3.0→3.5 (stronger gait pattern)
+            - alive 1.0→0.5 (reduce long-episode accumulation gaming)
+            - standing_posture min floor 0.3 (partially active even during walking)
 """
 
 import torch
@@ -298,39 +312,41 @@ CURRICULUM = [
 
 REWARD_WEIGHTS = {
     # Velocity / Heading tracking
-    "speed": 4.0,                   # exp(-3.0 * speed_err)
+    "speed": 4.0,                   # exp(-6.0 * speed_err) — V3: scale -3→-6 (3x overshoot was 74%, now 56%)
     "heading": 4.0,                 # exp(-2.0 * heading_err) * heading_active
     "yaw": 4.0,                     # exp(-3.0 * yaw_err), mode-dependent
     # Gait control (scaled by speed magnitude)
-    "gait_knee": 3.0,               # Alternating knee bend
+    "gait_knee": 3.5,               # Alternating knee bend — V3: 3.0→3.5
     "gait_clearance": 2.0,          # Hip pitch swing
     "gait_contact": 2.0,            # Contact pattern matching
-    # Stability — V2: reduced from 5.0/15.0 to prevent toe-walking incentive
-    "height": 3.5,                  # exp(-10.0 * height_err) — V1 had 5.0/-15.0 which rewarded tiptoe stance
-    "orientation": 4.0,             # exp(-12.0 * tilt_err) — V1 had 5.0/-15.0
+    "gait_stance_posture": 2.0,     # NEW V3: stance knee must return to default (prevents bent-leg walking)
+    # Stability — V3: orientation back to Stage 2 level, height scale tightened
+    "height": 3.5,                  # exp(-15.0 * height_err) — V3: scale -10→-15 (tighter)
+    "orientation": 5.0,             # exp(-15.0 * tilt_err) — V3: 4.0/-12→5.0/-15 (Stage 2 level)
     "ang_vel_penalty": 1.0,         # ONLY roll+pitch (z-axis excluded)
-    # Posture (V2: hip_yaw + stronger foot_flatness)
+    # Posture (V3: knee_min_penalty added, waist_posture strengthened)
     "ankle_penalty": 2.0,           # exp(-15.0 * ankle_roll_err)
-    "foot_flatness": 3.0,           # exp(-15.0 * ankle_pitch_err) — V1 had 1.5/-8.0, doubled to prevent toe-walking
+    "foot_flatness": 3.0,           # exp(-15.0 * ankle_pitch_err)
     "symmetry_gait": 1.5,           # Phase-shifted L/R range matching
     "hip_roll_penalty": 1.5,        # exp(-10.0 * hip_roll_err)
-    "hip_yaw_penalty": 2.5,         # exp(-12.0 * hip_yaw_err) — NEW V2: prevents leg crossing/rotation
-    "knee_negative_penalty": -8.0,  # Linear, prevents backward bending
+    "hip_yaw_penalty": 2.5,         # exp(-12.0 * hip_yaw_err)
+    "knee_negative_penalty": -8.0,  # Linear, prevents backward bending (knee < 0.1)
     "knee_overbend_penalty": -5.0,  # Linear, prevents deep squat (knee > 1.2 rad)
-    # Waist and standing — V2: reduced to allow more natural gait flexibility
-    "waist_posture": 3.0,           # Waist joints near 0
-    "standing_posture": 3.0,        # Full body near default when speed~0 — V1 had 5.0 which fought gait
+    "knee_min_penalty": -5.0,       # NEW V3: linear penalty for knee < 0.8 rad (prevents squat-like posture)
+    # Waist and standing — V3: waist strengthened, standing partially active during walking
+    "waist_posture": 4.0,           # V3: 3.0→4.0, scales: yaw -30, roll -25, pitch -20
+    "standing_posture": 3.0,        # V3: min floor 0.3 (partially active during walking, was 0.0)
     "yaw_rate_penalty": -2.0,       # CONDITIONAL (off when yaw_cmd active)
     # Physics
     "vz_penalty": -2.0,             # Vertical bouncing
     "feet_slip": -0.1,              # Contact foot sliding
-    # Gait quality — V2: new rewards for natural ground contact
-    "feet_air_time": 1.0,           # NEW V2: reward feet touching ground with proper gait timing
-    # Smoothness — V2: increased jerk penalty for smoother motion
+    # Gait quality
+    "feet_air_time": 1.0,           # Reward proper gait timing
+    # Smoothness
     "action_rate": -0.02,
-    "jerk": -0.08,                  # V1 had -0.05, increased for smoother joint motion
+    "jerk": -0.08,
     "energy": -0.0003,
-    "alive": 1.0,
+    "alive": 0.5,                   # V3: 1.0→0.5 (reduce alive accumulation gaming)
 }
 
 # ============================================================================
@@ -1053,7 +1069,7 @@ def create_env(num_envs, device):
             # ===========================================
             actual_speed = torch.sqrt(lv_b[:, 0]**2 + lv_b[:, 1]**2)
             speed_err = (actual_speed - self.speed_cmd) ** 2
-            r_speed = torch.exp(-3.0 * speed_err)
+            r_speed = torch.exp(-6.0 * speed_err)  # V3: -3.0→-6.0 (3x overshoot was 74%, now 56%)
 
             # ===========================================
             # HEADING TRACKING
@@ -1111,6 +1127,12 @@ def create_env(num_envs, device):
             rk_overbend = torch.clamp(rk - knee_max, min=0.0)
             r_knee_overbend = lk_overbend + rk_overbend
 
+            # V3: Knee minimum angle penalty — prevents squat-like posture (knee < 0.8 rad)
+            knee_min_walk = 0.8
+            lk_min_violation = torch.clamp(knee_min_walk - lk, min=0.0)
+            rk_min_violation = torch.clamp(knee_min_walk - rk, min=0.0)
+            r_knee_min_penalty = lk_min_violation + rk_min_violation
+
             # Foot clearance
             lh = jp[:, self.left_hip_pitch_idx]
             rh = jp[:, self.right_hip_pitch_idx]
@@ -1136,14 +1158,20 @@ def create_env(num_envs, device):
             r_gait_clearance = r_gait_clearance * gait_scale + (1 - gait_scale) * 1.0
             r_gait_contact = r_gait_contact * gait_scale
 
+            # V3: Stance knee must return to default (not stay bent)
+            left_stance_knee_err = (1.0 - l_swing) * (lk - knee_stance_target) ** 2
+            right_stance_knee_err = (1.0 - r_swing) * (rk - knee_stance_target) ** 2
+            r_gait_stance_posture = torch.exp(-8.0 * (left_stance_knee_err + right_stance_knee_err))
+            r_gait_stance_posture = r_gait_stance_posture * gait_scale + (1.0 - gait_scale) * 1.0
+
             # ===========================================
             # STABILITY
             # ===========================================
             height = pos[:, 2]
             h_err = (height - self.height_cmd).abs()
-            r_height = torch.exp(-10.0 * h_err)  # V2: reduced from -15.0; was incentivizing tiptoe stance
+            r_height = torch.exp(-15.0 * h_err)  # V3: -10→-15 (tighter height tracking)
 
-            r_orient = torch.exp(-12.0 * (g[:, :2] ** 2).sum(-1))  # V2: reduced from -15.0
+            r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))  # V3: -12→-15, weight 4→5 (Stage 2 level)
 
             # Angular velocity penalty — ONLY roll + pitch (z-axis excluded)
             r_ang = torch.exp(-1.0 * (av_b[:, :2] ** 2).sum(-1))
@@ -1171,18 +1199,18 @@ def create_env(num_envs, device):
             hip_yaw_err = (jp[:, self.hip_yaw_loco_idx] - self.default_loco[self.hip_yaw_loco_idx]) ** 2
             r_hip_yaw = torch.exp(-12.0 * hip_yaw_err.sum(-1))
 
-            # Waist posture
+            # Waist posture — V3: scales increased (yaw -25→-30, roll -20→-25, pitch -15→-20)
             waist_yaw_err = (jp[:, 12] - self.default_loco[12]) ** 2
             waist_roll_err = (jp[:, 13] - self.default_loco[13]) ** 2
             waist_pitch_err = (jp[:, 14] - self.default_loco[14]) ** 2
-            r_waist_posture = (torch.exp(-25.0 * waist_yaw_err)
-                             * torch.exp(-20.0 * waist_roll_err)
-                             * torch.exp(-15.0 * waist_pitch_err))
+            r_waist_posture = (torch.exp(-30.0 * waist_yaw_err)
+                             * torch.exp(-25.0 * waist_roll_err)
+                             * torch.exp(-20.0 * waist_pitch_err))
 
-            # Standing posture — when speed ~0
-            standing_scale = 1.0 - gait_scale
+            # Standing posture — V3: min floor 0.3 (partially active during walking)
+            standing_scale = torch.clamp(1.0 - gait_scale, min=0.3)  # V2 was: 1.0 - gait_scale (=0 when walking)
             leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2
-            r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))  # V2: reduced back from -5.0; was fighting gait flexibility
+            r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))
             r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
 
             # ===========================================
@@ -1240,6 +1268,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["gait_knee"] * r_gait_knee
                 + REWARD_WEIGHTS["gait_clearance"] * r_gait_clearance
                 + REWARD_WEIGHTS["gait_contact"] * r_gait_contact
+                + REWARD_WEIGHTS["gait_stance_posture"] * r_gait_stance_posture  # V3: stance knee default
                 + REWARD_WEIGHTS["height"] * r_height
                 + REWARD_WEIGHTS["orientation"] * r_orient
                 + REWARD_WEIGHTS["ang_vel_penalty"] * r_ang
@@ -1247,15 +1276,16 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
                 + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
-                + REWARD_WEIGHTS["hip_yaw_penalty"] * r_hip_yaw          # V2: prevents leg crossing
+                + REWARD_WEIGHTS["hip_yaw_penalty"] * r_hip_yaw
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 + REWARD_WEIGHTS["knee_overbend_penalty"] * r_knee_overbend
+                + REWARD_WEIGHTS["knee_min_penalty"] * r_knee_min_penalty        # V3: knee min angle
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
                 + REWARD_WEIGHTS["standing_posture"] * r_standing_posture
                 + REWARD_WEIGHTS["yaw_rate_penalty"] * r_yaw_rate_penalty
                 + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
                 + REWARD_WEIGHTS["feet_slip"] * r_feet_slip
-                + REWARD_WEIGHTS["feet_air_time"] * r_feet_air_time      # V2: proper ground contact
+                + REWARD_WEIGHTS["feet_air_time"] * r_feet_air_time
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
@@ -1282,7 +1312,7 @@ def create_env(num_envs, device):
 
             waist_pitch_val = jp[:, 14]
             waist_roll_val = jp[:, 13]
-            waist_excessive = (waist_pitch_val.abs() > 0.35) | (waist_roll_val.abs() > 0.25)
+            waist_excessive = (waist_pitch_val.abs() > 0.20) | (waist_roll_val.abs() > 0.15)  # V3: tightened from 0.35/0.25
 
             terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
             time_out = self.episode_length_buf >= self.max_episode_length
