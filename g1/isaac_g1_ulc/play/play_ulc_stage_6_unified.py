@@ -894,7 +894,22 @@ def main():
             print(f"[INFO] Loaded Stage 6 checkpoint ({len(model_keys)} keys)")
         except RuntimeError as e:
             print(f"  STRICT FAILED: {e}")
-            net.load_state_dict(s6_state, strict=False)
+            # Shape-aware loading: skip keys with shape mismatch
+            # This handles UnifiedCritic(109) -> LocoCritic(57) mismatch
+            # Critics are not used during inference, so skipping is safe
+            net_state = net.state_dict()
+            loaded_count = 0
+            skipped_keys = []
+            for key in net_state.keys():
+                if key in s6_state and s6_state[key].shape == net_state[key].shape:
+                    net_state[key] = s6_state[key]
+                    loaded_count += 1
+                else:
+                    skipped_keys.append(key)
+            net.load_state_dict(net_state)
+            print(f"  Shape-aware loading: {loaded_count}/{len(net_state)} keys loaded")
+            if skipped_keys:
+                print(f"  Skipped (shape mismatch or missing): {skipped_keys}")
 
     net.eval()
 
