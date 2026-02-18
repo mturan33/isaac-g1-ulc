@@ -64,6 +64,15 @@ CURRICULUM (10 levels):
             - gait_knee 3.0→3.5 (stronger gait pattern)
             - alive 1.0→0.5 (reduce long-episode accumulation gaming)
             - standing_posture min floor 0.3 (partially active even during walking)
+2026-02-18: V4 — Heading gate fix + posture collapse prevention:
+            - V3 problem: heading gate blocked L2 (heading_err=1.3-1.4, threshold=0.5)
+              because heading_offset=0 but yaw_cmd active — body rotation makes heading
+              tracking impossible. Also knee collapsed to 0.61 despite knee_min_penalty.
+            - Heading gate skip for L0-L2 (heading_offset=0 levels, gate only L3+)
+            - knee_collapse termination: knee < 0.5 rad = terminate (prevents squat exploit)
+            - waist_roll termination tightened: 0.15→0.10
+            - knee_min_penalty: -5.0→-8.0, threshold 0.8→0.7 (heavier penalty, slightly wider range)
+            - alive: 0.5→0.2 (further reduce accumulation gaming)
 """
 
 import torch
@@ -332,7 +341,7 @@ REWARD_WEIGHTS = {
     "hip_yaw_penalty": 2.5,         # exp(-12.0 * hip_yaw_err)
     "knee_negative_penalty": -8.0,  # Linear, prevents backward bending (knee < 0.1)
     "knee_overbend_penalty": -5.0,  # Linear, prevents deep squat (knee > 1.2 rad)
-    "knee_min_penalty": -5.0,       # NEW V3: linear penalty for knee < 0.8 rad (prevents squat-like posture)
+    "knee_min_penalty": -8.0,       # V4: -5.0→-8.0, linear penalty for knee < 0.7 rad (prevents squat-like posture)
     # Waist and standing — V3: waist strengthened, standing partially active during walking
     "waist_posture": 4.0,           # V3: 3.0→4.0, scales: yaw -30, roll -25, pitch -20
     "standing_posture": 3.0,        # V3: min floor 0.3 (partially active during walking, was 0.0)
@@ -346,7 +355,7 @@ REWARD_WEIGHTS = {
     "action_rate": -0.02,
     "jerk": -0.08,
     "energy": -0.0003,
-    "alive": 0.5,                   # V3: 1.0→0.5 (reduce alive accumulation gaming)
+    "alive": 0.2,                   # V4: 0.5→0.2 (further reduce alive accumulation)
 }
 
 # ============================================================================
@@ -848,15 +857,16 @@ def create_env(num_envs, device):
                     speed_ok = speed_err < 0.8  # threshold 0.5→0.8 to allow slightly imperfect standing
 
                     # Heading tracking — per-env speed filter (match reward logic)
-                    # Standing envs (speed_cmd=0) have random atan2 due to near-zero velocity,
-                    # so we must exclude them just like the reward does (heading_active mask).
+                    # V4: Skip heading gate for L0-L2 (heading_offset=0, yaw rotation makes
+                    # heading tracking impossible). L3+ has heading_offset non-zero.
                     heading_ok = True
-                    moving_mask = self.speed_cmd.squeeze() > 0.05  # per-env filter
-                    if moving_mask.any():
-                        actual_heading = torch.atan2(lv_b[:, 1], lv_b[:, 0])
-                        heading_err_all = torch.abs(wrap_to_pi(actual_heading - self.heading_offset))
-                        heading_err = heading_err_all[moving_mask].mean().item()
-                        heading_ok = heading_err < 0.5
+                    if self.curr_level >= 3:
+                        moving_mask = self.speed_cmd.squeeze() > 0.05  # per-env filter
+                        if moving_mask.any():
+                            actual_heading = torch.atan2(lv_b[:, 1], lv_b[:, 0])
+                            heading_err_all = torch.abs(wrap_to_pi(actual_heading - self.heading_offset))
+                            heading_err = heading_err_all[moving_mask].mean().item()
+                            heading_ok = heading_err < 0.5
 
                     # Yaw tracking
                     yaw_ok = True
@@ -1127,8 +1137,8 @@ def create_env(num_envs, device):
             rk_overbend = torch.clamp(rk - knee_max, min=0.0)
             r_knee_overbend = lk_overbend + rk_overbend
 
-            # V3: Knee minimum angle penalty — prevents squat-like posture (knee < 0.8 rad)
-            knee_min_walk = 0.8
+            # V4: Knee minimum angle penalty — prevents squat-like posture (knee < 0.7 rad)
+            knee_min_walk = 0.7
             lk_min_violation = torch.clamp(knee_min_walk - lk, min=0.0)
             rk_min_violation = torch.clamp(knee_min_walk - rk, min=0.0)
             r_knee_min_penalty = lk_min_violation + rk_min_violation
@@ -1309,12 +1319,13 @@ def create_env(num_envs, device):
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
             knee_hyperextended = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)  # added upper limit to prevent deep squat
+            knee_collapse = (lk < 0.5) | (rk < 0.5)  # V4: prevent squat exploitation
 
             waist_pitch_val = jp[:, 14]
             waist_roll_val = jp[:, 13]
-            waist_excessive = (waist_pitch_val.abs() > 0.20) | (waist_roll_val.abs() > 0.15)  # V3: tightened from 0.35/0.25
+            waist_excessive = (waist_pitch_val.abs() > 0.20) | (waist_roll_val.abs() > 0.10)  # V4: roll 0.15→0.10
 
-            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
+            terminated = fallen | bad_orientation | knee_hyperextended | knee_collapse | waist_excessive
             time_out = self.episode_length_buf >= self.max_episode_length
             return terminated, time_out
 
