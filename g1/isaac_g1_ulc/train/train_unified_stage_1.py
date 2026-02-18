@@ -69,7 +69,7 @@ CURRICULUM (10 levels):
               because heading_offset=0 but yaw_cmd active — body rotation makes heading
               tracking impossible. Also knee collapsed to 0.61 despite knee_min_penalty.
             - Heading gate skip for L0-L2 (heading_offset=0 levels, gate only L3+)
-            - knee_collapse termination: knee < 0.5 rad = terminate (prevents squat exploit)
+            - knee_collapse termination: knee < 0.3 rad = terminate (default knee=0.42, 0.5 was too high)
             - waist_roll termination tightened: 0.15→0.10
             - knee_min_penalty: -5.0→-8.0, threshold 0.8→0.7 (heavier penalty, slightly wider range)
             - alive: 0.5→0.2 (further reduce accumulation gaming)
@@ -1319,7 +1319,7 @@ def create_env(num_envs, device):
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
             knee_hyperextended = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)  # added upper limit to prevent deep squat
-            knee_collapse = (lk < 0.5) | (rk < 0.5)  # V4: prevent squat exploitation
+            knee_collapse = (lk < 0.3) | (rk < 0.3)  # V4: prevent squat (default knee=0.42, so 0.3 is safe)
 
             waist_pitch_val = jp[:, 14]
             waist_roll_val = jp[:, 13]
