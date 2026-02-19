@@ -530,11 +530,12 @@ def create_env(num_envs, device):
             jp = self.robot.data.joint_pos[:, self.loco_idx]
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
-            knee_hyperextended = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)  # added upper limit to prevent deep squat
-            knee_collapse = (lk < 0.3) | (rk < 0.3)  # V4: prevent squat (default knee=0.42, so 0.3 is safe)
-            waist_excessive = (jp[:, 14].abs() > 0.20) | (jp[:, 13].abs() > 0.10)  # V4: roll 0.15→0.10
+            knee_hyperextended = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)
+            # V5: knee_collapse REMOVED (prevented natural gait)
 
-            terminated = fallen | bad_orientation | knee_hyperextended | knee_collapse | waist_excessive
+            waist_excessive = (jp[:, 14].abs() > 0.35) | (jp[:, 13].abs() > 0.25)  # V5: Stage 2 values (0.20/0.10 was too tight)
+
+            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
             if terminated.any():
                 self.total_falls += terminated.sum().item()
             time_out = self.episode_length_buf >= self.max_episode_length

@@ -73,6 +73,26 @@ CURRICULUM (10 levels):
             - waist_roll termination tightened: 0.15→0.10
             - knee_min_penalty: -5.0→-8.0, threshold 0.8→0.7 (heavier penalty, slightly wider range)
             - alive: 0.5→0.2 (further reduce accumulation gaming)
+2026-02-19: V5 — Stage 2 alignment + Isaac Lab reference rebalance:
+            - V4 problem: posture collapse at L2 transition (knee 1.14→0.82, tilt 2.7→9.3
+              in 200 iter). Same pattern as V2/V3. Root cause: reward/termination too
+              aggressive vs working Stage 2 (29DoF, 66 obs) which reached L4 without collapse.
+            - Isaac Lab official G1 config confirms: ~7 reward terms, low weights, wide tolerances.
+            - Philosophy: "Return to the working system, keep only heading gate fix."
+            - foot_flatness: 3.0/-15→1.5/-8 (Stage 2, was 4x too aggressive)
+            - standing_posture floor: min=0.3→min=0.0 (off during walking, Stage 2 behavior)
+            - knee_min_penalty: -8.0→0.0 (REMOVED, prevented natural knee bending)
+            - knee_collapse termination: REMOVED (prevented natural gait)
+            - waist termination: pitch 0.20→0.35, roll 0.10→0.25 (Stage 2 values)
+            - alive: 0.2→1.0 (Stage 2 value, encourages survival/exploration)
+            - speed scale: -6.0→-3.0 (Stage 2 value)
+            - orientation: 5.0→6.0 (Stage 2 value)
+            - waist_posture: 4.0→3.0, scales -30/-25/-20→-25/-20/-15 (Stage 2)
+            - height scale: -15.0→-10.0 (Stage 2 value)
+            - gait_knee: 3.5→3.0 (Stage 2 value)
+            - KEPT from V4: heading gate skip L0-L2
+            - KEPT from V2: hip_yaw_penalty, self_collisions, quaternion wxyz fix
+            - KEPT from V3: gait_stance_posture
 """
 
 import torch
@@ -320,31 +340,31 @@ CURRICULUM = [
 # ============================================================================
 
 REWARD_WEIGHTS = {
-    # Velocity / Heading tracking
-    "speed": 4.0,                   # exp(-6.0 * speed_err) — V3: scale -3→-6 (3x overshoot was 74%, now 56%)
+    # Velocity / Heading tracking — V5: speed scale reverted to Stage 2 (-3.0)
+    "speed": 4.0,                   # exp(-3.0 * speed_err) — V5: -6→-3 (Stage 2 value)
     "heading": 4.0,                 # exp(-2.0 * heading_err) * heading_active
     "yaw": 4.0,                     # exp(-3.0 * yaw_err), mode-dependent
     # Gait control (scaled by speed magnitude)
-    "gait_knee": 3.5,               # Alternating knee bend — V3: 3.0→3.5
+    "gait_knee": 3.0,               # V5: 3.5→3.0 (Stage 2 value)
     "gait_clearance": 2.0,          # Hip pitch swing
     "gait_contact": 2.0,            # Contact pattern matching
-    "gait_stance_posture": 2.0,     # NEW V3: stance knee must return to default (prevents bent-leg walking)
-    # Stability — V3: orientation back to Stage 2 level, height scale tightened
-    "height": 3.5,                  # exp(-15.0 * height_err) — V3: scale -10→-15 (tighter)
-    "orientation": 5.0,             # exp(-15.0 * tilt_err) — V3: 4.0/-12→5.0/-15 (Stage 2 level)
+    "gait_stance_posture": 2.0,     # V3: stance knee must return to default (KEPT from V3)
+    # Stability — V5: orientation=6.0 (Stage 2), height scale=-10 (Stage 2)
+    "height": 3.5,                  # exp(-10.0 * height_err) — V5: scale -15→-10 (Stage 2)
+    "orientation": 6.0,             # exp(-15.0 * tilt_err) — V5: 5.0→6.0 (Stage 2 value)
     "ang_vel_penalty": 1.0,         # ONLY roll+pitch (z-axis excluded)
-    # Posture (V3: knee_min_penalty added, waist_posture strengthened)
+    # Posture — V5: foot_flatness reverted, knee_min removed
     "ankle_penalty": 2.0,           # exp(-15.0 * ankle_roll_err)
-    "foot_flatness": 3.0,           # exp(-15.0 * ankle_pitch_err)
+    "foot_flatness": 1.5,           # V5: 3.0→1.5, scale -15→-8 (Stage 2 value, was 4x too aggressive)
     "symmetry_gait": 1.5,           # Phase-shifted L/R range matching
     "hip_roll_penalty": 1.5,        # exp(-10.0 * hip_roll_err)
-    "hip_yaw_penalty": 2.5,         # exp(-12.0 * hip_yaw_err)
+    "hip_yaw_penalty": 2.5,         # exp(-12.0 * hip_yaw_err) — KEPT from V2
     "knee_negative_penalty": -8.0,  # Linear, prevents backward bending (knee < 0.1)
     "knee_overbend_penalty": -5.0,  # Linear, prevents deep squat (knee > 1.2 rad)
-    "knee_min_penalty": -8.0,       # V4: -5.0→-8.0, linear penalty for knee < 0.7 rad (prevents squat-like posture)
-    # Waist and standing — V3: waist strengthened, standing partially active during walking
-    "waist_posture": 4.0,           # V3: 3.0→4.0, scales: yaw -30, roll -25, pitch -20
-    "standing_posture": 3.0,        # V3: min floor 0.3 (partially active during walking, was 0.0)
+    "knee_min_penalty": 0.0,        # V5: DISABLED (was -8.0, prevented natural knee bending)
+    # Waist and standing — V5: reverted to Stage 2 values
+    "waist_posture": 3.0,           # V5: 4.0→3.0, scales: yaw -25, roll -20, pitch -15 (Stage 2)
+    "standing_posture": 3.0,        # V5: floor min=0.0 (off during walking, Stage 2 behavior)
     "yaw_rate_penalty": -2.0,       # CONDITIONAL (off when yaw_cmd active)
     # Physics
     "vz_penalty": -2.0,             # Vertical bouncing
@@ -355,7 +375,7 @@ REWARD_WEIGHTS = {
     "action_rate": -0.02,
     "jerk": -0.08,
     "energy": -0.0003,
-    "alive": 0.2,                   # V4: 0.5→0.2 (further reduce alive accumulation)
+    "alive": 1.0,                   # V5: 0.2→1.0 (Stage 2 value, encourages exploration)
 }
 
 # ============================================================================
@@ -1079,7 +1099,7 @@ def create_env(num_envs, device):
             # ===========================================
             actual_speed = torch.sqrt(lv_b[:, 0]**2 + lv_b[:, 1]**2)
             speed_err = (actual_speed - self.speed_cmd) ** 2
-            r_speed = torch.exp(-6.0 * speed_err)  # V3: -3.0→-6.0 (3x overshoot was 74%, now 56%)
+            r_speed = torch.exp(-3.0 * speed_err)  # V5: -6.0→-3.0 (Stage 2 value)
 
             # ===========================================
             # HEADING TRACKING
@@ -1179,7 +1199,7 @@ def create_env(num_envs, device):
             # ===========================================
             height = pos[:, 2]
             h_err = (height - self.height_cmd).abs()
-            r_height = torch.exp(-15.0 * h_err)  # V3: -10→-15 (tighter height tracking)
+            r_height = torch.exp(-10.0 * h_err)  # V5: -15→-10 (Stage 2 value)
 
             r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))  # V3: -12→-15, weight 4→5 (Stage 2 level)
 
@@ -1193,7 +1213,7 @@ def create_env(num_envs, device):
             r_ankle = torch.exp(-15.0 * ankle_roll_err.sum(-1))
 
             ankle_pitch_err = (jp[:, self.ankle_pitch_loco_idx] - self.default_loco[self.ankle_pitch_loco_idx]) ** 2
-            r_foot_flat = torch.exp(-15.0 * ankle_pitch_err.sum(-1))  # V2: increased from -8.0 to strongly prevent toe-walking
+            r_foot_flat = torch.exp(-8.0 * ankle_pitch_err.sum(-1))  # V5: -15→-8 (Stage 2 value, -15 was too aggressive)
 
             left_pos = jp[:, self.sym_left_idx]
             right_pos = jp[:, self.sym_right_idx]
@@ -1209,16 +1229,16 @@ def create_env(num_envs, device):
             hip_yaw_err = (jp[:, self.hip_yaw_loco_idx] - self.default_loco[self.hip_yaw_loco_idx]) ** 2
             r_hip_yaw = torch.exp(-12.0 * hip_yaw_err.sum(-1))
 
-            # Waist posture — V3: scales increased (yaw -25→-30, roll -20→-25, pitch -15→-20)
+            # Waist posture — V5: reverted to Stage 2 scales (-25/-20/-15)
             waist_yaw_err = (jp[:, 12] - self.default_loco[12]) ** 2
             waist_roll_err = (jp[:, 13] - self.default_loco[13]) ** 2
             waist_pitch_err = (jp[:, 14] - self.default_loco[14]) ** 2
-            r_waist_posture = (torch.exp(-30.0 * waist_yaw_err)
-                             * torch.exp(-25.0 * waist_roll_err)
-                             * torch.exp(-20.0 * waist_pitch_err))
+            r_waist_posture = (torch.exp(-25.0 * waist_yaw_err)
+                             * torch.exp(-20.0 * waist_roll_err)
+                             * torch.exp(-15.0 * waist_pitch_err))
 
-            # Standing posture — V3: min floor 0.3 (partially active during walking)
-            standing_scale = torch.clamp(1.0 - gait_scale, min=0.3)  # V2 was: 1.0 - gait_scale (=0 when walking)
+            # Standing posture — V5: floor removed (Stage 2: fully off during walking)
+            standing_scale = torch.clamp(1.0 - gait_scale, min=0.0)  # V5: min 0.3→0.0 (Stage 2 behavior)
             leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2
             r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))
             r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
@@ -1318,14 +1338,14 @@ def create_env(num_envs, device):
             jp = self.robot.data.joint_pos[:, self.loco_idx]
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
-            knee_hyperextended = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)  # added upper limit to prevent deep squat
-            knee_collapse = (lk < 0.3) | (rk < 0.3)  # V4: prevent squat (default knee=0.42, so 0.3 is safe)
+            knee_hyperextended = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)
+            # V5: knee_collapse REMOVED (prevented natural gait)
 
             waist_pitch_val = jp[:, 14]
             waist_roll_val = jp[:, 13]
-            waist_excessive = (waist_pitch_val.abs() > 0.20) | (waist_roll_val.abs() > 0.10)  # V4: roll 0.15→0.10
+            waist_excessive = (waist_pitch_val.abs() > 0.35) | (waist_roll_val.abs() > 0.25)  # V5: Stage 2 values (0.20/0.10 was too tight)
 
-            terminated = fallen | bad_orientation | knee_hyperextended | knee_collapse | waist_excessive
+            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
             time_out = self.episode_length_buf >= self.max_episode_length
             return terminated, time_out
 
