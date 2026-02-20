@@ -93,6 +93,11 @@ CURRICULUM (10 levels):
             - KEPT from V4: heading gate skip L0-L2
             - KEPT from V2: hip_yaw_penalty, self_collisions, quaternion wxyz fix
             - KEPT from V3: gait_stance_posture
+2026-02-20: V5.1 — Yaw gate skip for L0-L2:
+            - V5 problem: L2 blocked by yaw_err>0.3 for 3000+ iter despite R=26.5
+              Robot walking well but yaw_cmd=(-0.4,0.4) too small to learn turning.
+            - Yaw gate now skipped for L0-L2 (same logic as heading gate skip).
+            - L3+ has yaw_cmd=(-0.7,0.7) where yaw tracking gate matters.
 """
 
 import torch
@@ -888,15 +893,17 @@ def create_env(num_envs, device):
                             heading_err = heading_err_all[moving_mask].mean().item()
                             heading_ok = heading_err < 0.5
 
-                    # Yaw tracking
+                    # Yaw tracking — skip for L0-L2 (yaw_cmd too small, robot hasn't learned turning yet)
+                    # L3+ has yaw_cmd up to 0.7+ where tracking matters
                     yaw_ok = True
-                    yaw_cmd_mag = self.body_yaw_cmd.abs().mean().item()
-                    if yaw_cmd_mag > 0.1:
-                        if self.yaw_mode.mean().item() < 0.5:  # rate mode
-                            yaw_err = (av_b[:, 2] - self.body_yaw_cmd).abs().mean().item()
-                        else:  # absolute mode
-                            yaw_err = torch.abs(wrap_to_pi(torso_euler[:, 2] - self.body_yaw_cmd)).mean().item()
-                        yaw_ok = yaw_err < 0.3
+                    if self.curr_level >= 3:
+                        yaw_cmd_mag = self.body_yaw_cmd.abs().mean().item()
+                        if yaw_cmd_mag > 0.1:
+                            if self.yaw_mode.mean().item() < 0.5:  # rate mode
+                                yaw_err = (av_b[:, 2] - self.body_yaw_cmd).abs().mean().item()
+                            else:  # absolute mode
+                                yaw_err = torch.abs(wrap_to_pi(torso_euler[:, 2] - self.body_yaw_cmd)).mean().item()
+                            yaw_ok = yaw_err < 0.3
 
                     if speed_ok and heading_ok and yaw_ok:
                         self.curr_level += 1
