@@ -98,6 +98,13 @@ CURRICULUM (10 levels):
               Robot walking well but yaw_cmd=(-0.4,0.4) too small to learn turning.
             - Yaw gate now skipped for L0-L2 (same logic as heading gate skip).
             - L3+ has yaw_cmd=(-0.7,0.7) where yaw tracking gate matters.
+2026-02-21: V5.2 — Gait scale fix (one-leg hopping fix):
+            - Play test revealed: robot hops on left leg only (knL=0.55, knR=0.45).
+              Right leg never enters swing phase properly. rootYaw drifts 62 deg in 2000 steps.
+            - Root cause: gait_scale = speed_cmd / 0.2 (missing yaw_cmd contribution).
+              Stage 2 used: (|vx| + |vy| + 0.3*|vyaw|) / 0.2. When yaw_cmd is active,
+              gait rewards were disabled in Unified but active in Stage 2.
+            - Fix: vel_magnitude = speed_cmd + 0.3*|yaw_cmd| (Stage 2 parity).
 """
 
 import torch
@@ -1188,8 +1195,11 @@ def create_env(num_envs, device):
             stance_stability = (1 - l_swing) * lk_vel + (1 - r_swing) * rk_vel
             r_gait_contact = torch.tanh(swing_activity * 0.5) * torch.exp(-2.0 * stance_stability)
 
-            # Gait scale — gait rewards proportional to speed
-            gait_scale = torch.clamp(self.speed_cmd / 0.2, 0.0, 1.0)
+            # Gait scale — gait rewards proportional to command magnitude
+            # V5.2: Include yaw_cmd (Stage 2 parity). Turning also needs gait!
+            # Stage 2 used: |vx| + |vy| + 0.3*|vyaw|. Here speed_cmd = |vx|+|vy|.
+            vel_magnitude = self.speed_cmd + self.body_yaw_cmd.abs() * 0.3
+            gait_scale = torch.clamp(vel_magnitude / 0.2, 0.0, 1.0)
 
             r_gait_knee = r_gait_knee * gait_scale + (1 - gait_scale) * 1.0
             r_gait_clearance = r_gait_clearance * gait_scale + (1 - gait_scale) * 1.0
