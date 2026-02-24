@@ -15,8 +15,9 @@ MODES:
 - push: walk + random push forces
 
 V6 (2026-02-22): Complete rewrite — Stage 2 play birebir + V6 train sync.
-    66 obs (Cartesian), NO ContactSensor, NO hip_yaw clamp,
-    self_collisions=False, wxyz quaternion.
+V6.1 (2026-02-24): Synced with V6.1 train fixes:
+    self_collisions=True, hip_yaw clamp +-0.3 rad, hip_yaw termination |hip_yaw|>0.6.
+    66 obs (Cartesian), wxyz quaternion.
 """
 
 import torch
@@ -204,7 +205,7 @@ def create_env(num_envs, device):
                     max_linear_velocity=1000.0, max_angular_velocity=1000.0,
                     max_depenetration_velocity=1.0),
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=False,       # V6: match training
+                    enabled_self_collisions=True,        # V6.1: match training (prevent leg crossing)
                     solver_position_iteration_count=4,    # V6: match training
                     solver_velocity_iteration_count=1)),  # V6: match training
             init_state=ArticulationCfg.InitialStateCfg(
@@ -314,6 +315,10 @@ def create_env(num_envs, device):
             hip_roll_names = ["left_hip_roll_joint", "right_hip_roll_joint"]
             self.hip_roll_loco_idx = torch.tensor(
                 [LOCO_JOINT_NAMES.index(n) for n in hip_roll_names], device=self.device)
+            # V6.1: Hip yaw indices for clamp + termination
+            hip_yaw_names = ["left_hip_yaw_joint", "right_hip_yaw_joint"]
+            self.hip_yaw_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in hip_yaw_names], device=self.device)
 
             # Symmetry pairs
             sym_pairs = [
@@ -431,7 +436,9 @@ def create_env(num_envs, device):
             tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)
             tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)
 
-            # NO hip_yaw clamp — V6: match training (hip_yaw completely free)
+            # V6.1: Hip yaw clamp — prevent scissor gait (+-0.3 rad = +-17 deg)
+            for hy_idx in self.hip_yaw_loco_idx:
+                tgt[:, self.loco_idx[hy_idx]].clamp_(-0.3, 0.3)
 
             tgt[:, self.arm_idx] = self.default_arm
             tgt[:, self.hand_idx] = self.default_hand
@@ -499,7 +506,12 @@ def create_env(num_envs, device):
 
             waist_excessive = (jp[:, 14].abs() > 0.35) | (jp[:, 13].abs() > 0.25)
 
-            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
+            # V6.1: Hip yaw excessive rotation termination
+            hip_yaw_L = jp[:, self.hip_yaw_loco_idx[0]]
+            hip_yaw_R = jp[:, self.hip_yaw_loco_idx[1]]
+            hip_yaw_excessive = (hip_yaw_L.abs() > 0.6) | (hip_yaw_R.abs() > 0.6)
+
+            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive | hip_yaw_excessive
             if terminated.any():
                 self.total_falls += terminated.sum().item()
             time_out = self.episode_length_buf >= self.max_episode_length
