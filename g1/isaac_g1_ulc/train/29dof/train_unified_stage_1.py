@@ -12,6 +12,18 @@ V6 (2026-02-22): Complete rewrite — Stage 2 birebir copy + bugfix'ler.
     Kinematics-Aware, WMR) 60-85 dim obs + Cartesian vx/vy/vyaw kullanıyor.
     V6 = calisan Stage 2 birebir + wxyz quaternion fix + optimizer/scheduler checkpoint.
 
+V6.1 (2026-02-24): Hip yaw exploit fix + foot flatness improvement.
+    V6 play test revealed: HipYaw L=0.83 R=-0.90 (scissor gait), toe-walking,
+    33 deg yaw drift in 3000 steps. Root cause: no hip_yaw penalty, foot_flatness
+    too weak (1.5/-8.0). Both legs rotated inward symmetrically → symmetry reward
+    did not penalize. self_collisions=False allowed legs to cross through each other.
+    Fixes:
+    - hip_yaw_penalty: 3.0 weight, exp(-8.0 * err) — keeps hip_yaw near 0.0
+    - hip_yaw action clamp: +-0.3 rad (~17 deg) — physical limit on rotation
+    - foot_flatness: weight 1.5→3.0, scale -8.0→-15.0 — stronger toe-walking prevention
+    - self_collisions=True — prevents leg crossing (solver 4/1 kept)
+    - hip_yaw termination: |hip_yaw| > 0.6 rad → episode terminates
+
 Previous versions (ARCHIVED — all failed):
     V1 (2026-02-12): 188-dim unified, decoupled heading. Carpik gait.
     V2 (2026-02-15): Self-collision, hip_yaw penalty, quaternion fix. Hala carpik.
@@ -41,16 +53,25 @@ CURRICULUM (7 levels):
 - L5: Aggressive (push 0-20N)
 - L6: Final (push 0-30N, mass +-15%)
 
-REWARD DESIGN (19 terms — Stage 2 birebir):
+REWARD DESIGN (20 terms — V6.1: Stage 2 base + hip_yaw fix + foot_flatness fix):
 - Velocity tracking: vx=4, vy=4, vyaw=4 (balanced, exp-decay)
 - Gait: knee alternation + foot clearance + foot contact pattern
-- Posture: ankle_roll, symmetry, hip_roll
+- Posture: ankle_roll, symmetry, hip_roll, hip_yaw (V6.1: NEW)
 - Stability: height, orientation, angular velocity (z-axis excluded)
 - Conditional yaw_rate_penalty (only when vyaw_cmd ~0)
 - Physics: vz_penalty, feet_slip
 - Penalties: action_rate, jerk, energy
 
-NO ContactSensor, NO hip_yaw clamp, NO hip_yaw penalty, self_collisions=False.
+V6.1: self_collisions=True, hip_yaw clamp +-0.3 rad, hip_yaw penalty 3.0,
+      foot_flatness 3.0/-15.0 (was 1.5/-8.0), hip_yaw termination |hip_yaw|>0.6.
+      --stage1_checkpoint restored (Stage 2 pipeline): Stage 1 standing checkpoint'tan
+      fine-tune. Network joint'leri default'a yakin tutuyor, log_std=0.8 ile fresh explore.
+
+USAGE:
+    # Stage 1 standing checkpoint'tan fine-tune (RECOMMENDED):
+    isaaclab.bat -p ... --stage1_checkpoint logs/ulc/.../model_best.pt --num_envs 4096 --headless
+    # Resume from own checkpoint:
+    isaaclab.bat -p ... --checkpoint logs/ulc/.../model_5000.pt --num_envs 4096 --headless
 """
 
 import torch
@@ -171,7 +192,7 @@ CURRICULUM = [
 ]
 
 # ============================================================================
-# REWARD WEIGHTS — Stage 2 V5 birebir (19 terms)
+# REWARD WEIGHTS — V6.1: Stage 2 base + hip_yaw fix + foot_flatness fix (20 terms)
 # ============================================================================
 
 REWARD_WEIGHTS = {
@@ -189,9 +210,10 @@ REWARD_WEIGHTS = {
     "ang_vel_penalty": 1.0,     # Angular velocity penalty (ONLY roll+pitch, z-axis excluded)
     # Posture (from Stage 1 V2 — keep feet/legs healthy)
     "ankle_penalty": 2.0,       # Ankle roll
-    "foot_flatness": 1.5,       # Foot flatness
+    "foot_flatness": 3.0,       # Foot flatness — V6.1: increased from 1.5 (toe-walking fix)
     "symmetry_gait": 1.5,       # Gait symmetry (phase-shifted)
     "hip_roll_penalty": 1.5,    # Hip roll
+    "hip_yaw_penalty": 3.0,     # V6.1: Hip yaw default penalty — prevents scissor gait
     "knee_negative_penalty": -8.0,  # HARD penalty for knee < 0.1 rad (backward bending)
     # Waist posture — keep torso upright and facing forward
     "waist_posture": 3.0,       # Penalize waist deviation from 0
@@ -229,6 +251,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unified Stage 1: Locomotion V6 (Cartesian, 66 obs)")
     parser.add_argument("--num_envs", type=int, default=4096)
     parser.add_argument("--max_iterations", type=int, default=35000)
+    parser.add_argument("--stage1_checkpoint", type=str, default=None,
+                        help="Stage 1 standing checkpoint to fine-tune from")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from checkpoint")
     parser.add_argument("--experiment_name", type=str, default="g1_unified_stage1")
@@ -409,7 +433,7 @@ def create_env(num_envs, device):
                     max_depenetration_velocity=1.0,
                 ),
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=False,       # Stage 2 gibi — exploration kolayligi
+                    enabled_self_collisions=True,        # V6.1: prevent leg crossing (scissor gait fix)
                     solver_position_iteration_count=4,    # Stage 2 gibi
                     solver_velocity_iteration_count=1,    # Stage 2 gibi
                 ),
@@ -552,6 +576,12 @@ def create_env(num_envs, device):
             hip_roll_names = ["left_hip_roll_joint", "right_hip_roll_joint"]
             self.hip_roll_loco_idx = torch.tensor(
                 [LOCO_JOINT_NAMES.index(n) for n in hip_roll_names if n in LOCO_JOINT_NAMES],
+                device=self.device)
+
+            # Hip yaw (V6.1: posture penalty to prevent scissor gait)
+            hip_yaw_names = ["left_hip_yaw_joint", "right_hip_yaw_joint"]
+            self.hip_yaw_loco_idx = torch.tensor(
+                [LOCO_JOINT_NAMES.index(n) for n in hip_yaw_names if n in LOCO_JOINT_NAMES],
                 device=self.device)
 
             # Symmetry pairs — used for gait symmetry (phase-shifted, not identical)
@@ -778,7 +808,9 @@ def create_env(num_envs, device):
             tgt[:, waist_roll_idx].clamp_(-0.15, 0.15)  # +-8.6 deg roll
             tgt[:, waist_pitch_idx].clamp_(-0.2, 0.2)   # +-11.5 deg pitch
 
-            # NO hip_yaw clamp — Stage 2 gibi, hip_yaw tamamen serbest
+            # V6.1: Hip yaw clamp — prevent scissor gait (+-0.3 rad = +-17 deg)
+            for hy_idx in self.hip_yaw_loco_idx:
+                tgt[:, self.loco_idx[hy_idx]].clamp_(-0.3, 0.3)
 
             # Hold arms at default
             tgt[:, self.arm_idx] = self.default_arm
@@ -953,9 +985,9 @@ def create_env(num_envs, device):
             ankle_roll_err = (jp[:, self.ankle_roll_loco_idx] - self.default_loco[self.ankle_roll_loco_idx]) ** 2
             r_ankle = torch.exp(-15.0 * ankle_roll_err.sum(-1))
 
-            # Foot flatness — ankle pitch near default
+            # Foot flatness — ankle pitch near default (V6.1: scale -8.0 → -15.0)
             ankle_pitch_err = (jp[:, self.ankle_pitch_loco_idx] - self.default_loco[self.ankle_pitch_loco_idx]) ** 2
-            r_foot_flat = torch.exp(-8.0 * ankle_pitch_err.sum(-1))
+            r_foot_flat = torch.exp(-15.0 * ankle_pitch_err.sum(-1))
 
             # Gait symmetry — action amplitude similar for both legs
             left_pos = jp[:, self.sym_left_idx]
@@ -968,6 +1000,10 @@ def create_env(num_envs, device):
             # Hip roll — prevent leaning
             hip_roll_err = (jp[:, self.hip_roll_loco_idx] - self.default_loco[self.hip_roll_loco_idx]) ** 2
             r_hip_roll = torch.exp(-10.0 * hip_roll_err.sum(-1))
+
+            # V6.1: Hip yaw — prevent scissor gait (keep hip_yaw near default 0.0)
+            hip_yaw_err = (jp[:, self.hip_yaw_loco_idx] - self.default_loco[self.hip_yaw_loco_idx]) ** 2
+            r_hip_yaw = torch.exp(-8.0 * hip_yaw_err.sum(-1))
 
             # Waist posture — keep ALL waist joints near 0 (ALWAYS active)
             waist_yaw_val = jp[:, 12]
@@ -1048,6 +1084,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
                 + REWARD_WEIGHTS["hip_roll_penalty"] * r_hip_roll
+                + REWARD_WEIGHTS["hip_yaw_penalty"] * r_hip_yaw
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
                 + REWARD_WEIGHTS["standing_posture"] * r_standing_posture
                 + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
@@ -1085,7 +1122,12 @@ def create_env(num_envs, device):
             waist_roll_val = jp[:, 13]
             waist_excessive = (waist_pitch_val.abs() > 0.35) | (waist_roll_val.abs() > 0.25)
 
-            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive
+            # V6.1: Hip yaw excessive rotation termination
+            hip_yaw_L = jp[:, self.hip_yaw_loco_idx[0]]
+            hip_yaw_R = jp[:, self.hip_yaw_loco_idx[1]]
+            hip_yaw_excessive = (hip_yaw_L.abs() > 0.6) | (hip_yaw_R.abs() > 0.6)
+
+            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive | hip_yaw_excessive
 
             # Time limit
             time_out = self.episode_length_buf >= self.max_episode_length
@@ -1174,8 +1216,23 @@ def main():
             ppo.sched.load_state_dict(ckpt["scheduler"])
             print("  Scheduler state restored")
         print(f"  Resumed at iter {start_iter}, best_reward={best_reward:.2f}, level={env.curr_level}")
+
+    elif args_cli.stage1_checkpoint:
+        # Fine-tune from Stage 1 standing checkpoint
+        print(f"\n[Load] Fine-tuning from Stage 1: {args_cli.stage1_checkpoint}")
+        ckpt = torch.load(args_cli.stage1_checkpoint, map_location=device, weights_only=False)
+        net.load_state_dict(ckpt["model"])
+        s1_level = ckpt.get("curriculum_level", "?")
+        s1_reward = ckpt.get("best_reward", "?")
+        s1_iter = ckpt.get("iteration", "?")
+        print(f"  Stage 1 checkpoint: iter={s1_iter}, reward={s1_reward}, level={s1_level}")
+        print(f"  Starting locomotion training from scratch (iteration 0)")
+        # Reset log_std for fresh exploration in locomotion
+        net.log_std.data.fill_(np.log(0.8))
+
     else:
-        print("\n[Info] Sifirdan baslatiliyor (V6: 66 obs, Cartesian, Stage 2 birebir)")
+        print("\n[Info] Sifirdan baslatiliyor (V6.1: hip_yaw constraint'ler ile)")
+        print("       Opsiyonel: --stage1_checkpoint ile standing checkpoint verebilirsin.")
 
     # Logging
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1306,6 +1363,9 @@ def main():
             sym_err = ((left_p - env.default_loco[env.sym_left_idx]).abs() - (right_p - env.default_loco[env.sym_right_idx]).abs()).abs().mean().item()
             writer.add_scalar("posture/ankle_roll_err", ankle_roll_err, iteration)
             writer.add_scalar("posture/hip_roll_err", hip_roll_err, iteration)
+            # V6.1: hip_yaw monitoring
+            hip_yaw_err_log = (jp[:, env.hip_yaw_loco_idx] - env.default_loco[env.hip_yaw_loco_idx]).abs().mean().item()
+            writer.add_scalar("posture/hip_yaw_err", hip_yaw_err_log, iteration)
             writer.add_scalar("posture/gait_sym_err", sym_err, iteration)
 
             # Knee angles
@@ -1359,6 +1419,9 @@ def main():
             proj_g = quat_apply_inverse(q_root, gvec)
             tilt_d = torch.rad2deg(torch.asin(torch.clamp((proj_g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))).mean().item()
             yr_term = av_b[:, 2].abs().mean().item()
+            # V6.1: hip_yaw monitoring
+            hip_yaw_L_log = jp[:, env.hip_yaw_loco_idx[0]].mean().item()
+            hip_yaw_R_log = jp[:, env.hip_yaw_loco_idx[1]].mean().item()
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
                   f"H={height:.3f} vx={avg_vx:.3f}(cmd:{cmd_vx:.3f}) "
@@ -1367,6 +1430,7 @@ def main():
                   f"Lv={env.curr_level} ankR={ankR:.3f} "
                   f"knL={knee_l_p:.2f} knR={knee_r_p:.2f} "
                   f"tilt={tilt_d:.1f} wY={w_yaw:.3f} wR={w_roll:.3f} wP={w_pitch:.3f} "
+                  f"hY=({hip_yaw_L_log:.2f},{hip_yaw_R_log:.2f}) "
                   f"yR={yr_term:.2f} "
                   f"LR={losses['lr']:.2e} std={np.exp(net.log_std.data.mean().item()):.3f}")
 
