@@ -1,6 +1,6 @@
-# G1 Hierarchical VLM-ULC System
+# G1 ULC System
 
-**Unified Loco-manipulation Control for the Unitree G1 Humanoid Robot with Vision-Language Model Integration**
+**Unified Loco-manipulation Control for the Unitree G1 Humanoid Robot**
 
 > **Research in progress -- paper in preparation.**
 > If you use any part of this codebase, architecture, or methodology, citation is required.
