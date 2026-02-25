@@ -44,33 +44,41 @@ GAIT CONTROL:
 - Foot clearance: hip lift during swing phase
 - Velocity tracking: vx, vy, vyaw (omnidirectional, Cartesian)
 
-CURRICULUM (7 levels):
-- L0: Standing + Slow (vx=0~0.3, vy=+-0.1, vyaw=+-0.2) — WALKING FROM START
+CURRICULUM (9 levels = 2 standing + 7 walking):
+- S0: Pure standing — learn default pose, push 0-5N
+- S1: Standing with perturbation — push 0-20N, mass +-10%
+- L0: Standing + Slow walk (vx=0~0.3, vy=+-0.1, vyaw=+-0.2)
 - L1: Medium Walk (vx=0~0.5, vy=+-0.15, vyaw=+-0.4)
 - L2: Turning Focus (vx=0~0.5, vy=+-0.2, vyaw=+-0.7)
-- L3: Omnidirectional (vx=-0.2~0.7, vy=+-0.3, vyaw=+-0.8) — backward + lateral
+- L3: Omnidirectional (vx=-0.2~0.7, vy=+-0.3, vyaw=+-0.8)
 - L4: Full Range (vx=-0.3~1.0, vy=+-0.3, vyaw=+-1.0)
 - L5: Aggressive (push 0-20N)
 - L6: Final (push 0-30N, mass +-15%)
 
-REWARD DESIGN (20 terms — V6.1: Stage 2 base + hip_yaw fix + foot_flatness fix):
+V6.2 (2026-02-24): Standing phase added as curriculum S0-S1.
+    V6.1 squat exploit: without Stage 1 pretraining, policy squats (H=0.38, knee=2.75).
+    Root cause: no standing phase to teach default pose before locomotion.
+    Fix: 2 standing levels (S0, S1) with standing-specific rewards
+    (lin_vel_penalty, joint_posture). Same script, single pipeline, reproducible.
+    Standing rewards auto-deactivate when walking phase starts (sp_scale=0).
+
+REWARD DESIGN (22 terms — V6.2: V6.1 base + 2 standing phase rewards):
 - Velocity tracking: vx=4, vy=4, vyaw=4 (balanced, exp-decay)
 - Gait: knee alternation + foot clearance + foot contact pattern
-- Posture: ankle_roll, symmetry, hip_roll, hip_yaw (V6.1: NEW)
+- Posture: ankle_roll, symmetry, hip_roll, hip_yaw (V6.1)
 - Stability: height, orientation, angular velocity (z-axis excluded)
 - Conditional yaw_rate_penalty (only when vyaw_cmd ~0)
 - Physics: vz_penalty, feet_slip
 - Penalties: action_rate, jerk, energy
+- V6.2 Standing: lin_vel_penalty (-3.0), joint_posture (3.0) — only during S0/S1
 
 V6.1: self_collisions=True, hip_yaw clamp +-0.3 rad, hip_yaw penalty 3.0,
-      foot_flatness 3.0/-15.0 (was 1.5/-8.0), hip_yaw termination |hip_yaw|>0.6.
-      --stage1_checkpoint restored (Stage 2 pipeline): Stage 1 standing checkpoint'tan
-      fine-tune. Network joint'leri default'a yakin tutuyor, log_std=0.8 ile fresh explore.
+      foot_flatness 3.0/-15.0, hip_yaw termination |hip_yaw|>0.6.
 
 USAGE:
-    # Stage 1 standing checkpoint'tan fine-tune (RECOMMENDED):
-    isaaclab.bat -p ... --stage1_checkpoint logs/ulc/.../model_best.pt --num_envs 4096 --headless
-    # Resume from own checkpoint:
+    # From scratch (RECOMMENDED — standing phase handles pretraining):
+    isaaclab.bat -p ... --num_envs 4096 --max_iterations 40000 --headless
+    # Resume from checkpoint:
     isaaclab.bat -p ... --checkpoint logs/ulc/.../model_5000.pt --num_envs 4096 --headless
 """
 
@@ -112,13 +120,39 @@ GAIT_FREQUENCY = _cfg_mod.GAIT_FREQUENCY
 ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
 
 # ============================================================================
-# CURRICULUM — 7 LEVELS (Stage 2 V5 birebir)
+# CURRICULUM — 9 LEVELS (V6.2: 2 standing + 7 walking from Stage 2 V5)
+# Standing phase (S0-S1) teaches default pose before locomotion begins.
+# Without standing pretraining, policy finds squat exploits (V6.1 lesson).
 # ============================================================================
 
 # NOTE: 29DoF G1 body frame — vx > 0 = FORWARD, vx < 0 = BACKWARD
 # Confirmed by WORLD position tracking: robot faces +Y at spawn,
 # body-frame +X is the robot's forward direction.
 CURRICULUM = [
+    # === STANDING PHASE (Stage 1 equivalent) ===
+    {
+        "description": "S0: Pure standing — learn default pose, no velocity",
+        "threshold": 15.0,
+        "vx": (0.0, 0.0),
+        "vy": (0.0, 0.0),
+        "vyaw": (0.0, 0.0),
+        "push_force": (0, 5),
+        "push_interval": (300, 600),
+        "mass_scale": (0.97, 1.03),
+        "standing_phase": True,       # Flag for standing-specific rewards
+    },
+    {
+        "description": "S1: Standing with perturbation — robust default pose",
+        "threshold": 17.0,
+        "vx": (0.0, 0.0),
+        "vy": (0.0, 0.0),
+        "vyaw": (0.0, 0.0),
+        "push_force": (0, 20),
+        "push_interval": (150, 400),
+        "mass_scale": (0.90, 1.10),
+        "standing_phase": True,
+    },
+    # === WALKING PHASE (Stage 2 V5 birebir) ===
     {
         "description": "L0: Standing + Slow walk, vy/vyaw introduced",
         "threshold": 18.0,
@@ -192,7 +226,7 @@ CURRICULUM = [
 ]
 
 # ============================================================================
-# REWARD WEIGHTS — V6.1: Stage 2 base + hip_yaw fix + foot_flatness fix (20 terms)
+# REWARD WEIGHTS — V6.2: standing phase + hip_yaw fix + foot_flatness fix (22 terms)
 # ============================================================================
 
 REWARD_WEIGHTS = {
@@ -229,6 +263,9 @@ REWARD_WEIGHTS = {
     "jerk": -0.05,
     "energy": -0.0003,
     "alive": 1.0,
+    # V6.2: Standing phase rewards (only active during S0/S1 curriculum levels)
+    "standing_lin_vel_penalty": -3.0,   # Penalize any movement during standing phase
+    "standing_joint_posture": 3.0,      # Stronger joint posture tracking (Stage 1 style)
 }
 
 # ============================================================================
@@ -250,7 +287,7 @@ ACT_DIM = NUM_LOCO_JOINTS  # 15
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified Stage 1: Locomotion V6 (Cartesian, 66 obs)")
     parser.add_argument("--num_envs", type=int, default=4096)
-    parser.add_argument("--max_iterations", type=int, default=35000)
+    parser.add_argument("--max_iterations", type=int, default=40000)
     parser.add_argument("--stage1_checkpoint", type=str, default=None,
                         help="Stage 1 standing checkpoint to fine-tune from")
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -1063,6 +1100,20 @@ def create_env(num_envs, device):
             r_energy = (jv.abs() * jp.abs()).sum(-1)
 
             # ============================================
+            # V6.2: STANDING PHASE REWARDS (only during S0/S1)
+            # ============================================
+
+            is_standing_phase = CURRICULUM[self.curr_level].get("standing_phase", False)
+            sp_scale = 1.0 if is_standing_phase else 0.0
+
+            # Lin vel penalty — penalize any horizontal movement during standing
+            r_standing_lin_vel = (lv_b[:, 0] ** 2 + lv_b[:, 1] ** 2) * sp_scale
+
+            # Joint posture — ALL 15 loco joints at default (stronger than standing_posture)
+            all_pos_err = (jp - self.default_loco) ** 2
+            r_standing_joint_posture = torch.exp(-5.0 * all_pos_err.sum(-1)) * sp_scale
+
+            # ============================================
             # TOTAL REWARD
             # ============================================
 
@@ -1097,6 +1148,9 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
                 + REWARD_WEIGHTS["alive"]
+                # V6.2: Standing phase rewards (0 when walking)
+                + REWARD_WEIGHTS["standing_lin_vel_penalty"] * r_standing_lin_vel
+                + REWARD_WEIGHTS["standing_joint_posture"] * r_standing_joint_posture
             )
 
             return reward
