@@ -24,6 +24,17 @@ V6.1 (2026-02-24): Hip yaw exploit fix + foot flatness improvement.
     - self_collisions=True — prevents leg crossing (solver 4/1 kept)
     - hip_yaw termination: |hip_yaw| > 0.6 rad → episode terminates
 
+V6.2 (2026-02-25): Squat exploit fix + standing curriculum phase.
+    V6.1 from-scratch training (no Stage 1 pretraining) found squat exploit at ~5K iter:
+    H=0.38m, knee=2.75 rad. Robot squats to collect orientation+alive rewards while
+    avoiding negative termination. Standing phase (S0-S1) added but FAILED — positive
+    rewards (exp-based→0) don't prevent bad states, only bonus good states.
+    Fixes:
+    - Height termination: 0.35m → 0.55m (robot squats to 0.38-0.40m, now terminated)
+    - Knee overbend termination: knee > 1.5 rad → terminate (default 0.42, walk max ~1.0)
+    - Standing curriculum phases S0/S1 kept (additional incentive, not primary fix)
+    Literature: Isaac Lab H1/G1 use joint_pos_limits=-5.0, Humanoid-Gym dof_pos_limits=-5.0
+
 Previous versions (ARCHIVED — all failed):
     V1 (2026-02-12): 188-dim unified, decoupled heading. Carpik gait.
     V2 (2026-02-15): Self-collision, hip_yaw penalty, quaternion fix. Hala carpik.
@@ -310,6 +321,7 @@ from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from torch.utils.tensorboard import SummaryWriter
 
 print("=" * 80)
@@ -455,6 +467,12 @@ def create_env(num_envs, device):
             prim_path="/World/ground", terrain_type="plane", collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0, dynamic_friction=1.0, restitution=0.0))
+        # V6.2: Contact sensor for illegal contact termination (knee/torso ground contact)
+        contact_forces = ContactSensorCfg(
+            prim_path="/World/envs/env_.*/Robot/.*",
+            history_length=3,
+            track_air_time=False,
+        )
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
             spawn=sim_utils.UsdFileCfg(
@@ -696,6 +714,20 @@ def create_env(num_envs, device):
 
             # Sample initial commands
             self._sample_commands(torch.arange(self.num_envs, device=self.device))
+
+            # V6.2: Contact sensor for illegal contact termination
+            self._contact_sensor = self.scene["contact_forces"]
+            # Find body IDs for illegal contact (pelvis/torso + knees)
+            # G1 29DoF uses "pelvis" as root body, knees are "left_knee_link" / "right_knee_link"
+            # Isaac Lab G1 rough_env_cfg uses "torso_link" — try both patterns
+            self._illegal_contact_ids, illegal_names = self._contact_sensor.find_bodies(
+                "pelvis|torso_link|.*knee_link")
+            print(f"\n[Env] Illegal contact bodies: {illegal_names} (ids: {self._illegal_contact_ids})")
+            if len(self._illegal_contact_ids) == 0:
+                # Fallback: print all body names for debugging
+                all_body_names = self._contact_sensor.body_names
+                print(f"  [WARN] No illegal contact bodies found! All bodies: {all_body_names}")
+                print(f"  Illegal contact termination DISABLED (no bodies matched)")
 
             print(f"\n[Env] {self.num_envs} envs, level {self.curr_level}")
             print(f"  Obs: {OBS_DIM}, Act: {ACT_DIM}")
@@ -1161,15 +1193,16 @@ def create_env(num_envs, device):
             gravity_vec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(q, gravity_vec)
 
-            # Fall detection
-            fallen = (pos[:, 2] < 0.35) | (pos[:, 2] > 1.2)
+            # Fall detection — V6.2 fix: 0.55m prevents squat exploit (robot sits at 0.38-0.40m)
+            fallen = (pos[:, 2] < 0.55) | (pos[:, 2] > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
 
-            # Knee hyperextension termination
+            # Knee termination — hyperextension (<-0.05) AND overbend (>1.5)
+            # V6.2 fix: squat exploit uses knee=2.5+ rad. Default=0.42, walk max~1.0
             jp = self.robot.data.joint_pos[:, self.loco_idx]
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
-            knee_hyperextended = (lk < -0.05) | (rk < -0.05)
+            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 1.5) | (rk > 1.5)
 
             # Waist excessive lean termination
             waist_pitch_val = jp[:, 14]
@@ -1181,7 +1214,19 @@ def create_env(num_envs, device):
             hip_yaw_R = jp[:, self.hip_yaw_loco_idx[1]]
             hip_yaw_excessive = (hip_yaw_L.abs() > 0.6) | (hip_yaw_R.abs() > 0.6)
 
-            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive | hip_yaw_excessive
+            # V6.2: Illegal contact — pelvis/torso/knee touching ground
+            if len(self._illegal_contact_ids) > 0:
+                net_forces = self._contact_sensor.data.net_forces_w_history
+                illegal_contact = torch.any(
+                    torch.max(
+                        torch.norm(net_forces[:, :, self._illegal_contact_ids], dim=-1), dim=1
+                    )[0] > 1.0,
+                    dim=1,
+                )
+            else:
+                illegal_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+            terminated = fallen | bad_orientation | knee_bad | waist_excessive | hip_yaw_excessive | illegal_contact
 
             # Time limit
             time_out = self.episode_length_buf >= self.max_episode_length

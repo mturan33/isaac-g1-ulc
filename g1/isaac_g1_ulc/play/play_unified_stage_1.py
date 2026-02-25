@@ -90,6 +90,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils.math import quat_apply_inverse, quat_from_angle_axis
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
 
 # ============================================================================
 # MODE CONFIGS — Cartesian (vx, vy, vyaw)
@@ -194,6 +195,12 @@ def create_env(num_envs, device):
             prim_path="/World/ground", terrain_type="plane", collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0, dynamic_friction=1.0, restitution=0.0))
+        # V6.2: Contact sensor for illegal contact termination
+        contact_forces = ContactSensorCfg(
+            prim_path="/World/envs/env_.*/Robot/.*",
+            history_length=3,
+            track_air_time=False,
+        )
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
             spawn=sim_utils.UsdFileCfg(
@@ -369,6 +376,14 @@ def create_env(num_envs, device):
             self.total_pushes = 0
             self.total_falls = 0
 
+            # V6.2: Contact sensor for illegal contact termination
+            self._contact_sensor = self.scene["contact_forces"]
+            self._illegal_contact_ids, illegal_names = self._contact_sensor.find_bodies(
+                "pelvis|torso_link|.*knee_link")
+            print(f"[Play] Illegal contact bodies: {illegal_names} (ids: {self._illegal_contact_ids})")
+            if len(self._illegal_contact_ids) == 0:
+                print(f"  [WARN] No illegal contact bodies found! All: {self._contact_sensor.body_names}")
+
             # Tracking
             self.vx_history = []
             self.vx_cmd_history = []
@@ -496,13 +511,15 @@ def create_env(num_envs, device):
             q = self.robot.data.root_quat_w
             gravity_vec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(q, gravity_vec)
-            fallen = (pos[:, 2] < 0.35) | (pos[:, 2] > 1.2)
+            # V6.2 fix: 0.55m prevents squat exploit (robot sits at 0.38-0.40m)
+            fallen = (pos[:, 2] < 0.55) | (pos[:, 2] > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
 
             jp = self.robot.data.joint_pos[:, self.loco_idx]
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
-            knee_hyperextended = (lk < -0.05) | (rk < -0.05)
+            # V6.2 fix: squat exploit uses knee=2.5+ rad. Default=0.42, walk max~1.0
+            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 1.5) | (rk > 1.5)
 
             waist_excessive = (jp[:, 14].abs() > 0.35) | (jp[:, 13].abs() > 0.25)
 
@@ -511,7 +528,19 @@ def create_env(num_envs, device):
             hip_yaw_R = jp[:, self.hip_yaw_loco_idx[1]]
             hip_yaw_excessive = (hip_yaw_L.abs() > 0.6) | (hip_yaw_R.abs() > 0.6)
 
-            terminated = fallen | bad_orientation | knee_hyperextended | waist_excessive | hip_yaw_excessive
+            # V6.2: Illegal contact — pelvis/torso/knee touching ground
+            if len(self._illegal_contact_ids) > 0:
+                net_forces = self._contact_sensor.data.net_forces_w_history
+                illegal_contact = torch.any(
+                    torch.max(
+                        torch.norm(net_forces[:, :, self._illegal_contact_ids], dim=-1), dim=1
+                    )[0] > 1.0,
+                    dim=1,
+                )
+            else:
+                illegal_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+            terminated = fallen | bad_orientation | knee_bad | waist_excessive | hip_yaw_excessive | illegal_contact
             if terminated.any():
                 self.total_falls += terminated.sum().item()
             time_out = self.episode_length_buf >= self.max_episode_length
