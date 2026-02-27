@@ -629,7 +629,7 @@ def main():
             euler = quat_to_euler_xyz(q_root)
             root_yaw = euler[:, 2]
 
-            cmd_heading = torch.atan2(vy_cmd, vx_cmd) + root_yaw + np.pi
+            cmd_heading = torch.atan2(vy_cmd, vx_cmd) + root_yaw
             z_axis = torch.tensor([[0.0, 0.0, 1.0]], device=device).expand(env.num_envs, -1)
             arrow_quat = quat_from_angle_axis(cmd_heading, z_axis)
 
