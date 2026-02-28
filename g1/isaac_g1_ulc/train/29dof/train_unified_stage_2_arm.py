@@ -22,13 +22,19 @@ ANTI-GAMING (from Stage 7):
   1. Absolute-only target sampling + min distance enforcement
   2. 3-condition reach validation (position + displacement + time)
   3. Validated reach rate for curriculum advancement
-  4. Movement-centric rewards (velocity_toward, progress, stillness_penalty)
-  5. Strict 8-level curriculum (3 phases)
+  4. Movement-centric rewards (velocity_toward, progress — clamp(0,1), NO negative!)
+  5. Smooth 10-level curriculum (3 phases) + rollback on sustained timeout
+  6. Stillness penalty reduced to -0.5 (was -2.0)
 
-CURRICULUM:
-  Phase 1 (Level 0-3): Standing + Reaching (vx=0)
-  Phase 2 (Level 4-5): Walking + Reaching
-  Phase 3 (Level 6-7): Walking + Orientation
+CURRICULUM (10 levels, smooth progression — one param change per level):
+  Phase 1 (Level 0-4): Standing + Reaching (vx=0)
+  Phase 2 (Level 5-7): Walking + Reaching
+  Phase 3 (Level 8-9): Walking + Orientation
+
+REWARD FIX (2026-02-28): velocity_toward and progress clamp(0,1) instead of
+clamp(-0.5,1). Negative values caused death spiral at L3 — policy got -8 R/step
+when it couldn't reach targets, degraded further. Now worst case is 0 (no reward),
+never negative punishment for failing to reach.
 
 USAGE:
     # From Stage 1 V6.2 checkpoint (fresh arm):
@@ -98,13 +104,13 @@ COMBINED_ACT_DIM = LOCO_ACT_DIM + ARM_ACT_DIM  # 22
 
 ARM_REWARD_WEIGHTS = {
     "reach": 10.0,                # exp(-8.0 * dist) — primary proximity
-    "velocity_toward": 6.0,       # dot(ee_vel, direction_to_target)
-    "progress": 5.0,              # (initial_dist - current_dist) / initial_dist
+    "velocity_toward": 6.0,       # dot(ee_vel, direction_to_target), clamp(0,1) — NO negative!
+    "progress": 5.0,              # (initial_dist - current_dist) / initial_dist, clamp(0,1) — NO negative!
     "reach_bonus": 1.0,           # +10.0 per validated reach (sparse)
     "smooth": 1.0,                # action smoothness (only when close)
     "orient": 3.0,                # palm orientation (Level 6+ only)
     "left_arm_dev": -2.0,         # left arm deviation from default
-    "stillness_penalty": -2.0,    # penalize stillness when far
+    "stillness_penalty": -0.5,    # REDUCED from -2.0 — mild nudge, not punishment
     "height": 2.0,                # height stability
     "tilt": 1.5,                  # tilt penalty
     "action_rate": -0.05,
@@ -117,7 +123,8 @@ ARM_REWARD_WEIGHTS = {
 # ============================================================================
 
 CURRICULUM = [
-    # === PHASE 1: STANDING + REACHING (Level 0-3) ===
+    # === PHASE 1: STANDING + REACHING (Level 0-4) ===
+    # Rule: change ONE parameter per level, never all at once (Walk These Ways, CMU 2023)
     {
         "description": "L0: Standing + easy reach",
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
@@ -132,12 +139,12 @@ CURRICULUM = [
         "workspace_radius": (0.08, 0.15),
     },
     {
-        "description": "L1: Standing + medium reach",
+        "description": "L1: Standing + medium workspace",
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "pos_threshold": 0.08,
         "min_target_distance": 0.12,
         "min_displacement": 0.04,
-        "max_reach_steps": 180,
+        "max_reach_steps": 190,
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 3500,
         "min_steps": 2000,
@@ -145,67 +152,93 @@ CURRICULUM = [
         "workspace_radius": (0.10, 0.20),
     },
     {
-        "description": "L2: Standing + far reach",
+        "description": "L2: Standing + larger workspace",
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "pos_threshold": 0.07,
-        "min_target_distance": 0.14,
+        "min_target_distance": 0.13,
         "min_displacement": 0.05,
-        "max_reach_steps": 170,
+        "max_reach_steps": 180,
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 4000,
         "min_steps": 2500,
         "use_orientation": False,
         "workspace_radius": (0.12, 0.25),
     },
-    {
-        "description": "L3: Standing + full workspace",
+    {   # NEW intermediate level — only workspace grows, threshold stays same
+        "description": "L3: Standing + extended workspace (smooth transition)",
+        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+        "pos_threshold": 0.07,
+        "min_target_distance": 0.14,
+        "min_displacement": 0.05,
+        "max_reach_steps": 180,
+        "validated_reach_rate": 0.20,
+        "min_validated_reaches": 4000,
+        "min_steps": 2500,
+        "use_orientation": False,
+        "workspace_radius": (0.13, 0.28),
+    },
+    {   # Old L3, now only threshold tightens (workspace already grew)
+        "description": "L4: Standing + full workspace + tight threshold",
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "pos_threshold": 0.06,
         "min_target_distance": 0.15,
         "min_displacement": 0.06,
-        "max_reach_steps": 160,
-        "validated_reach_rate": 0.25,
+        "max_reach_steps": 175,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 4500,
         "min_steps": 3000,
         "use_orientation": False,
         "workspace_radius": (0.15, 0.30),
     },
-    # === PHASE 2: WALKING + REACHING (Level 4-5) ===
+    # === PHASE 2: WALKING + REACHING (Level 5-7) ===
     {
-        "description": "L4: Slow walk + reach",
+        "description": "L5: Slow walk + reach (only add walking)",
         "vx": (0.0, 0.25), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
         "pos_threshold": 0.06,
         "min_target_distance": 0.15,
         "min_displacement": 0.06,
-        "max_reach_steps": 160,
-        "validated_reach_rate": 0.25,
+        "max_reach_steps": 175,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 4500,
         "min_steps": 3000,
         "use_orientation": False,
         "workspace_radius": (0.15, 0.30),
     },
     {
-        "description": "L5: Medium walk + reach",
-        "vx": (0.0, 0.40), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
+        "description": "L6: Medium walk + reach",
+        "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
+        "pos_threshold": 0.05,
+        "min_target_distance": 0.15,
+        "min_displacement": 0.06,
+        "max_reach_steps": 165,
+        "validated_reach_rate": 0.20,
+        "min_validated_reaches": 5000,
+        "min_steps": 3500,
+        "use_orientation": False,
+        "workspace_radius": (0.15, 0.33),
+    },
+    {
+        "description": "L7: Fast walk + reach",
+        "vx": (0.0, 0.45), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
         "pos_threshold": 0.05,
         "min_target_distance": 0.16,
         "min_displacement": 0.07,
-        "max_reach_steps": 150,
-        "validated_reach_rate": 0.25,
+        "max_reach_steps": 160,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
         "workspace_radius": (0.15, 0.35),
     },
-    # === PHASE 3: WALKING + ORIENTATION (Level 6-7) ===
+    # === PHASE 3: WALKING + ORIENTATION (Level 8-9) ===
     {
-        "description": "L6: Walk + palm_down orientation",
+        "description": "L8: Walk + palm_down orientation",
         "vx": (0.0, 0.40), "vy": (-0.08, 0.08), "vyaw": (-0.14, 0.14),
         "pos_threshold": 0.05,
         "min_target_distance": 0.16,
         "min_displacement": 0.07,
-        "max_reach_steps": 150,
-        "validated_reach_rate": 0.20,
+        "max_reach_steps": 160,
+        "validated_reach_rate": 0.18,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "orient_threshold": 2.0,
@@ -213,12 +246,12 @@ CURRICULUM = [
         "workspace_radius": (0.15, 0.35),
     },
     {
-        "description": "L7: FINAL — fast walk + orientation",
+        "description": "L9: FINAL — fast walk + orientation",
         "vx": (0.0, 0.50), "vy": (-0.10, 0.10), "vyaw": (-0.16, 0.16),
         "pos_threshold": 0.04,
         "min_target_distance": 0.18,
         "min_displacement": 0.08,
-        "max_reach_steps": 150,
+        "max_reach_steps": 160,
         "validated_reach_rate": None,
         "min_validated_reaches": None,
         "min_steps": None,
@@ -1108,12 +1141,14 @@ def create_env(num_envs, device):
             # 1. Reach proximity (exp-decay)
             r_reach = torch.exp(-8.0 * dist)
 
-            # 2. Velocity toward target
+            # 2. Velocity toward target — clamp(0,1): reward only, NEVER punish
+            # Death spiral fix: negative vel_toward was -3.0 per step, killed training at L3
             vel_toward = (ee_vel_b * dir_unit).sum(dim=-1)
-            r_velocity = vel_toward.clamp(-0.5, 1.0)
+            r_velocity = vel_toward.clamp(0.0, 1.0)
 
-            # 3. Progress (fraction of initial distance closed)
-            r_progress = ((self.initial_dist - dist) / self.initial_dist.clamp(min=0.01)).clamp(-0.5, 1.0)
+            # 3. Progress — clamp(0,1): reward only, NEVER punish
+            # Death spiral fix: negative progress was -2.5 per step when arm couldn't reach
+            r_progress = ((self.initial_dist - dist) / self.initial_dist.clamp(min=0.01)).clamp(0.0, 1.0)
 
             # 4. Reach bonus (sparse, per validated reach — computed in _validate_reaches)
             # Not per-step, handled via curriculum advancement incentive
@@ -1292,12 +1327,25 @@ def create_env(num_envs, device):
             if stage_attempts == 0:
                 return
 
-            # Gaming detection
+            # Gaming detection + ROLLBACK (Plan-Seq-Learn, R2S2 pattern)
             if stage_attempts > 100:
                 timeout_ratio = self.stage_timed_out / stage_attempts
                 if timeout_ratio > 0.90:
                     if self.stage_steps % 500 == 0:
                         print(f"  [GAMING] Level {self.curr_level}: timeout {timeout_ratio:.1%} > 90%")
+                    # Rollback if stuck too long at this level
+                    if self.stage_steps > 8000 and self.curr_level > 0:
+                        self.curr_level -= 1
+                        prev_lv = CURRICULUM[self.curr_level]
+                        print(f"\n{'='*60}")
+                        print(f"  LEVEL ROLLBACK! -> Level {self.curr_level}: {prev_lv['description']}")
+                        print(f"  Reason: timeout {timeout_ratio:.1%} after {self.stage_steps} stage steps")
+                        print(f"{'='*60}\n")
+                        self.stage_validated_reaches = 0
+                        self.stage_timed_out = 0
+                        self.stage_steps = 0
+                        self._sample_targets(torch.arange(self.num_envs, device=self.device))
+                        self._sample_vel_commands(torch.arange(self.num_envs, device=self.device))
                     return
 
             if self.stage_validated_reaches < lv["min_validated_reaches"]:
@@ -1308,8 +1356,8 @@ def create_env(num_envs, device):
                 if self.curr_level < len(CURRICULUM) - 1:
                     self.curr_level += 1
                     new_lv = CURRICULUM[self.curr_level]
-                    phase = "STAND+REACH" if self.curr_level < 4 else (
-                        "WALK+REACH" if self.curr_level < 6 else "WALK+ORIENT")
+                    phase = "STAND+REACH" if self.curr_level < 5 else (
+                        "WALK+REACH" if self.curr_level < 8 else "WALK+ORIENT")
                     print(f"\n{'='*60}")
                     print(f"  LEVEL UP! Level {self.curr_level}: {new_lv['description']} ({phase})")
                     print(f"  Validated: {self.stage_validated_reaches}, Rate: {validated_rate:.1%}")
@@ -1434,9 +1482,9 @@ def main():
     print(f"\n{'='*80}")
     print("STARTING STAGE 2: ARM REACHING TRAINING")
     print(f"  Loco: FROZEN (66->15), Arm: FRESH (39->7)")
-    print(f"  Phase 1 (L0-3): Standing + Reaching")
-    print(f"  Phase 2 (L4-5): Walking + Reaching")
-    print(f"  Phase 3 (L6-7): Walking + Orientation")
+    print(f"  Phase 1 (L0-4): Standing + Reaching (smooth 5-level)")
+    print(f"  Phase 2 (L5-7): Walking + Reaching")
+    print(f"  Phase 3 (L8-9): Walking + Orientation")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
@@ -1519,8 +1567,8 @@ def main():
             height = env.robot.data.root_pos_w[:, 2].mean().item()
             v_rate = env.validated_reaches / max(env.total_attempts, 1)
 
-            phase = "P1-Stand" if env.curr_level < 4 else (
-                "P2-Walk" if env.curr_level < 6 else "P3-Orient")
+            phase = "P1-Stand" if env.curr_level < 5 else (
+                "P2-Walk" if env.curr_level < 8 else "P3-Orient")
 
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_arm_reward:.2f} Best={best_reward:.2f} "
