@@ -18,6 +18,8 @@ ARM ACTION (7):
   right_shoulder_pitch, right_shoulder_roll, right_shoulder_yaw,
   right_elbow, right_wrist_roll, right_wrist_pitch, right_wrist_yaw
 
+ARM_ACTION_SCALE = 2.0 (override cfg 0.5 — enables 0.55m reach, G1 arm max ~0.60m)
+
 ANTI-GAMING (from Stage 7):
   1. Absolute-only target sampling + min distance enforcement
   2. 3-condition reach validation (position + displacement + time)
@@ -25,6 +27,7 @@ ANTI-GAMING (from Stage 7):
   4. Movement-centric rewards (velocity_toward, progress — clamp(0,1), NO negative!)
   5. Smooth 10-level curriculum (3 phases) + rollback on sustained timeout
   6. Stillness penalty reduced to -0.5 (was -2.0)
+  7. left_arm_dev penalty reduced to -0.5 (was -2.0, physics coupling caused -10 R floor)
 
 CURRICULUM (10 levels, smooth progression — one param change per level):
   Phase 1 (Level 0-4): Standing + Reaching (vx=0)
@@ -79,7 +82,7 @@ NUM_ARM_JOINTS = _cfg_mod.NUM_ARM_JOINTS
 NUM_HAND_JOINTS = _cfg_mod.NUM_HAND_JOINTS
 LEG_ACTION_SCALE = _cfg_mod.LEG_ACTION_SCALE
 WAIST_ACTION_SCALE = _cfg_mod.WAIST_ACTION_SCALE
-ARM_ACTION_SCALE = _cfg_mod.ARM_ACTION_SCALE
+ARM_ACTION_SCALE = 2.0  # Override cfg (0.5 too small — limits reach to ~0.25m, need 0.55m)
 HEIGHT_DEFAULT = _cfg_mod.HEIGHT_DEFAULT
 GAIT_FREQUENCY = _cfg_mod.GAIT_FREQUENCY
 ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
@@ -109,7 +112,7 @@ ARM_REWARD_WEIGHTS = {
     "reach_bonus": 1.0,           # +10.0 per validated reach (sparse)
     "smooth": 1.0,                # action smoothness (only when close)
     "orient": 3.0,                # palm orientation (Level 6+ only)
-    "left_arm_dev": -2.0,         # left arm deviation from default
+    "left_arm_dev": -0.5,         # REDUCED from -2.0 — physics coupling causes left arm deviation even with default target
     "stillness_penalty": -0.5,    # REDUCED from -2.0 — mild nudge, not punishment
     "height": 2.0,                # height stability
     "tilt": 1.5,                  # tilt penalty
@@ -136,7 +139,7 @@ CURRICULUM = [
         "min_validated_reaches": 3000,
         "min_steps": 1500,
         "use_orientation": False,
-        "workspace_radius": (0.08, 0.15),
+        "workspace_radius": (0.10, 0.20),
     },
     {
         "description": "L1: Standing + medium workspace",
@@ -149,23 +152,10 @@ CURRICULUM = [
         "min_validated_reaches": 3500,
         "min_steps": 2000,
         "use_orientation": False,
-        "workspace_radius": (0.10, 0.20),
+        "workspace_radius": (0.12, 0.25),
     },
     {
         "description": "L2: Standing + larger workspace",
-        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
-        "pos_threshold": 0.07,
-        "min_target_distance": 0.13,
-        "min_displacement": 0.05,
-        "max_reach_steps": 180,
-        "validated_reach_rate": 0.20,
-        "min_validated_reaches": 4000,
-        "min_steps": 2500,
-        "use_orientation": False,
-        "workspace_radius": (0.12, 0.25),
-    },
-    {   # NEW intermediate level — only workspace grows, threshold stays same
-        "description": "L3: Standing + extended workspace (smooth transition)",
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "pos_threshold": 0.07,
         "min_target_distance": 0.14,
@@ -175,67 +165,80 @@ CURRICULUM = [
         "min_validated_reaches": 4000,
         "min_steps": 2500,
         "use_orientation": False,
-        "workspace_radius": (0.13, 0.28),
+        "workspace_radius": (0.15, 0.32),
     },
-    {   # Old L3, now only threshold tightens (workspace already grew)
-        "description": "L4: Standing + full workspace + tight threshold",
+    {
+        "description": "L3: Standing + extended workspace",
+        "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
+        "pos_threshold": 0.07,
+        "min_target_distance": 0.15,
+        "min_displacement": 0.05,
+        "max_reach_steps": 180,
+        "validated_reach_rate": 0.20,
+        "min_validated_reaches": 4000,
+        "min_steps": 2500,
+        "use_orientation": False,
+        "workspace_radius": (0.15, 0.38),
+    },
+    {
+        "description": "L4: Standing + full workspace",
         "vx": (0.0, 0.0), "vy": (0.0, 0.0), "vyaw": (0.0, 0.0),
         "pos_threshold": 0.06,
-        "min_target_distance": 0.15,
+        "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 175,
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 4500,
         "min_steps": 3000,
         "use_orientation": False,
-        "workspace_radius": (0.15, 0.30),
+        "workspace_radius": (0.18, 0.45),
     },
     # === PHASE 2: WALKING + REACHING (Level 5-7) ===
     {
         "description": "L5: Slow walk + reach (only add walking)",
         "vx": (0.0, 0.25), "vy": (-0.05, 0.05), "vyaw": (-0.10, 0.10),
         "pos_threshold": 0.06,
-        "min_target_distance": 0.15,
+        "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 175,
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 4500,
         "min_steps": 3000,
         "use_orientation": False,
-        "workspace_radius": (0.15, 0.30),
+        "workspace_radius": (0.18, 0.45),
     },
     {
-        "description": "L6: Medium walk + reach",
+        "description": "L6: Medium walk + wider reach",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
         "pos_threshold": 0.05,
-        "min_target_distance": 0.15,
+        "min_target_distance": 0.18,
         "min_displacement": 0.06,
         "max_reach_steps": 165,
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
-        "workspace_radius": (0.15, 0.33),
+        "workspace_radius": (0.18, 0.50),
     },
     {
-        "description": "L7: Fast walk + reach",
+        "description": "L7: Fast walk + full reach",
         "vx": (0.0, 0.45), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
         "pos_threshold": 0.05,
-        "min_target_distance": 0.16,
+        "min_target_distance": 0.18,
         "min_displacement": 0.07,
         "max_reach_steps": 160,
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
-        "workspace_radius": (0.15, 0.35),
+        "workspace_radius": (0.18, 0.55),
     },
     # === PHASE 3: WALKING + ORIENTATION (Level 8-9) ===
     {
         "description": "L8: Walk + palm_down orientation",
         "vx": (0.0, 0.40), "vy": (-0.08, 0.08), "vyaw": (-0.14, 0.14),
         "pos_threshold": 0.05,
-        "min_target_distance": 0.16,
+        "min_target_distance": 0.18,
         "min_displacement": 0.07,
         "max_reach_steps": 160,
         "validated_reach_rate": 0.18,
@@ -243,13 +246,13 @@ CURRICULUM = [
         "min_steps": 3500,
         "orient_threshold": 2.0,
         "use_orientation": True,
-        "workspace_radius": (0.15, 0.35),
+        "workspace_radius": (0.18, 0.55),
     },
     {
-        "description": "L9: FINAL — fast walk + orientation",
+        "description": "L9: FINAL — fast walk + orientation + max reach",
         "vx": (0.0, 0.50), "vy": (-0.10, 0.10), "vyaw": (-0.16, 0.16),
         "pos_threshold": 0.04,
-        "min_target_distance": 0.18,
+        "min_target_distance": 0.20,
         "min_displacement": 0.08,
         "max_reach_steps": 160,
         "validated_reach_rate": None,
@@ -257,7 +260,7 @@ CURRICULUM = [
         "min_steps": None,
         "orient_threshold": 1.5,
         "use_orientation": True,
-        "workspace_radius": (0.18, 0.40),
+        "workspace_radius": (0.18, 0.55),
     },
 ]
 
@@ -818,9 +821,9 @@ def create_env(num_envs, device):
             target_z = radius * torch.sin(elevation) + self.shoulder_offset[2]
 
             # Workspace clamp (body frame, right side)
-            target_x = target_x.clamp(0.0, 0.45)
-            target_y = target_y.clamp(-0.50, -0.05)
-            target_z = target_z.clamp(-0.10, 0.50)
+            target_x = target_x.clamp(-0.10, 0.55)   # allow slight backward + full forward reach
+            target_y = target_y.clamp(-0.60, -0.05)  # right side, expanded for 0.55m radius
+            target_z = target_z.clamp(-0.15, 0.55)   # below waist to above shoulder
             target_body = torch.stack([target_x, target_y, target_z], dim=-1)
 
             # Min distance enforcement
