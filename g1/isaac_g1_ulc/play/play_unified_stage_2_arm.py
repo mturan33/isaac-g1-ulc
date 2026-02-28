@@ -52,7 +52,7 @@ NUM_ARM_JOINTS = _cfg_mod.NUM_ARM_JOINTS
 NUM_HAND_JOINTS = _cfg_mod.NUM_HAND_JOINTS
 LEG_ACTION_SCALE = _cfg_mod.LEG_ACTION_SCALE
 WAIST_ACTION_SCALE = _cfg_mod.WAIST_ACTION_SCALE
-ARM_ACTION_SCALE = _cfg_mod.ARM_ACTION_SCALE
+ARM_ACTION_SCALE = 2.0  # Override cfg (0.5 too small — limits reach to ~0.25m, need 0.55m)
 HEIGHT_DEFAULT = _cfg_mod.HEIGHT_DEFAULT
 GAIT_FREQUENCY = _cfg_mod.GAIT_FREQUENCY
 ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
@@ -66,19 +66,19 @@ ARM_ACT_DIM = 7
 
 # Curriculum from training (for checkpoint level loading) — 10 levels, must match train
 CURRICULUM = [
-    # Phase 1: Standing + Reaching (L0-4)
-    {"pos_threshold": 0.10, "min_displacement": 0.03, "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.08, 0.15), "orient_threshold": 99.0},
-    {"pos_threshold": 0.08, "min_displacement": 0.04, "max_reach_steps": 190, "use_orientation": False, "workspace_radius": (0.10, 0.20), "orient_threshold": 99.0},
-    {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.12, 0.25), "orient_threshold": 99.0},
-    {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.13, 0.28), "orient_threshold": 99.0},
-    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.15, 0.30), "orient_threshold": 99.0},
-    # Phase 2: Walking + Reaching (L5-7)
-    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.15, 0.30), "orient_threshold": 99.0},
-    {"pos_threshold": 0.05, "min_displacement": 0.06, "max_reach_steps": 165, "use_orientation": False, "workspace_radius": (0.15, 0.33), "orient_threshold": 99.0},
-    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 160, "use_orientation": False, "workspace_radius": (0.15, 0.35), "orient_threshold": 99.0},
-    # Phase 3: Walking + Orientation (L8-9)
-    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.15, 0.35), "orient_threshold": 2.0},
-    {"pos_threshold": 0.04, "min_displacement": 0.08, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.18, 0.40), "orient_threshold": 1.5},
+    # Phase 1: Standing + Reaching (L0-4) — workspace grows to 0.45m
+    {"pos_threshold": 0.10, "min_displacement": 0.03, "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.10, 0.20), "orient_threshold": 99.0},
+    {"pos_threshold": 0.08, "min_displacement": 0.04, "max_reach_steps": 190, "use_orientation": False, "workspace_radius": (0.12, 0.25), "orient_threshold": 99.0},
+    {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.15, 0.32), "orient_threshold": 99.0},
+    {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.15, 0.38), "orient_threshold": 99.0},
+    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
+    # Phase 2: Walking + Reaching (L5-7) — workspace grows to 0.55m
+    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
+    {"pos_threshold": 0.05, "min_displacement": 0.06, "max_reach_steps": 165, "use_orientation": False, "workspace_radius": (0.18, 0.50), "orient_threshold": 99.0},
+    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 160, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    # Phase 3: Walking + Orientation (L8-9) — 0.55m maintained
+    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 2.0},
+    {"pos_threshold": 0.04, "min_displacement": 0.08, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 1.5},
 ]
 
 # ============================================================================
@@ -435,9 +435,9 @@ def create_env(num_envs, device):
             target_y = -radius * torch.cos(elevation) * torch.sin(azimuth) + self.shoulder_offset[1]
             target_z = radius * torch.sin(elevation) + self.shoulder_offset[2]
 
-            target_x = target_x.clamp(0.0, 0.45)
-            target_y = target_y.clamp(-0.50, -0.05)
-            target_z = target_z.clamp(-0.10, 0.50)
+            target_x = target_x.clamp(-0.10, 0.55)   # match train
+            target_y = target_y.clamp(-0.60, -0.05)  # match train
+            target_z = target_z.clamp(-0.15, 0.55)   # match train
             target_body = torch.stack([target_x, target_y, target_z], dim=-1)
 
             # Min distance enforcement
