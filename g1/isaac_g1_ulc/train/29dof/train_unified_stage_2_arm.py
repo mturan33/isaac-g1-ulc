@@ -28,6 +28,9 @@ ANTI-GAMING (from Stage 7):
   5. Smooth 10-level curriculum (3 phases) + rollback on sustained timeout
   6. Stillness penalty reduced to -0.5 (was -2.0)
   7. left_arm_dev penalty reduced to -0.5 (was -2.0, physics coupling caused -10 R floor)
+  8. smooth REMOVED — with scale=2.0, -(diff**2).sum()=-252/step, TensorBoard showed -738
+  9. jerk REMOVED — was literal duplicate of action_rate (r_jerk = r_action_rate)
+  10. action_rate reduced -0.05 → -0.01 (sole smoothness penalty)
 
 CURRICULUM (10 levels, smooth progression — one param change per level):
   Phase 1 (Level 0-4): Standing + Reaching (vx=0)
@@ -110,14 +113,14 @@ ARM_REWARD_WEIGHTS = {
     "velocity_toward": 6.0,       # dot(ee_vel, direction_to_target), clamp(0,1) — NO negative!
     "progress": 5.0,              # (initial_dist - current_dist) / initial_dist, clamp(0,1) — NO negative!
     "reach_bonus": 1.0,           # +10.0 per validated reach (sparse)
-    "smooth": 1.0,                # action smoothness (only when close)
+    # "smooth": REMOVED — with ARM_ACTION_SCALE=2.0, -(diff**2).sum() = -252/step, killed training
     "orient": 3.0,                # palm orientation (Level 6+ only)
     "left_arm_dev": -0.5,         # REDUCED from -2.0 — physics coupling causes left arm deviation even with default target
     "stillness_penalty": -0.5,    # REDUCED from -2.0 — mild nudge, not punishment
     "height": 2.0,                # height stability
     "tilt": 1.5,                  # tilt penalty
-    "action_rate": -0.05,
-    "jerk": -0.03,
+    "action_rate": -0.01,         # REDUCED from -0.05 — sole smoothness penalty, normalized for scale=2.0
+    # "jerk": REMOVED — was identical to action_rate (line r_jerk = r_action_rate), duplicate penalty
     "alive": 0.3,
 }
 
@@ -1156,10 +1159,8 @@ def create_env(num_envs, device):
             # 4. Reach bonus (sparse, per validated reach — computed in _validate_reaches)
             # Not per-step, handled via curriculum advancement incentive
 
-            # 5. Action smoothness (only when close)
+            # 5. Action smoothness — SMOOTH REMOVED (killed training with scale=2.0)
             arm_diff = self.prev_arm_act - self._prev_arm_act
-            close_mask = (dist < 0.15).float()
-            r_smooth = -(arm_diff ** 2).sum(-1) * close_mask
 
             # 6. Orientation (Level 6+ only)
             orient_err = compute_orientation_error(palm_quat, self.target_orient)
@@ -1186,22 +1187,20 @@ def create_env(num_envs, device):
             tilt = torch.asin(torch.clamp((g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))
             r_tilt = torch.exp(-3.0 * tilt)
 
-            # 11. Action rate + jerk
+            # 11. Action rate (sole smoothness penalty — jerk removed, was duplicate)
             r_action_rate = (arm_diff ** 2).sum(-1)
-            # Simple jerk (no _prev_prev needed — keep it simple)
-            r_jerk = r_action_rate  # Approximate
 
             # Store components for logging
             self.arm_reward_components = {
                 "reach": (ARM_REWARD_WEIGHTS["reach"] * r_reach).mean().item(),
                 "velocity": (ARM_REWARD_WEIGHTS["velocity_toward"] * r_velocity).mean().item(),
                 "progress": (ARM_REWARD_WEIGHTS["progress"] * r_progress).mean().item(),
-                "smooth": (ARM_REWARD_WEIGHTS["smooth"] * r_smooth).mean().item(),
                 "orient": (ARM_REWARD_WEIGHTS["orient"] * r_orient).mean().item(),
                 "left_dev": (ARM_REWARD_WEIGHTS["left_arm_dev"] * r_left_dev).mean().item(),
                 "stillness": (ARM_REWARD_WEIGHTS["stillness_penalty"] * r_stillness).mean().item(),
                 "height": (ARM_REWARD_WEIGHTS["height"] * r_height).mean().item(),
                 "tilt": (ARM_REWARD_WEIGHTS["tilt"] * r_tilt).mean().item(),
+                "action_rate": (ARM_REWARD_WEIGHTS["action_rate"] * r_action_rate).mean().item(),
                 "ee_dist": dist.mean().item(),
                 "ee_speed": ee_speed.mean().item(),
                 "orient_err": orient_err.mean().item(),
@@ -1211,14 +1210,12 @@ def create_env(num_envs, device):
                 ARM_REWARD_WEIGHTS["reach"] * r_reach
                 + ARM_REWARD_WEIGHTS["velocity_toward"] * r_velocity
                 + ARM_REWARD_WEIGHTS["progress"] * r_progress
-                + ARM_REWARD_WEIGHTS["smooth"] * r_smooth
                 + ARM_REWARD_WEIGHTS["orient"] * r_orient
                 + ARM_REWARD_WEIGHTS["left_arm_dev"] * r_left_dev
                 + ARM_REWARD_WEIGHTS["stillness_penalty"] * r_stillness
                 + ARM_REWARD_WEIGHTS["height"] * r_height
                 + ARM_REWARD_WEIGHTS["tilt"] * r_tilt
                 + ARM_REWARD_WEIGHTS["action_rate"] * r_action_rate
-                + ARM_REWARD_WEIGHTS["jerk"] * r_jerk
                 + ARM_REWARD_WEIGHTS["alive"]
             )
             return reward.clamp(-10, 30)
