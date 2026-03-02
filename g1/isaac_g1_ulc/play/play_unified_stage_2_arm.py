@@ -533,6 +533,7 @@ def create_env(num_envs, device):
             tgt[:, self.loco_idx[14]].clamp_(-0.2, 0.2)    # waist pitch
             for hy_idx in self.hip_yaw_loco_idx:
                 tgt[:, self.loco_idx[hy_idx]].clamp_(-0.3, 0.3)
+            arm_act = arm_act.clamp(-1.5, 1.5)  # Match train — prevent unbounded output
             tgt[:, self.right_arm_idx] = self.default_right_arm + arm_act * ARM_ACTION_SCALE
             tgt[:, self.left_arm_idx] = self.default_left_arm
             tgt[:, self.hand_idx] = self.default_hand

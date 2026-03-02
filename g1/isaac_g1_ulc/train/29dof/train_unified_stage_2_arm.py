@@ -975,7 +975,8 @@ def create_env(num_envs, device):
             for hy_idx in self.hip_yaw_loco_idx:
                 tgt[:, self.loco_idx[hy_idx]].clamp_(-0.3, 0.3)
 
-            # RIGHT ARM (residual control)
+            # RIGHT ARM (residual control) — clamp raw output to prevent explosion
+            arm_act = arm_act.clamp(-1.5, 1.5)  # Max physical offset: +-3.0 rad (covers full joint range)
             tgt[:, self.right_arm_idx] = self.default_right_arm + arm_act * ARM_ACTION_SCALE
 
             # LEFT ARM (default pose)
@@ -1159,8 +1160,8 @@ def create_env(num_envs, device):
             # 4. Reach bonus (sparse, per validated reach — computed in _validate_reaches)
             # Not per-step, handled via curriculum advancement incentive
 
-            # 5. Action smoothness — SMOOTH REMOVED (killed training with scale=2.0)
-            arm_diff = self.prev_arm_act - self._prev_arm_act
+            # 5. Action rate diff — clamped to prevent overflow (was -91 trillion without clamp)
+            arm_diff = (self.prev_arm_act - self._prev_arm_act).clamp(-2.0, 2.0)
 
             # 6. Orientation (Level 6+ only)
             orient_err = compute_orientation_error(palm_quat, self.target_orient)
@@ -1327,26 +1328,11 @@ def create_env(num_envs, device):
             if stage_attempts == 0:
                 return
 
-            # Gaming detection + ROLLBACK (Plan-Seq-Learn, R2S2 pattern)
+            # Gaming detection — LOG ONLY, no rollback (rollback caused oscillation + collapse)
             if stage_attempts > 100:
                 timeout_ratio = self.stage_timed_out / stage_attempts
-                if timeout_ratio > 0.90:
-                    if self.stage_steps % 500 == 0:
-                        print(f"  [GAMING] Level {self.curr_level}: timeout {timeout_ratio:.1%} > 90%")
-                    # Rollback if stuck too long at this level
-                    if self.stage_steps > 8000 and self.curr_level > 0:
-                        self.curr_level -= 1
-                        prev_lv = CURRICULUM[self.curr_level]
-                        print(f"\n{'='*60}")
-                        print(f"  LEVEL ROLLBACK! -> Level {self.curr_level}: {prev_lv['description']}")
-                        print(f"  Reason: timeout {timeout_ratio:.1%} after {self.stage_steps} stage steps")
-                        print(f"{'='*60}\n")
-                        self.stage_validated_reaches = 0
-                        self.stage_timed_out = 0
-                        self.stage_steps = 0
-                        self._sample_targets(torch.arange(self.num_envs, device=self.device))
-                        self._sample_vel_commands(torch.arange(self.num_envs, device=self.device))
-                    return
+                if timeout_ratio > 0.90 and self.stage_steps % 2000 == 0:
+                    print(f"  [INFO] Level {self.curr_level}: timeout {timeout_ratio:.1%} (staying, no rollback)")
 
             if self.stage_validated_reaches < lv["min_validated_reaches"]:
                 return
