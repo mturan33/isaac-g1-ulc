@@ -569,17 +569,11 @@ def create_env(num_envs, device):
             q = self.robot.data.root_quat_w
             gvec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
             proj_g = quat_apply_inverse(q, gvec)
-            fallen = (pos[:, 2] < 0.55) | (pos[:, 2] > 1.2)
+            # RELAXED from 0.55 to 0.30 (match train script, Stage 6/7 working code)
+            fallen = (pos[:, 2] < 0.30) | (pos[:, 2] > 1.2)
             bad_orient = proj_g[:, :2].abs().max(dim=-1)[0] > 0.7
-            jp = self.robot.data.joint_pos[:, self.loco_idx]
-            lk = jp[:, self.left_knee_idx]
-            rk = jp[:, self.right_knee_idx]
-            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 1.5) | (rk > 1.5)
-            waist_bad = (jp[:, 14].abs() > 0.35) | (jp[:, 13].abs() > 0.25)
-            hip_yaw_L = jp[:, self.hip_yaw_loco_idx[0]]
-            hip_yaw_R = jp[:, self.hip_yaw_loco_idx[1]]
-            hip_yaw_bad = (hip_yaw_L.abs() > 0.6) | (hip_yaw_R.abs() > 0.6)
-            terminated = fallen | bad_orient | knee_bad | waist_bad | hip_yaw_bad
+            # REMOVED: knee_bad, waist_bad, hip_yaw_bad (loco is frozen, safe)
+            terminated = fallen | bad_orient
             truncated = self.episode_length_buf >= self.max_episode_length
             return terminated, truncated
 
