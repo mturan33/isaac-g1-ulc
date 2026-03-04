@@ -109,20 +109,32 @@ COMBINED_ACT_DIM = LOCO_ACT_DIM + ARM_ACT_DIM  # 22
 # ============================================================================
 
 ARM_REWARD_WEIGHTS = {
-    "reach": 10.0,                # exp(-8.0 * dist) — primary proximity
-    "velocity_toward": 6.0,       # dot(ee_vel, direction_to_target), clamp(0,1) — NO negative!
-    "progress": 5.0,              # (initial_dist - current_dist) / initial_dist, clamp(0,1) — NO negative!
-    "reach_bonus": 1.0,           # +10.0 per validated reach (sparse)
-    # "smooth": REMOVED — with ARM_ACTION_SCALE=2.0, -(diff**2).sum() = -252/step, killed training
-    "orient": 3.0,                # palm orientation (Level 6+ only)
-    "left_arm_dev": -0.5,         # REDUCED from -2.0 — physics coupling causes left arm deviation even with default target
-    "stillness_penalty": -0.5,    # REDUCED from -2.0 — mild nudge, not punishment
-    "height": 2.0,                # height stability
-    "tilt": 1.5,                  # tilt penalty
-    "action_rate": -0.01,         # REDUCED from -0.05 — sole smoothness penalty, normalized for scale=2.0
-    # "jerk": REMOVED — was identical to action_rate (line r_jerk = r_action_rate), duplicate penalty
-    "alive": 0.3,
+    # --- From working Stage 6/7 code (WERE MISSING — root cause of stagnation!) ---
+    "reaching": 10.0,          # sigmoid((threshold-dist)*30) — smooth binary at threshold
+    "final_push": 4.0,         # exp(-15*dist)*sigmoid((0.08-dist)*25) — last-cm incentive
+    # --- Existing (REBALANCED) ---
+    "distance": 3.0,           # exp(-8*dist) — was "reach" at 10.0, reduced (sigmoid takes over)
+    "velocity_toward": 6.0,    # clamp(0,1) — KEEP (proven safe, death spiral fix)
+    "progress": 5.0,           # clamp(0,1) — KEEP (proven safe, death spiral fix)
+    # --- NEW: PBRS + Proximity zones ---
+    "pbrs": 3.0,               # Potential-Based Reward Shaping (Ng et al. 1999)
+    "proximity_bonus": 1.0,    # Tiered zones: +1 at 0.15m, +2 at 0.10m, +5 at 0.05m
+    "reach_bonus": 1.0,        # Sparse bonus per validated reach (multiplied by REACH_BONUS_VALUE)
+    # --- Existing penalties (REBALANCED) ---
+    "orient": 3.0,             # palm orientation (Level 8+ only)
+    "left_arm_dev": -0.5,      # KEEP — physics coupling causes left arm deviation
+    "stillness_penalty": -2.0, # Was -0.5, now match Stage 7 (4x stronger, exp(-20))
+    "action_rate": -0.02,      # Slightly up from -0.01, still safe with arm_diff clamp
+    # --- Base (REDUCED to prevent "comfortable standing" trap) ---
+    "height": 1.0,             # Was 2.0 — halved
+    "tilt": 0.5,               # Was 1.5 — 3x reduced
+    "alive": 0.2,              # Was 0.3 — reduced
 }
+# Base from standing: 1.0+0.5+0.2 = 1.7/step (was 3.8)
+# Reaching near target: ~23/step (13.5x base — clear gradient)
+
+REACH_BONUS_VALUE = 50.0       # Sparse bonus per validated reach
+EPISODE_TERMINATE_ON_REACH = True  # done=True after validated reach — prevents standing trap
 
 # ============================================================================
 # ANTI-GAMING CURRICULUM (8 levels, 3 phases)
@@ -274,7 +286,7 @@ CURRICULUM = [
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified Stage 2: Arm Reaching (Dual AC, 29DoF)")
     parser.add_argument("--num_envs", type=int, default=4096)
-    parser.add_argument("--max_iterations", type=int, default=20000)
+    parser.add_argument("--max_iterations", type=int, default=30000)
     parser.add_argument("--stage1_checkpoint", type=str, default=None,
                         help="Stage 1 V6.2 checkpoint (loco weights frozen). Required for fresh start.")
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -478,14 +490,15 @@ class DualActorCritic(nn.Module):
 # ============================================================================
 
 class ArmPPO:
-    def __init__(self, net, device, lr=1e-3, max_iter=20000):
+    def __init__(self, net, device, lr=3e-4):
         self.net = net
         self.device = device
+        self.lr = lr
         self.opt = torch.optim.AdamW(
             list(net.arm_actor.parameters()) + list(net.arm_critic.parameters()),
             lr=lr, weight_decay=1e-5
         )
-        self.sched = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt, max_iter, eta_min=1e-5)
+        # FIXED LR — CosineAnnealingLR killed learning at L6 (decayed to ~0)
 
     def gae(self, rewards, values, dones, next_value, gamma=0.99, lam=0.95):
         adv = torch.zeros_like(rewards)
@@ -524,9 +537,8 @@ class ArmPPO:
                 tot_e += ent.mean().item()
                 n += 1
 
-        self.sched.step()
         return {"a": tot_a / max(n, 1), "c": tot_c / max(n, 1),
-                "e": tot_e / max(n, 1), "lr": self.sched.get_last_lr()[0]}
+                "e": tot_e / max(n, 1), "lr": self.lr}
 
 
 # ============================================================================
@@ -759,6 +771,13 @@ def create_env(num_envs, device):
             self.arm_reward = torch.zeros(self.num_envs, device=self.device)
             self.arm_reward_components = {}
 
+            # Episode termination on reach (user fix #2)
+            self.reach_terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            self.reach_bonus_pending = torch.zeros(self.num_envs, device=self.device)
+
+            # PBRS potential (user fix #3)
+            self.prev_potential = torch.zeros(self.num_envs, device=self.device)
+
             # Push timer (loco perturbation — minimal during arm training)
             self.step_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
             self.push_timer = torch.randint(300, 600, (self.num_envs,), device=self.device)
@@ -855,6 +874,9 @@ def create_env(num_envs, device):
             self.steps_since_spawn[env_ids] = 0
             self.initial_dist[env_ids] = torch.norm(
                 target_body - current_ee_body, dim=-1).clamp(min=0.01)
+
+            # Initialize PBRS potential for new targets
+            self.prev_potential[env_ids] = torch.exp(-self.initial_dist[env_ids] / 0.15)
 
         # ================================================================
         # EE COMPUTATION
@@ -1057,7 +1079,11 @@ def create_env(num_envs, device):
                 self.stage_validated_reaches += len(reached_ids)
                 self.total_attempts += len(reached_ids)
                 self.already_reached[reached_ids] = True
-                self._sample_targets(reached_ids)
+                self.reach_bonus_pending[reached_ids] = REACH_BONUS_VALUE  # +50 sparse
+                if EPISODE_TERMINATE_ON_REACH:
+                    self.reach_terminated[reached_ids] = True  # triggers done=True
+                else:
+                    self._sample_targets(reached_ids)  # old behavior: resample
 
             # Handle timed-out targets
             timed_out = (self.steps_since_spawn > lv["max_reach_steps"]) & ~self.already_reached
@@ -1124,7 +1150,7 @@ def create_env(num_envs, device):
             return {"policy": self.get_loco_obs()}
 
         def compute_arm_reward(self):
-            """Movement-centric arm reward with anti-gaming signals."""
+            """Comprehensive arm reward: sigmoid reaching + PBRS + proximity + anti-gaming."""
             r = self.robot
             root_pos = r.data.root_pos_w
             root_quat = r.data.root_quat_w
@@ -1145,57 +1171,89 @@ def create_env(num_envs, device):
             dir_norm = direction.norm(dim=-1, keepdim=True).clamp(min=1e-6)
             dir_unit = direction / dir_norm
 
-            # 1. Reach proximity (exp-decay)
-            r_reach = torch.exp(-8.0 * dist)
+            # === REACHING REWARDS ===
 
-            # 2. Velocity toward target — clamp(0,1): reward only, NEVER punish
-            # Death spiral fix: negative vel_toward was -3.0 per step, killed training at L3
+            # 1. Sigmoid reaching (Stage 6/7 pattern — CRITICAL, was missing!)
+            pos_threshold = lv["pos_threshold"]
+            r_reaching = torch.sigmoid((pos_threshold - dist) * 30.0)
+
+            # 2. Final push (Stage 6/7 — extra incentive at last centimeters)
+            r_final_push = torch.exp(-15.0 * dist) * torch.sigmoid((0.08 - dist) * 25.0)
+
+            # 3. Distance (exp-decay — reduced, sigmoid takes over as primary)
+            r_distance = torch.exp(-8.0 * dist)
+
+            # === MOVEMENT REWARDS ===
+
+            # 4. Velocity toward target — clamp(0,1): reward only, NEVER punish
             vel_toward = (ee_vel_b * dir_unit).sum(dim=-1)
             r_velocity = vel_toward.clamp(0.0, 1.0)
 
-            # 3. Progress — clamp(0,1): reward only, NEVER punish
-            # Death spiral fix: negative progress was -2.5 per step when arm couldn't reach
+            # 5. Progress — clamp(0,1): reward only, NEVER punish
             r_progress = ((self.initial_dist - dist) / self.initial_dist.clamp(min=0.01)).clamp(0.0, 1.0)
 
-            # 4. Reach bonus (sparse, per validated reach — computed in _validate_reaches)
-            # Not per-step, handled via curriculum advancement incentive
+            # === SHAPING REWARDS ===
 
-            # 5. Action rate diff — clamped to prevent overflow (was -91 trillion without clamp)
-            arm_diff = (self.prev_arm_act - self._prev_arm_act).clamp(-2.0, 2.0)
+            # 6. PBRS — Potential-Based Reward Shaping (Ng et al. 1999)
+            current_potential = torch.exp(-dist / 0.15)
+            r_pbrs = ARM_REWARD_WEIGHTS["pbrs"] * (0.99 * current_potential - self.prev_potential)
+            self.prev_potential = current_potential.clone()
 
-            # 6. Orientation (Level 6+ only)
+            # 7. Proximity bonus zones (+1 at 0.15m, +2 at 0.10m, +5 at 0.05m)
+            r_proximity = torch.zeros_like(dist)
+            r_proximity += (dist < 0.15).float() * 1.0
+            r_proximity += (dist < 0.10).float() * 2.0
+            r_proximity += (dist < 0.05).float() * 5.0
+
+            # 8. Reach bonus (sparse, from _validate_reaches — episode termination)
+            r_reach_bonus = self.reach_bonus_pending.clone()
+            self.reach_bonus_pending.zero_()
+
+            # === ORIENTATION ===
+
+            # 9. Orientation (Level 8+ only)
             orient_err = compute_orientation_error(palm_quat, self.target_orient)
             if lv["use_orientation"]:
                 r_orient = torch.exp(-3.0 * orient_err)
             else:
                 r_orient = torch.zeros(self.num_envs, device=self.device)
 
-            # 7. Left arm deviation penalty
+            # === PENALTIES ===
+
+            # 10. Left arm deviation penalty
             left_arm_pos = r.data.joint_pos[:, self.left_arm_idx]
             left_dev = (left_arm_pos - self.default_left_arm).abs().sum(-1)
             r_left_dev = left_dev
 
-            # 8. Stillness penalty (when far from target)
-            far_mask = (dist > 0.10).float()
-            r_stillness = torch.exp(-5.0 * ee_speed) * far_mask
+            # 11. Stillness penalty (Stage 7 strength: exp(-20), far threshold 0.15m)
+            far_mask = (dist > 0.15).float()
+            r_stillness = torch.exp(-20.0 * ee_speed) * far_mask
 
-            # 9. Height stability
+            # === STABILITY (reduced base) ===
+
+            # 12. Height stability
             height = root_pos[:, 2]
             r_height = torch.exp(-10.0 * (height - HEIGHT_DEFAULT) ** 2)
 
-            # 10. Tilt penalty
+            # 13. Tilt penalty
             g = quat_apply_inverse(root_quat, torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1))
             tilt = torch.asin(torch.clamp((g[:, :2] ** 2).sum(-1).sqrt(), max=1.0))
             r_tilt = torch.exp(-3.0 * tilt)
 
-            # 11. Action rate (sole smoothness penalty — jerk removed, was duplicate)
+            # 14. Action rate — clamped to prevent overflow
+            arm_diff = (self.prev_arm_act - self._prev_arm_act).clamp(-2.0, 2.0)
             r_action_rate = (arm_diff ** 2).sum(-1)
 
             # Store components for logging
             self.arm_reward_components = {
-                "reach": (ARM_REWARD_WEIGHTS["reach"] * r_reach).mean().item(),
+                "reaching": (ARM_REWARD_WEIGHTS["reaching"] * r_reaching).mean().item(),
+                "final_push": (ARM_REWARD_WEIGHTS["final_push"] * r_final_push).mean().item(),
+                "distance": (ARM_REWARD_WEIGHTS["distance"] * r_distance).mean().item(),
                 "velocity": (ARM_REWARD_WEIGHTS["velocity_toward"] * r_velocity).mean().item(),
                 "progress": (ARM_REWARD_WEIGHTS["progress"] * r_progress).mean().item(),
+                "pbrs": r_pbrs.mean().item(),
+                "proximity": (ARM_REWARD_WEIGHTS["proximity_bonus"] * r_proximity).mean().item(),
+                "reach_bonus": r_reach_bonus.mean().item(),
                 "orient": (ARM_REWARD_WEIGHTS["orient"] * r_orient).mean().item(),
                 "left_dev": (ARM_REWARD_WEIGHTS["left_arm_dev"] * r_left_dev).mean().item(),
                 "stillness": (ARM_REWARD_WEIGHTS["stillness_penalty"] * r_stillness).mean().item(),
@@ -1208,9 +1266,14 @@ def create_env(num_envs, device):
             }
 
             reward = (
-                ARM_REWARD_WEIGHTS["reach"] * r_reach
+                ARM_REWARD_WEIGHTS["reaching"] * r_reaching
+                + ARM_REWARD_WEIGHTS["final_push"] * r_final_push
+                + ARM_REWARD_WEIGHTS["distance"] * r_distance
                 + ARM_REWARD_WEIGHTS["velocity_toward"] * r_velocity
                 + ARM_REWARD_WEIGHTS["progress"] * r_progress
+                + r_pbrs
+                + ARM_REWARD_WEIGHTS["proximity_bonus"] * r_proximity
+                + ARM_REWARD_WEIGHTS["reach_bonus"] * r_reach_bonus
                 + ARM_REWARD_WEIGHTS["orient"] * r_orient
                 + ARM_REWARD_WEIGHTS["left_arm_dev"] * r_left_dev
                 + ARM_REWARD_WEIGHTS["stillness_penalty"] * r_stillness
@@ -1219,7 +1282,7 @@ def create_env(num_envs, device):
                 + ARM_REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + ARM_REWARD_WEIGHTS["alive"]
             )
-            return reward.clamp(-10, 30)
+            return reward.clamp(-10, 50)
 
         def _get_rewards(self):
             self.arm_reward = self.compute_arm_reward()
@@ -1235,37 +1298,16 @@ def create_env(num_envs, device):
             gvec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
             proj_g = quat_apply_inverse(q, gvec)
 
-            # Height
-            fallen = (pos[:, 2] < 0.55) | (pos[:, 2] > 1.2)
+            # Height — RELAXED from 0.55 to 0.30 (match Stage 6/7 working code)
+            fallen = (pos[:, 2] < 0.30) | (pos[:, 2] > 1.2)
             bad_orient = proj_g[:, :2].abs().max(dim=-1)[0] > 0.7
 
-            # Knee limits
-            jp = self.robot.data.joint_pos[:, self.loco_idx]
-            lk = jp[:, self.left_knee_idx]
-            rk = jp[:, self.right_knee_idx]
-            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 1.5) | (rk > 1.5)
+            # REMOVED: knee_bad, waist_bad, hip_yaw_bad, illegal_contact
+            # Loco is FROZEN — it already learned safe locomotion.
+            # Extra terminations punish arm-induced body perturbations unfairly.
 
-            # Waist limits
-            waist_pitch = jp[:, 14]
-            waist_roll = jp[:, 13]
-            waist_bad = (waist_pitch.abs() > 0.35) | (waist_roll.abs() > 0.25)
-
-            # Hip yaw limits
-            hip_yaw_L = jp[:, self.hip_yaw_loco_idx[0]]
-            hip_yaw_R = jp[:, self.hip_yaw_loco_idx[1]]
-            hip_yaw_bad = (hip_yaw_L.abs() > 0.6) | (hip_yaw_R.abs() > 0.6)
-
-            # Illegal contact
-            if len(self._illegal_contact_ids) > 0:
-                net_forces = self._contact_sensor.data.net_forces_w_history
-                illegal_contact = torch.any(
-                    torch.max(
-                        torch.norm(net_forces[:, :, self._illegal_contact_ids], dim=-1), dim=1
-                    )[0] > 1.0, dim=1)
-            else:
-                illegal_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-
-            terminated = fallen | bad_orient | knee_bad | waist_bad | hip_yaw_bad | illegal_contact
+            # Episode termination on validated reach
+            terminated = fallen | bad_orient | self.reach_terminated
             truncated = self.episode_length_buf >= self.max_episode_length
             return terminated, truncated
 
@@ -1305,6 +1347,10 @@ def create_env(num_envs, device):
             self.already_reached[env_ids] = False
             self.step_count[env_ids] = 0
             self.push_timer[env_ids] = torch.randint(300, 600, (n,), device=self.device)
+
+            # Reset episode termination + bonus buffers
+            self.reach_terminated[env_ids] = False
+            self.reach_bonus_pending[env_ids] = 0.0
 
             # Resample commands and targets
             self._sample_vel_commands(env_ids)
@@ -1393,9 +1439,9 @@ def load_stage1_and_setup(net, stage1_path, device):
             frozen += 1
     print(f"  Frozen {frozen} loco parameters")
 
-    # Arm: fresh init with high exploration
-    net.arm_actor.log_std.data.fill_(np.log(0.6))
-    print(f"  Arm: FRESH init, log_std = log(0.6)")
+    # Arm: fresh init with high exploration (match Stage 7)
+    net.arm_actor.log_std.data.fill_(np.log(0.8))
+    print(f"  Arm: FRESH init, log_std = log(0.8)")
 
     # Print checkpoint info
     for key in ["best_reward", "iteration", "curriculum_level"]:
@@ -1433,19 +1479,17 @@ def main():
         for name, p in net.named_parameters():
             if name.startswith("loco_ac."):
                 p.requires_grad = False
-        # Restore optimizer/scheduler
-        ppo = ArmPPO(net, device, lr=1e-3, max_iter=args_cli.max_iterations)
+        # Restore optimizer (no scheduler — fixed LR)
+        ppo = ArmPPO(net, device, lr=3e-4)
         if "arm_optimizer" in ckpt:
             ppo.opt.load_state_dict(ckpt["arm_optimizer"])
-        if "arm_scheduler" in ckpt:
-            ppo.sched.load_state_dict(ckpt["arm_scheduler"])
         print(f"  Resumed: iter={start_iter}, R={best_reward:.2f}, Lv={env.curr_level}, "
               f"VR={env.validated_reaches}, TO={env.timed_out_targets}")
     else:
         if args_cli.stage1_checkpoint is None:
             raise ValueError("--stage1_checkpoint required for fresh Stage 2 start")
         load_stage1_and_setup(net, args_cli.stage1_checkpoint, device)
-        ppo = ArmPPO(net, device, lr=1e-3, max_iter=args_cli.max_iterations)
+        ppo = ArmPPO(net, device, lr=3e-4)
 
     # Logging
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1474,10 +1518,11 @@ def main():
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
-        # Exploration decay
+        # STD decay with floor at 0.3 (never collapses — prevents stagnation)
         progress = iteration / args_cli.max_iterations
-        arm_std = 0.6 + (0.15 - 0.6) * progress
-        net.arm_actor.log_std.data.fill_(np.log(max(arm_std, 0.15)))
+        arm_std = max(0.8 - 0.5 * progress, 0.3)  # 0.8 → 0.3 floor
+        net.arm_actor.log_std.data.fill_(np.log(arm_std))
+        net.arm_actor.log_std.data.clamp_(min=np.log(0.3))  # Hard floor
 
         # Collect rollout
         for t in range(T):
@@ -1571,8 +1616,7 @@ def main():
             torch.save({
                 "model": net.state_dict(),
                 "arm_optimizer": ppo.opt.state_dict(),
-                "arm_scheduler": ppo.sched.state_dict(),
-                "iteration": iteration,
+                                "iteration": iteration,
                 "best_reward": best_reward,
                 "curriculum_level": env.curr_level,
                 "validated_reaches": env.validated_reaches,
@@ -1588,8 +1632,7 @@ def main():
             torch.save({
                 "model": net.state_dict(),
                 "arm_optimizer": ppo.opt.state_dict(),
-                "arm_scheduler": ppo.sched.state_dict(),
-                "iteration": iteration,
+                                "iteration": iteration,
                 "best_reward": best_reward,
                 "curriculum_level": env.curr_level,
                 "validated_reaches": env.validated_reaches,
@@ -1603,8 +1646,7 @@ def main():
     torch.save({
         "model": net.state_dict(),
         "arm_optimizer": ppo.opt.state_dict(),
-        "arm_scheduler": ppo.sched.state_dict(),
-        "iteration": args_cli.max_iterations - 1,
+                "iteration": args_cli.max_iterations - 1,
         "best_reward": best_reward,
         "curriculum_level": env.curr_level,
         "validated_reaches": env.validated_reaches,
