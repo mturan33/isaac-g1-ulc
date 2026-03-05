@@ -136,8 +136,12 @@ ARM_REWARD_WEIGHTS = {
 REACH_BONUS_VALUE = 50.0       # Sparse bonus per validated reach
 EPISODE_TERMINATE_ON_REACH = True  # done=True after validated reach — prevents standing trap
 
+# Windowed rate for curriculum gate — cumulative rate penalizes early exploration forever
+CURRICULUM_WINDOW_SIZE = 50000  # Check rate over last 50K attempts (ring buffer)
+CURRICULUM_MIN_WINDOW = 5000    # Need at least 5K samples before checking rate
+
 # ============================================================================
-# ANTI-GAMING CURRICULUM (8 levels, 3 phases)
+# ANTI-GAMING CURRICULUM (10 levels, 3 phases)
 # ============================================================================
 
 CURRICULUM = [
@@ -223,34 +227,47 @@ CURRICULUM = [
         "workspace_radius": (0.18, 0.45),
     },
     {
-        "description": "L6: Medium walk + wider reach",
+        "description": "L6: Medium walk + same workspace",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
-        "pos_threshold": 0.05,
-        "min_target_distance": 0.18,
+        "pos_threshold": 0.06,          # same as L5 (was 0.05 — TWO changes at once)
+        "min_target_distance": 0.16,    # same as L5
         "min_displacement": 0.06,
-        "max_reach_steps": 165,
+        "max_reach_steps": 175,         # same as L5 (was 165 — THREE changes at once!)
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
-        "workspace_radius": (0.18, 0.50),
+        "workspace_radius": (0.18, 0.45),  # same as L5 (was 0.50 — only walk speed changes)
     },
     {
-        "description": "L7: Fast walk + full reach",
-        "vx": (0.0, 0.45), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
-        "pos_threshold": 0.05,
+        "description": "L7: Medium walk + wider workspace",
+        "vx": (0.0, 0.35), "vy": (-0.08, 0.08), "vyaw": (-0.15, 0.15),
+        "pos_threshold": 0.06,
+        "min_target_distance": 0.16,
+        "min_displacement": 0.06,
+        "max_reach_steps": 175,
+        "validated_reach_rate": 0.20,
+        "min_validated_reaches": 5000,
+        "min_steps": 3500,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.50),  # only workspace grows
+    },
+    {
+        "description": "L8: Fast walk + full reach",
+        "vx": (0.0, 0.45), "vy": (-0.10, 0.10), "vyaw": (-0.16, 0.16),
+        "pos_threshold": 0.05,          # now tighten threshold
         "min_target_distance": 0.18,
         "min_displacement": 0.07,
-        "max_reach_steps": 160,
+        "max_reach_steps": 165,
         "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
         "workspace_radius": (0.18, 0.55),
     },
-    # === PHASE 3: WALKING + ORIENTATION (Level 8-9) ===
+    # === PHASE 3: WALKING + ORIENTATION (Level 9-10) ===
     {
-        "description": "L8: Walk + palm_down orientation",
+        "description": "L9: Walk + palm_down orientation",
         "vx": (0.0, 0.40), "vy": (-0.08, 0.08), "vyaw": (-0.14, 0.14),
         "pos_threshold": 0.05,
         "min_target_distance": 0.18,
@@ -264,7 +281,7 @@ CURRICULUM = [
         "workspace_radius": (0.18, 0.55),
     },
     {
-        "description": "L9: FINAL — fast walk + orientation + max reach",
+        "description": "L10: FINAL — fast walk + orientation + max reach",
         "vx": (0.0, 0.50), "vy": (-0.10, 0.10), "vyaw": (-0.16, 0.16),
         "pos_threshold": 0.04,
         "min_target_distance": 0.20,
@@ -765,6 +782,11 @@ def create_env(num_envs, device):
             self.stage_validated_reaches = 0
             self.stage_timed_out = 0
             self.stage_steps = 0
+            # Windowed rate ring buffer — cumulative rate penalizes early exploration forever
+            # Ring buffer: 1 = validated, 0 = timed out
+            self.window_buf = torch.zeros(CURRICULUM_WINDOW_SIZE, dtype=torch.bool, device=self.device)
+            self.window_idx = 0    # next write position (mod WINDOW_SIZE)
+            self.window_count = 0  # entries filled so far (up to WINDOW_SIZE)
             self.already_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
             # Reward storage
@@ -1075,11 +1097,17 @@ def create_env(num_envs, device):
 
             if new_reaches.any():
                 reached_ids = torch.where(new_reaches)[0]
-                self.validated_reaches += len(reached_ids)
-                self.stage_validated_reaches += len(reached_ids)
-                self.total_attempts += len(reached_ids)
+                n_reached = len(reached_ids)
+                self.validated_reaches += n_reached
+                self.stage_validated_reaches += n_reached
+                self.total_attempts += n_reached
                 self.already_reached[reached_ids] = True
                 self.reach_bonus_pending[reached_ids] = REACH_BONUS_VALUE  # +50 sparse
+                # Write to ring buffer: 1 = validated
+                for _ in range(n_reached):
+                    self.window_buf[self.window_idx % CURRICULUM_WINDOW_SIZE] = True
+                    self.window_idx += 1
+                    self.window_count = min(self.window_count + 1, CURRICULUM_WINDOW_SIZE)
                 if EPISODE_TERMINATE_ON_REACH:
                     self.reach_terminated[reached_ids] = True  # triggers done=True
                 else:
@@ -1089,9 +1117,15 @@ def create_env(num_envs, device):
             timed_out = (self.steps_since_spawn > lv["max_reach_steps"]) & ~self.already_reached
             if timed_out.any():
                 to_ids = torch.where(timed_out)[0]
-                self.timed_out_targets += len(to_ids)
-                self.stage_timed_out += len(to_ids)
-                self.total_attempts += len(to_ids)
+                n_to = len(to_ids)
+                self.timed_out_targets += n_to
+                self.stage_timed_out += n_to
+                self.total_attempts += n_to
+                # Write to ring buffer: 0 = timed out
+                for _ in range(n_to):
+                    self.window_buf[self.window_idx % CURRICULUM_WINDOW_SIZE] = False
+                    self.window_idx += 1
+                    self.window_count = min(self.window_count + 1, CURRICULUM_WINDOW_SIZE)
                 self._sample_targets(to_ids)
 
             # Visual markers (only when rendering)
@@ -1383,21 +1417,37 @@ def create_env(num_envs, device):
             if self.stage_validated_reaches < lv["min_validated_reaches"]:
                 return
 
-            validated_rate = self.stage_validated_reaches / stage_attempts
-            if validated_rate >= lv["validated_reach_rate"]:
+            # Use WINDOWED rate (not cumulative) — early exploration timeouts don't penalize forever
+            if self.window_count < CURRICULUM_MIN_WINDOW:
+                return  # Not enough data in window yet
+
+            # Windowed rate: success ratio in last WINDOW_SIZE attempts
+            if self.window_count >= CURRICULUM_WINDOW_SIZE:
+                windowed_rate = self.window_buf.float().mean().item()
+            else:
+                windowed_rate = self.window_buf[:self.window_count].float().mean().item()
+
+            # Also compute cumulative for logging
+            cumulative_rate = self.stage_validated_reaches / stage_attempts
+
+            if windowed_rate >= lv["validated_reach_rate"]:
                 if self.curr_level < len(CURRICULUM) - 1:
                     self.curr_level += 1
                     new_lv = CURRICULUM[self.curr_level]
                     phase = "STAND+REACH" if self.curr_level < 5 else (
-                        "WALK+REACH" if self.curr_level < 8 else "WALK+ORIENT")
+                        "WALK+REACH" if self.curr_level < 9 else "WALK+ORIENT")
                     print(f"\n{'='*60}")
                     print(f"  LEVEL UP! Level {self.curr_level}: {new_lv['description']} ({phase})")
-                    print(f"  Validated: {self.stage_validated_reaches}, Rate: {validated_rate:.1%}")
-                    print(f"  Timed out: {self.stage_timed_out}")
+                    print(f"  Window Rate: {windowed_rate:.1%} (cumulative: {cumulative_rate:.1%})")
+                    print(f"  Validated: {self.stage_validated_reaches}, Timed out: {self.stage_timed_out}")
                     print(f"{'='*60}\n")
                     self.stage_validated_reaches = 0
                     self.stage_timed_out = 0
                     self.stage_steps = 0
+                    # Reset ring buffer for new level
+                    self.window_buf.zero_()
+                    self.window_idx = 0
+                    self.window_count = 0
                     # Resample all targets for new level
                     self._sample_targets(torch.arange(self.num_envs, device=self.device))
                     self._sample_vel_commands(torch.arange(self.num_envs, device=self.device))
@@ -1513,8 +1563,8 @@ def main():
     print("STARTING STAGE 2: ARM REACHING TRAINING")
     print(f"  Loco: FROZEN (66->15), Arm: FRESH (39->7)")
     print(f"  Phase 1 (L0-4): Standing + Reaching (smooth 5-level)")
-    print(f"  Phase 2 (L5-7): Walking + Reaching")
-    print(f"  Phase 3 (L8-9): Walking + Orientation")
+    print(f"  Phase 2 (L5-8): Walking + Reaching (4 levels)")
+    print(f"  Phase 3 (L9-10): Walking + Orientation")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
@@ -1588,6 +1638,13 @@ def main():
 
             v_rate = env.validated_reaches / max(env.total_attempts, 1)
             writer.add_scalar("curriculum/validated_rate", v_rate, iteration)
+            # Windowed rate for TensorBoard
+            if env.window_count >= CURRICULUM_MIN_WINDOW:
+                if env.window_count >= CURRICULUM_WINDOW_SIZE:
+                    w_rate = env.window_buf.float().mean().item()
+                else:
+                    w_rate = env.window_buf[:env.window_count].float().mean().item()
+                writer.add_scalar("curriculum/windowed_rate", w_rate, iteration)
 
         # Console log
         if iteration % 50 == 0:
@@ -1597,15 +1654,23 @@ def main():
             orient_err = rc.get("orient_err", 0)
             height = env.robot.data.root_pos_w[:, 2].mean().item()
             v_rate = env.validated_reaches / max(env.total_attempts, 1)
+            # Compute windowed rate for display
+            if env.window_count >= CURRICULUM_MIN_WINDOW:
+                if env.window_count >= CURRICULUM_WINDOW_SIZE:
+                    w_rate = env.window_buf.float().mean().item()
+                else:
+                    w_rate = env.window_buf[:env.window_count].float().mean().item()
+            else:
+                w_rate = 0.0
 
             phase = "P1-Stand" if env.curr_level < 5 else (
-                "P2-Walk" if env.curr_level < 8 else "P3-Orient")
+                "P2-Walk" if env.curr_level < 9 else "P3-Orient")
 
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_arm_reward:.2f} Best={best_reward:.2f} "
                   f"Lv={env.curr_level}({phase}) "
                   f"VR={env.validated_reaches} TO={env.timed_out_targets} "
-                  f"Rate={v_rate:.1%} "
+                  f"WR={w_rate:.1%} "
                   f"EE={ee_dist:.3f} Spd={ee_spd:.3f} "
                   f"H={height:.3f} OrErr={orient_err:.2f} "
                   f"LR={losses['lr']:.2e} std={np.exp(net.arm_actor.log_std.data.mean().item()):.3f}")
