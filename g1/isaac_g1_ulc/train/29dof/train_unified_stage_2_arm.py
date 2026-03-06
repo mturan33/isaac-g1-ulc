@@ -32,12 +32,12 @@ ANTI-GAMING (from Stage 7):
   9. jerk REMOVED — was literal duplicate of action_rate (r_jerk = r_action_rate)
   10. action_rate reduced -0.05 → -0.01 (sole smoothness penalty)
 
-CURRICULUM (16 levels, 5 phases — one param change per level):
+CURRICULUM (18 levels, 5 phases — one param change per level):
   Phase 1 (L0-4): Standing + Reaching (workspace 0.20→0.45m)
   Phase 2 (L5):   Walk introduction
   Phase 3 (L6-8): Workspace expansion (0.45→0.55m)
-  Phase 4 (L9-12): Precision (10cm→4cm, industry target)
-  Phase 5 (L13-15): Proximity-gated orientation (2.0→1.0 rad)
+  Phase 4 (L9-14): Precision (10→8→7→6→5→4cm, 1cm steps)
+  Phase 5 (L15-17): Proximity-gated orientation (2.0→1.0 rad)
 
 REWARD FIX (2026-02-28): velocity_toward and progress clamp(0,1) instead of
 clamp(-0.5,1). Negative values caused death spiral at L3 — policy got -8 R/step
@@ -146,12 +146,12 @@ CURRICULUM_MIN_WINDOW = 5000    # Need at least 5K samples before checking rate
 ORIENT_GATE_DISTANCE = 0.08  # meters — orient reward only when dist < 8cm
 
 # ============================================================================
-# CURRICULUM (16 levels, 4 phases)
+# CURRICULUM (18 levels, 5 phases)
 # L0-L4: Standing + Reaching (workspace 0.20→0.45m)
 # L5: Walk introduction
 # L6-L8: Walking + workspace expansion (0.45→0.50→0.55m)
-# L9-L12: Precision (threshold 10cm→8cm→6cm→4cm)
-# L13-L15: Proximity-gated orientation (2.0→1.5→1.0 rad)
+# L9-L14: Precision (threshold 10cm→8cm→7cm→6cm→5cm→4cm)
+# L15-L17: Proximity-gated orientation (2.0→1.5→1.0 rad)
 # Rule: change ONE parameter per level (Walk These Ways, CMU 2023)
 # ============================================================================
 
@@ -276,12 +276,12 @@ CURRICULUM = [
         "use_orientation": False,
         "workspace_radius": (0.18, 0.55),  # FULL workspace (G1 arm ~0.60m max)
     },
-    # === PRECISION (L9-L12) — tighten threshold at full workspace ===
-    # Threshold: 10cm → 8cm → 6cm → 4cm (industry target)
+    # === PRECISION (L9-L14) — tighten threshold at full workspace ===
+    # Threshold: 10cm → 8cm → 7cm → 6cm → 5cm → 4cm (1cm steps to prevent collapse)
     {
         "description": "L9: Precision 10cm",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
-        "pos_threshold": 0.10,             # tighten
+        "pos_threshold": 0.10,
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 185,
@@ -305,7 +305,20 @@ CURRICULUM = [
         "workspace_radius": (0.18, 0.55),
     },
     {
-        "description": "L11: Precision 6cm",
+        "description": "L11: Precision 7cm",
+        "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
+        "pos_threshold": 0.07,
+        "min_target_distance": 0.16,
+        "min_displacement": 0.06,
+        "max_reach_steps": 193,
+        "validated_reach_rate": 0.15,
+        "min_validated_reaches": 5000,
+        "min_steps": 3500,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.55),
+    },
+    {
+        "description": "L12: Precision 6cm",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
         "pos_threshold": 0.06,
         "min_target_distance": 0.16,
@@ -318,23 +331,36 @@ CURRICULUM = [
         "workspace_radius": (0.18, 0.55),
     },
     {
-        "description": "L12: Precision 4cm (industry target)",
+        "description": "L13: Precision 5cm",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
-        "pos_threshold": 0.04,             # 4cm = industry standard
+        "pos_threshold": 0.05,
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
-        "max_reach_steps": 200,            # most time for tightest precision
+        "max_reach_steps": 198,
         "validated_reach_rate": 0.15,
         "min_validated_reaches": 5000,
         "min_steps": 4000,
         "use_orientation": False,
         "workspace_radius": (0.18, 0.55),
     },
-    # === PROXIMITY-GATED ORIENTATION (L13-L15) ===
+    {
+        "description": "L14: Precision 4cm (industry target)",
+        "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
+        "pos_threshold": 0.04,             # 4cm = industry standard
+        "min_target_distance": 0.16,
+        "min_displacement": 0.06,
+        "max_reach_steps": 200,
+        "validated_reach_rate": 0.15,
+        "min_validated_reaches": 5000,
+        "min_steps": 4000,
+        "use_orientation": False,
+        "workspace_radius": (0.18, 0.55),
+    },
+    # === PROXIMITY-GATED ORIENTATION (L15-L17) ===
     # Orient reward ONLY when ee_dist < 0.08m (ORIENT_GATE_DISTANCE)
     # r_orient = orient_gate * (1.0 - orient_error / pi)
     {
-        "description": "L13: Orient 2.0 rad (loose, palm_down)",
+        "description": "L15: Orient 2.0 rad (loose, palm_down)",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
         "pos_threshold": 0.04,
         "min_target_distance": 0.16,
@@ -348,7 +374,7 @@ CURRICULUM = [
         "workspace_radius": (0.18, 0.55),
     },
     {
-        "description": "L14: Orient 1.5 rad (medium)",
+        "description": "L16: Orient 1.5 rad (medium)",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
         "pos_threshold": 0.04,
         "min_target_distance": 0.16,
@@ -362,7 +388,7 @@ CURRICULUM = [
         "workspace_radius": (0.18, 0.55),
     },
     {
-        "description": "L15: FINAL — Orient 1.0 rad (tight)",
+        "description": "L17: FINAL — Orient 1.0 rad (tight)",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
         "pos_threshold": 0.04,
         "min_target_distance": 0.16,
@@ -1521,7 +1547,7 @@ def create_env(num_envs, device):
                     phase = "STAND+REACH" if self.curr_level < 5 else (
                         "WALK" if self.curr_level < 6 else (
                         "WORKSPACE" if self.curr_level < 9 else (
-                        "PRECISION" if self.curr_level < 13 else "ORIENT")))
+                        "PRECISION" if self.curr_level < 15 else "ORIENT")))
                     print(f"\n{'='*60}")
                     print(f"  LEVEL UP! Level {self.curr_level}: {new_lv['description']} ({phase})")
                     print(f"  Window Rate: {windowed_rate:.1%} (cumulative: {cumulative_rate:.1%})")
@@ -1648,11 +1674,11 @@ def main():
     print(f"\n{'='*80}")
     print("STARTING STAGE 2: ARM REACHING TRAINING")
     print(f"  Loco: FROZEN (66->15), Arm: FRESH (39->7)")
-    print(f"  Phase 1 (L0-4): Standing + Reaching (workspace 0.20->0.45m)")
-    print(f"  Phase 2 (L5):   Walk introduction")
-    print(f"  Phase 3 (L6-8): Workspace expansion (0.45->0.50->0.55m)")
-    print(f"  Phase 4 (L9-12): Precision (10cm->8cm->6cm->4cm)")
-    print(f"  Phase 5 (L13-15): Proximity-gated orientation (2.0->1.5->1.0 rad)")
+    print(f"  Phase 1 (L0-4):  Standing + Reaching (workspace 0.20->0.45m)")
+    print(f"  Phase 2 (L5):    Walk introduction")
+    print(f"  Phase 3 (L6-8):  Workspace expansion (0.45->0.50->0.55m)")
+    print(f"  Phase 4 (L9-14): Precision (10->8->7->6->5->4cm, 1cm steps)")
+    print(f"  Phase 5 (L15-17): Proximity-gated orientation (2.0->1.5->1.0 rad)")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
@@ -1754,7 +1780,7 @@ def main():
             phase = "P1-Stand" if env.curr_level < 5 else (
                 "P2-Walk" if env.curr_level < 6 else (
                 "P3-WS" if env.curr_level < 9 else (
-                "P4-Prec" if env.curr_level < 13 else "P5-Orient")))
+                "P4-Prec" if env.curr_level < 15 else "P5-Orient")))
 
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_arm_reward:.2f} Best={best_reward:.2f} "
