@@ -278,6 +278,7 @@ CURRICULUM = [
     },
     # === PRECISION (L9-L14) — tighten threshold at full workspace ===
     # Threshold: 10cm → 8cm → 7cm → 6cm → 5cm → 4cm (1cm steps to prevent collapse)
+    # Promotion: WR>20% AND cumulative>10% (stricter than earlier phases — prevents false positives)
     {
         "description": "L9: Precision 10cm",
         "vx": (0.0, 0.35), "vy": (-0.07, 0.07), "vyaw": (-0.13, 0.13),
@@ -285,7 +286,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 185,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,      # stricter for precision phase
         "min_validated_reaches": 5000,
         "min_steps": 3000,
         "use_orientation": False,
@@ -298,7 +299,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 190,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
@@ -311,7 +312,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 193,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
@@ -324,7 +325,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 195,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 3500,
         "use_orientation": False,
@@ -337,7 +338,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 198,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 4000,
         "use_orientation": False,
@@ -350,7 +351,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 200,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 4000,
         "use_orientation": False,
@@ -366,7 +367,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 200,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 4000,
         "orient_threshold": 2.0,           # ~115 deg — very loose
@@ -380,7 +381,7 @@ CURRICULUM = [
         "min_target_distance": 0.16,
         "min_displacement": 0.06,
         "max_reach_steps": 200,
-        "validated_reach_rate": 0.15,
+        "validated_reach_rate": 0.20,
         "min_validated_reaches": 5000,
         "min_steps": 4000,
         "orient_threshold": 1.5,           # ~86 deg
@@ -1537,10 +1538,15 @@ def create_env(num_envs, device):
             else:
                 windowed_rate = self.window_buf[:self.window_count].float().mean().item()
 
-            # Also compute cumulative for logging
+            # Also compute cumulative for logging + double-check
             cumulative_rate = self.stage_validated_reaches / stage_attempts
 
-            if windowed_rate >= lv["validated_reach_rate"]:
+            # Double-check: windowed rate must pass AND cumulative must confirm stability
+            # Precision/orient phases (L9+): cumulative >= 10% required (prevents false positive spikes)
+            # Earlier phases: windowed rate alone is sufficient
+            min_cumulative = 0.10 if self.curr_level >= 9 else 0.0
+
+            if windowed_rate >= lv["validated_reach_rate"] and cumulative_rate >= min_cumulative:
                 if self.curr_level < len(CURRICULUM) - 1:
                     self.curr_level += 1
                     new_lv = CURRICULUM[self.curr_level]
@@ -1553,6 +1559,11 @@ def create_env(num_envs, device):
                     print(f"  Window Rate: {windowed_rate:.1%} (cumulative: {cumulative_rate:.1%})")
                     print(f"  Validated: {self.stage_validated_reaches}, Timed out: {self.stage_timed_out}")
                     print(f"{'='*60}\n")
+            elif windowed_rate >= lv["validated_reach_rate"] and cumulative_rate < min_cumulative:
+                # Windowed passed but cumulative failed — log the block
+                if self.stage_steps % 5000 == 0:
+                    print(f"  [BLOCK] Level {self.curr_level}: WR={windowed_rate:.1%} passed "
+                          f"but cumulative={cumulative_rate:.1%} < {min_cumulative:.0%} — waiting for stability")
                     self.stage_validated_reaches = 0
                     self.stage_timed_out = 0
                     self.stage_steps = 0
