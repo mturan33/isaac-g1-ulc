@@ -64,7 +64,7 @@ LOCO_ACT_DIM = 15
 ARM_OBS_DIM = 39
 ARM_ACT_DIM = 7
 
-# Curriculum from training (for checkpoint level loading) — 10 levels, must match train
+# Curriculum from training (for checkpoint level loading) — 11 levels, MUST match train
 CURRICULUM = [
     # Phase 1: Standing + Reaching (L0-4) — workspace grows to 0.45m
     {"pos_threshold": 0.10, "min_displacement": 0.03, "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.10, 0.20), "orient_threshold": 99.0},
@@ -72,11 +72,12 @@ CURRICULUM = [
     {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.15, 0.32), "orient_threshold": 99.0},
     {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.15, 0.38), "orient_threshold": 99.0},
     {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
-    # Phase 2: Walking + Reaching (L5-7) — workspace grows to 0.55m
+    # Phase 2: Walking + Reaching (L5-8) — 4 levels, workspace grows to 0.55m
     {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
-    {"pos_threshold": 0.05, "min_displacement": 0.06, "max_reach_steps": 165, "use_orientation": False, "workspace_radius": (0.18, 0.50), "orient_threshold": 99.0},
-    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 160, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
-    # Phase 3: Walking + Orientation (L8-9) — 0.55m maintained
+    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
+    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.50), "orient_threshold": 99.0},
+    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 165, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    # Phase 3: Walking + Orientation (L9-10) — 0.55m maintained
     {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 2.0},
     {"pos_threshold": 0.04, "min_displacement": 0.08, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 1.5},
 ]
@@ -94,6 +95,8 @@ def parse_args():
     parser.add_argument("--max_steps", type=int, default=3000)
     parser.add_argument("--no_orient", action="store_true",
                         help="Disable orientation check for reaches")
+    parser.add_argument("--reach_threshold", type=float, default=None,
+                        help="Override pos_threshold (meters). Default: use curriculum level value")
     return parser.parse_args()
 
 args_cli = parse_args()
@@ -104,7 +107,7 @@ simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.utils import configclass
@@ -219,6 +222,24 @@ class DualActorCritic(nn.Module):
 def create_env(num_envs, device):
     @configclass
     class SceneCfg(InteractiveSceneCfg):
+        # Lighting for play visualization
+        dome_light = AssetBaseCfg(
+            prim_path="/World/DomeLight",
+            spawn=sim_utils.DomeLightCfg(
+                intensity=1500.0,
+                color=(0.95, 0.95, 1.0),
+            ),
+        )
+        distant_light = AssetBaseCfg(
+            prim_path="/World/DistantLight",
+            spawn=sim_utils.DistantLightCfg(
+                intensity=3000.0,
+                color=(1.0, 0.98, 0.90),
+            ),
+            init_state=AssetBaseCfg.InitialStateCfg(
+                rot=(0.866, 0.0, 0.5, 0.0),  # angled down ~60 deg
+            ),
+        )
         terrain = TerrainImporterCfg(
             prim_path="/World/ground", terrain_type="plane", collision_group=-1,
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -622,6 +643,10 @@ def main():
     # Set play curriculum from checkpoint level
     env.play_curriculum = CURRICULUM[ckpt_level]
     pos_thresh = env.play_curriculum["pos_threshold"]
+    # CLI override for reach threshold
+    if args_cli.reach_threshold is not None:
+        pos_thresh = args_cli.reach_threshold
+        print(f"  [Override] pos_threshold: {env.play_curriculum['pos_threshold']} -> {pos_thresh}")
     use_orient = env.play_curriculum["use_orientation"] and not args_cli.no_orient
     orient_thresh = env.play_curriculum.get("orient_threshold", 99.0)
     min_disp = env.play_curriculum["min_displacement"]
