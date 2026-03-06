@@ -64,22 +64,29 @@ LOCO_ACT_DIM = 15
 ARM_OBS_DIM = 39
 ARM_ACT_DIM = 7
 
-# Curriculum from training (for checkpoint level loading) — 11 levels, MUST match train
+# Curriculum from training (for checkpoint level loading) — 16 levels, MUST match train
 CURRICULUM = [
-    # Phase 1: Standing + Reaching (L0-4) — workspace grows to 0.45m
+    # Phase 1: Standing + Reaching (L0-4)
     {"pos_threshold": 0.10, "min_displacement": 0.03, "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.10, 0.20), "orient_threshold": 99.0},
     {"pos_threshold": 0.08, "min_displacement": 0.04, "max_reach_steps": 190, "use_orientation": False, "workspace_radius": (0.12, 0.25), "orient_threshold": 99.0},
     {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.15, 0.32), "orient_threshold": 99.0},
     {"pos_threshold": 0.07, "min_displacement": 0.05, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.15, 0.38), "orient_threshold": 99.0},
     {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
-    # Phase 2: Walking + Reaching (L5-8) — 4 levels, workspace grows to 0.55m
+    # Phase 2: Walk introduction (L5)
     {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
-    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
-    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.50), "orient_threshold": 99.0},
-    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 165, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
-    # Phase 3: Walking + Orientation (L9-10) — 0.55m maintained
-    {"pos_threshold": 0.05, "min_displacement": 0.07, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 2.0},
-    {"pos_threshold": 0.04, "min_displacement": 0.08, "max_reach_steps": 160, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 1.5},
+    # Phase 3: Workspace expansion (L6-L8)
+    {"pos_threshold": 0.12, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
+    {"pos_threshold": 0.12, "min_displacement": 0.06, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.18, 0.50), "orient_threshold": 99.0},
+    {"pos_threshold": 0.12, "min_displacement": 0.06, "max_reach_steps": 185, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    # Phase 4: Precision (L9-L12)
+    {"pos_threshold": 0.10, "min_displacement": 0.06, "max_reach_steps": 185, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    {"pos_threshold": 0.08, "min_displacement": 0.06, "max_reach_steps": 190, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 195, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    # Phase 5: Proximity-gated orientation (L13-L15)
+    {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 2.0},
+    {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 1.5},
+    {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 1.0},
 ]
 
 # ============================================================================
