@@ -64,7 +64,7 @@ LOCO_ACT_DIM = 15
 ARM_OBS_DIM = 39
 ARM_ACT_DIM = 7
 
-# Curriculum from training (for checkpoint level loading) — 16 levels, MUST match train
+# Curriculum from training (for checkpoint level loading) — 18 levels, MUST match train
 CURRICULUM = [
     # Phase 1: Standing + Reaching (L0-4)
     {"pos_threshold": 0.10, "min_displacement": 0.03, "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.10, 0.20), "orient_threshold": 99.0},
@@ -78,12 +78,14 @@ CURRICULUM = [
     {"pos_threshold": 0.12, "min_displacement": 0.06, "max_reach_steps": 175, "use_orientation": False, "workspace_radius": (0.18, 0.45), "orient_threshold": 99.0},
     {"pos_threshold": 0.12, "min_displacement": 0.06, "max_reach_steps": 180, "use_orientation": False, "workspace_radius": (0.18, 0.50), "orient_threshold": 99.0},
     {"pos_threshold": 0.12, "min_displacement": 0.06, "max_reach_steps": 185, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
-    # Phase 4: Precision (L9-L12)
+    # Phase 4: Precision (L9-L14) — 1cm steps to prevent catastrophic forgetting
     {"pos_threshold": 0.10, "min_displacement": 0.06, "max_reach_steps": 185, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
     {"pos_threshold": 0.08, "min_displacement": 0.06, "max_reach_steps": 190, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    {"pos_threshold": 0.07, "min_displacement": 0.06, "max_reach_steps": 193, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
     {"pos_threshold": 0.06, "min_displacement": 0.06, "max_reach_steps": 195, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
+    {"pos_threshold": 0.05, "min_displacement": 0.06, "max_reach_steps": 198, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
     {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": False, "workspace_radius": (0.18, 0.55), "orient_threshold": 99.0},
-    # Phase 5: Proximity-gated orientation (L13-L15)
+    # Phase 5: Proximity-gated orientation (L15-L17)
     {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 2.0},
     {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 1.5},
     {"pos_threshold": 0.04, "min_displacement": 0.06, "max_reach_steps": 200, "use_orientation": True, "workspace_radius": (0.18, 0.55), "orient_threshold": 1.0},
