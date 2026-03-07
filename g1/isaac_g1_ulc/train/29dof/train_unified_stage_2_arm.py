@@ -123,7 +123,7 @@ ARM_REWARD_WEIGHTS = {
     "proximity_bonus": 1.0,    # Tiered zones: +1 at 0.15m, +2 at 0.10m, +5 at 0.05m
     "reach_bonus": 1.0,        # Sparse bonus per validated reach (multiplied by REACH_BONUS_VALUE)
     # --- Existing penalties (REBALANCED) ---
-    "orient": 3.0,             # palm orientation (Level 8+ only)
+    "orient": 6.0,             # palm orientation — increased from 3.0 for stronger orient gradient at L15+
     "left_arm_dev": -0.5,      # KEEP — physics coupling causes left arm deviation
     "stillness_penalty": -2.0, # Was -0.5, now match Stage 7 (4x stronger, exp(-20))
     "action_rate": -0.02,      # Slightly up from -0.01, still safe with arm_diff clamp
@@ -143,7 +143,7 @@ CURRICULUM_WINDOW_SIZE = 50000  # Check rate over last 50K attempts (ring buffer
 CURRICULUM_MIN_WINDOW = 5000    # Need at least 5K samples before checking rate
 
 # Orient gate: only reward orientation when CLOSE to target (prevents orient-only collapse)
-ORIENT_GATE_DISTANCE = 0.08  # meters — orient reward only when dist < 8cm
+ORIENT_GATE_DISTANCE = 0.15  # meters — orient reward only when dist < 15cm (widened from 8cm for stronger gradient)
 
 # ============================================================================
 # CURRICULUM (18 levels, 5 phases)
@@ -1559,11 +1559,7 @@ def create_env(num_envs, device):
                     print(f"  Window Rate: {windowed_rate:.1%} (cumulative: {cumulative_rate:.1%})")
                     print(f"  Validated: {self.stage_validated_reaches}, Timed out: {self.stage_timed_out}")
                     print(f"{'='*60}\n")
-            elif windowed_rate >= lv["validated_reach_rate"] and cumulative_rate < min_cumulative:
-                # Windowed passed but cumulative failed — log the block
-                if self.stage_steps % 5000 == 0:
-                    print(f"  [BLOCK] Level {self.curr_level}: WR={windowed_rate:.1%} passed "
-                          f"but cumulative={cumulative_rate:.1%} < {min_cumulative:.0%} — waiting for stability")
+                    # Reset stage counters for new level (MUST be inside promotion block!)
                     self.stage_validated_reaches = 0
                     self.stage_timed_out = 0
                     self.stage_steps = 0
@@ -1574,6 +1570,11 @@ def create_env(num_envs, device):
                     # Resample all targets for new level
                     self._sample_targets(torch.arange(self.num_envs, device=self.device))
                     self._sample_vel_commands(torch.arange(self.num_envs, device=self.device))
+            elif windowed_rate >= lv["validated_reach_rate"] and cumulative_rate < min_cumulative:
+                # Windowed passed but cumulative failed — log the block
+                if self.stage_steps % 5000 == 0:
+                    print(f"  [BLOCK] Level {self.curr_level}: WR={windowed_rate:.1%} passed "
+                          f"but cumulative={cumulative_rate:.1%} < {min_cumulative:.0%} — waiting for stability")
 
     return Stage2ArmEnv(EnvCfg())
 
