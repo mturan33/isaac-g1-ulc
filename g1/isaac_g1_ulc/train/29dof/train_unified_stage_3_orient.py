@@ -540,33 +540,58 @@ def create_env(num_envs, device):
             ),
             actuators={
                 "legs": ImplicitActuatorCfg(
-                    joint_names_expr=LEG_JOINT_NAMES,
-                    **ACTUATOR_PARAMS["legs"],
+                    joint_names_expr=[
+                        ".*_hip_yaw_joint", ".*_hip_roll_joint",
+                        ".*_hip_pitch_joint", ".*_knee_joint", ".*waist.*",
+                    ],
+                    effort_limit_sim=ACTUATOR_PARAMS["legs"]["effort_limit"],
+                    velocity_limit_sim=ACTUATOR_PARAMS["legs"]["velocity_limit"],
+                    stiffness=ACTUATOR_PARAMS["legs"]["stiffness"],
+                    damping=ACTUATOR_PARAMS["legs"]["damping"],
+                    armature=ACTUATOR_PARAMS["legs"]["armature"],
                 ),
                 "feet": ImplicitActuatorCfg(
-                    joint_names_expr=["left_ankle_pitch_joint", "right_ankle_pitch_joint",
-                                     "left_ankle_roll_joint", "right_ankle_roll_joint"],
-                    **ACTUATOR_PARAMS["feet"],
+                    joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+                    effort_limit_sim=ACTUATOR_PARAMS["feet"]["effort_limit"],
+                    velocity_limit_sim=ACTUATOR_PARAMS["feet"]["velocity_limit"],
+                    stiffness=ACTUATOR_PARAMS["feet"]["stiffness"],
+                    damping=ACTUATOR_PARAMS["feet"]["damping"],
+                    armature=ACTUATOR_PARAMS["feet"]["armature"],
                 ),
                 "shoulders": ImplicitActuatorCfg(
-                    joint_names_expr=["left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
-                                     "left_shoulder_roll_joint", "right_shoulder_roll_joint",
-                                     "left_shoulder_yaw_joint", "right_shoulder_yaw_joint"],
-                    **ACTUATOR_PARAMS["shoulders"],
+                    joint_names_expr=[".*_shoulder_pitch_joint", ".*_shoulder_roll_joint"],
+                    effort_limit_sim=ACTUATOR_PARAMS["shoulders"]["effort_limit"],
+                    velocity_limit_sim=ACTUATOR_PARAMS["shoulders"]["velocity_limit"],
+                    stiffness=ACTUATOR_PARAMS["shoulders"]["stiffness"],
+                    damping=ACTUATOR_PARAMS["shoulders"]["damping"],
+                    armature=ACTUATOR_PARAMS["shoulders"]["armature"],
                 ),
                 "arms": ImplicitActuatorCfg(
-                    joint_names_expr=["left_elbow_joint", "right_elbow_joint"],
-                    **ACTUATOR_PARAMS["arms"],
+                    joint_names_expr=[".*_shoulder_yaw_joint", ".*_elbow_joint"],
+                    effort_limit_sim=ACTUATOR_PARAMS["arms"]["effort_limit"],
+                    velocity_limit_sim=ACTUATOR_PARAMS["arms"]["velocity_limit"],
+                    stiffness=ACTUATOR_PARAMS["arms"]["stiffness"],
+                    damping=ACTUATOR_PARAMS["arms"]["damping"],
+                    armature=ACTUATOR_PARAMS["arms"]["armature"],
                 ),
-                "wrists": ImplicitActuatorCfg(
-                    joint_names_expr=["left_wrist_roll_joint", "right_wrist_roll_joint",
-                                     "left_wrist_pitch_joint", "right_wrist_pitch_joint",
-                                     "left_wrist_yaw_joint", "right_wrist_yaw_joint"],
-                    **ACTUATOR_PARAMS["wrists"],
+                "wrist": ImplicitActuatorCfg(
+                    joint_names_expr=[".*_wrist_.*"],
+                    effort_limit_sim=ACTUATOR_PARAMS["wrist"]["effort_limit"],
+                    velocity_limit_sim=ACTUATOR_PARAMS["wrist"]["velocity_limit"],
+                    stiffness=ACTUATOR_PARAMS["wrist"]["stiffness"],
+                    damping=ACTUATOR_PARAMS["wrist"]["damping"],
+                    armature=ACTUATOR_PARAMS["wrist"]["armature"],
                 ),
                 "hands": ImplicitActuatorCfg(
-                    joint_names_expr=HAND_JOINT_NAMES,
-                    **ACTUATOR_PARAMS["hands"],
+                    joint_names_expr=[
+                        ".*_hand_index_.*_joint", ".*_hand_middle_.*_joint",
+                        ".*_hand_thumb_.*_joint",
+                    ],
+                    effort_limit=ACTUATOR_PARAMS["hands"]["effort_limit"],
+                    velocity_limit=ACTUATOR_PARAMS["hands"]["velocity_limit"],
+                    stiffness={".*": ACTUATOR_PARAMS["hands"]["stiffness"]},
+                    damping={".*": ACTUATOR_PARAMS["hands"]["damping"]},
+                    armature={".*": ACTUATOR_PARAMS["hands"]["armature"]},
                 ),
             },
         )
@@ -1158,6 +1183,9 @@ def create_env(num_envs, device):
             terminated = terminated | self.reach_terminated
             truncated = torch.zeros_like(terminated)
             return terminated, truncated
+
+        def _apply_action(self):
+            pass
 
         # ================================================================
         # RESET
