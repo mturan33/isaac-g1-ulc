@@ -123,7 +123,7 @@ ARM_REWARD_WEIGHTS = {
     "proximity_bonus": 1.0,    # Tiered zones: +1 at 0.15m, +2 at 0.10m, +5 at 0.05m
     "reach_bonus": 1.0,        # Sparse bonus per validated reach (multiplied by REACH_BONUS_VALUE)
     # --- Existing penalties (REBALANCED) ---
-    "orient": 6.0,             # palm orientation — increased from 3.0 for stronger orient gradient at L15+
+    "orient": 3.0,             # palm orientation (Level 15+ only, proximity-gated)
     "left_arm_dev": -0.5,      # KEEP — physics coupling causes left arm deviation
     "stillness_penalty": -2.0, # Was -0.5, now match Stage 7 (4x stronger, exp(-20))
     "action_rate": -0.02,      # Slightly up from -0.01, still safe with arm_diff clamp
@@ -143,7 +143,7 @@ CURRICULUM_WINDOW_SIZE = 50000  # Check rate over last 50K attempts (ring buffer
 CURRICULUM_MIN_WINDOW = 5000    # Need at least 5K samples before checking rate
 
 # Orient gate: only reward orientation when CLOSE to target (prevents orient-only collapse)
-ORIENT_GATE_DISTANCE = 0.15  # meters — orient reward only when dist < 15cm (widened from 8cm for stronger gradient)
+ORIENT_GATE_DISTANCE = 0.08  # meters — orient reward only when dist < 8cm
 
 # ============================================================================
 # CURRICULUM (18 levels, 5 phases)
