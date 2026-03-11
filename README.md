@@ -1,145 +1,277 @@
-# G1 ULC System
+# G1 Hierarchical VLM-ULC System
 
-**Unified Loco-manipulation Control for the Unitree G1 Humanoid Robot**
+**Unified Loco-manipulation Control for the Unitree G1 Humanoid Robot with Vision-Language Model Integration**
 
 > **Research in progress -- paper in preparation.**
 > If you use any part of this codebase, architecture, or methodology, citation is required.
 > Contact the author for collaboration inquiries.
 
-![g1_stage7_reaching_showcase](https://github.com/user-attachments/assets/02d2cf0d-8824-4902-83b7-182d885d0143)
-
-[https://github.com/mturan33/isaac-g1-ulc-vlm/blob/main/g1_stage7_reaching_showcase.mp4]
-
 ---
 
 ## Overview
 
-A hierarchical reinforcement learning system for whole-body loco-manipulation on the Unitree G1 humanoid robot. The robot learns to walk, balance, and reach arbitrary 3D targets through a sequential curriculum trained entirely in simulation using NVIDIA Isaac Lab.
+A hierarchical reinforcement learning system for whole-body loco-manipulation on the Unitree G1 humanoid robot (29DoF + DEX3 hands, 43 joints total). The robot learns to walk, balance, and reach arbitrary 3D targets through a sequential curriculum trained entirely in simulation using NVIDIA Isaac Lab.
 
-The low-level controller (ULC) uses a Dual Actor-Critic PPO architecture: a frozen locomotion policy maintains stable bipedal walking while a separately trained arm policy learns to reach targets across the full workspace. An anti-gaming curriculum ensures the arm actively moves toward targets rather than exploiting resampling luck.
-
-A Vision-Language Model layer (planned) will sit on top to enable semantic task execution such as "touch the red ball."
+The system uses a **Separate Policy, Separate Obs** architecture (literature standard: SayCan, Berkeley, SoFTA, Mobile-TeleVision). Each policy has its own observation space, reward function, and PPO update. Previous policies are frozen during subsequent training.
 
 ```
                     HIERARCHICAL ARCHITECTURE
 
-  VLM Layer          "Touch the red ball"
+  VLM Layer          "Pick up the red cup"
   (Florence-2)    -> Target: {position, orientation}     ~1 Hz
        |
-  ULC Policy      <- vel_cmd + arm_target + height_cmd
-  (Dual PPO)      -> Joint actions (17 DoF)              50 Hz
+  Triple AC       <- vel_cmd + arm_target + hand_cmd
+  (Separate PPO)  -> Joint actions (43 DoF)              50 Hz
        |
-  Unitree G1         12 leg joints + 5 arm joints
+  Unitree G1         12 leg + 3 waist + 14 arm + 14 finger
 ```
 
 ---
 
-## Key Results (Stage 7)
+## Key Results
 
+### Stage 1: Omnidirectional Locomotion
 | Metric | Value |
 |--------|-------|
-| Validated reaches | 297 in 3000 steps (60s) |
-| Success rate | 100% |
-| Workspace | 18--40 cm spherical shell around shoulder |
-| Avg reach distance | 0.068 m |
-| Avg EE displacement | 0.184 m |
-| Training throughput | ~17,000 steps/s with 4096 parallel envs |
+| Obs/Act | 66 / 15 (12 leg + 3 waist) |
+| Curriculum | 9 levels (standing -> omni walk -> push robustness) |
+| Velocity range | vx: -0.3~1.0, vy: +-0.4, vyaw: +-1.0 |
+
+### Stage 2: Arm Position Reaching
+| Metric | Value |
+|--------|-------|
+| Obs/Act | 39 / 7 (right arm) |
+| Validated reach rate | 86.9% (play, 1 env) |
+| Avg reach distance | 3.08 cm (< 4 cm industry target) |
+| Avg EE displacement | 21.9 cm |
+| Workspace | ~55 cm reach, spherical shell around shoulder |
+| Falls | 0 in 3000 steps |
+
+### Stage 3: Orientation Fine-Tune (Failed -- Decommissioned)
+| Metric | Value |
+|--------|-------|
+| Orient error | ~2.18 rad (no improvement from Stage 2) |
+| Position | Preserved (4.4 cm) but orient not learnable via RL |
+| Conclusion | Heuristic wrist control or grasp-policy orientation needed |
 
 ---
 
-## Training Curriculum
+## Training Pipeline (29DoF -- Active)
 
-The system is trained through a sequential curriculum where each stage loads the previous checkpoint and adds new control complexity.
+Each stage loads the previous checkpoint. Policies are trained sequentially with frozen predecessors.
 
-| Stage | Task | Architecture | Obs | Act | Status |
-|-------|------|-------------|-----|-----|--------|
-| 1 | Standing (height control) | Single Actor-Critic | 45 | 12 | Complete |
-| 2 | Bipedal locomotion | Single Actor-Critic | 51 | 12 | Complete |
-| 3 | Torso control (pitch/roll/yaw) | Single Actor-Critic | 57 | 12 | Complete |
-| 4 | Fixed-base arm reaching | Single Actor-Critic | 77 | 22 | Complete |
-| 5 | Arm reaching (workspace mapping) | Single Actor-Critic | 77 | 22 | Complete |
-| 6 | Loco-manipulation | Dual Actor-Critic | 57+52 | 17 | Complete (gaming detected) |
-| 7 | Anti-gaming arm reaching | Dual AC (loco frozen) | 57+55 | 17 | **Complete** |
-| 8 | Orientation control | Planned | -- | -- | Planned |
-| VLM | Semantic task execution | Planned | -- | -- | Planned |
-
-### Stage 6: Loco-Manipulation (Dual Actor-Critic)
-
-Introduces separate actor-critic networks for locomotion and arm control with independent reward functions, GAE computation, and PPO updates.
-
-```
-LocoActor (57 -> 12 leg actions)   + LocoCritic (57 -> 1)
-ArmActor  (52 -> 5 arm actions)    + ArmCritic  (52 -> 1)
-```
-
-A 13-level curriculum progresses from standing+reaching through walking+reaching to variable end-effector orientation control. **Problem discovered:** the robot learned to stay still and let targets resample nearby by chance rather than actively reaching (curriculum gaming).
-
-### Stage 7: Anti-Gaming Arm Reaching
-
-Freezes the locomotion policy from Stage 6 and retrains the arm policy from scratch with five anti-gaming mechanisms:
-
-1. **Absolute-only target sampling** with minimum distance enforcement
-2. **3-condition reach validation:** position threshold + EE displacement + time limit
-3. **Validated reach rate** for curriculum advancement (not total count)
-4. **Movement-centric rewards:** velocity-toward-target, progress, stillness penalty
-5. **Gaming detection:** refuses to advance if timeout rate exceeds 90%
-
-The arm observation space is extended to 55 dimensions (52 base + steps_since_spawn, ee_displacement, initial_distance).
+| Stage | Task | Policy | Obs | Act | Status |
+|-------|------|--------|-----|-----|--------|
+| 1 | Omnidirectional locomotion | LocoAC | 66 | 15 | **Complete** |
+| 2 | Arm position reaching | ArmAC (loco frozen) | 39 | 7 | **Complete** |
+| 3 | Orientation fine-tune | ArmAC (critic reset) | 39 | 7 | Failed |
+| 4 | Hand grasping | HandAC (loco+arm frozen) | ~50 | 14 | Planned |
+| 5 | Skill chaining | Full pipeline | -- | -- | Planned |
+| VLM | Semantic task execution | Florence-2 + skills | -- | -- | Planned |
 
 ---
 
-## Dual Actor-Critic Architecture
+## Triple Actor-Critic Architecture
 
 ```
-                   Observation (112 dim)
-                  /                     \
-         Loco obs (57)             Arm obs (55)
-              |                         |
-    LocoActor [512,256,128]    ArmActor [256,256,128]
-    LayerNorm + ELU            ELU (no LayerNorm)
-              |                         |
-       12 leg actions             5 arm actions
-              |                         |
-               \                       /
-                Combined (17 actions)
-                        |
-                    Unitree G1
+LocoAC  (66 -> 15)  [512,256,128] + LayerNorm + ELU  -- Legs + waist
+ArmAC   (39 -> 7)   [256,256,128] + ELU               -- Right arm (7 joints)
+HandAC  (~50 -> 14)  [256,128,64] + ELU               -- DEX3 fingers (planned)
 ```
 
+- Each policy has its **own obs space** (no shared/unified obs)
 - **Legs:** Direct position control -- `leg_targets = default_pose + scale * policy_output`
-- **Arms:** Residual actions -- `arm_targets = arm_commands + scale * tanh(policy_output)`
-- Locomotion branch is fully frozen (`requires_grad=False`) during Stage 7
-- Arm branch uses high initial exploration (`log_std = log(0.8)`)
-
----
-
-## Workspace Definition
-
-Targets are sampled in a spherical shell around the right shoulder in the robot's body frame:
-
-- **Radius:** 18--40 cm (inner limit from physical reachability)
-- **Azimuth:** [-0.3, 1.2] rad (front-right region)
-- **Elevation:** [-0.4, 0.6] rad (below shoulder to above head)
-- **Coordinate system:** -X = forward, -Y = right (G1 convention, inverted from standard)
-
-```
-     -X (FRONT)
-          |
-   -Y ----+---- +Y
-          |
-     +X (BACK)
-```
+- **Arms:** Residual actions -- `arm_targets = default_arm + scale * policy_output`
+- Inference: `full_action = cat(loco_act, arm_act, hand_act)` -> env.step()
 
 ---
 
 ## Tech Stack
 
 - **Simulation:** NVIDIA Isaac Lab 2.3.1, Isaac Sim 5.1.0
-- **RL:** RSL-RL, PyTorch, PPO (Proximal Policy Optimization)
+- **RL:** Custom PPO (PyTorch), Dual/Triple Actor-Critic
 - **VLM (planned):** Florence-2 / Molmo2
-- **Robot:** Unitree G1 (29 DoF, 22 DoF policy output)
+- **Robot:** Unitree G1 29DoF + DEX3 (43 joints: 12 legs + 3 waist + 14 arms + 14 fingers)
 - **Hardware:** NVIDIA RTX 5070 Ti (12 GB VRAM), Intel i9-13900HX, 32 GB RAM
-- **Platform:** Windows 11 Pro, Python 3.10
+- **Training:** 4096 parallel envs, ~17K steps/sec
+- **Platform:** Windows 11 Pro, Python 3.10 (Anaconda env: env_isaaclab)
+
+---
+
+## Commands
+
+All commands run from `C:\IsaacLab` with conda env `env_isaaclab` activated.
+
+```powershell
+cd C:\IsaacLab
+conda activate env_isaaclab
+```
+
+### 29DoF Pipeline (Active)
+
+#### PLAY (Evaluation)
+
+**Stage 1: Omnidirectional Locomotion**
+Modes: `--mode walk`, `--mode mixed`, `--mode push`
+```powershell
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_unified_stage_1.py --checkpoint logs/ulc/g1_unified_stage1_2026-02-27_00-05-20/model_best.pt --num_envs 1 --mode mixed
+```
+
+**Stage 2: Arm Position Reaching (< 4cm, 55cm reach)**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_unified_stage_2_arm.py --checkpoint logs/ulc/g1_stage2_arm_2026-03-06_18-51-31/model_best.pt --num_envs 1 --mode standing --no_orient
+```
+
+**Stage 3: Orient Fine-Tune (Failed -- decommissioned)**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_unified_stage_3_orient.py --checkpoint logs/ulc/g1_stage3_orient_2026-03-09_13-20-39/model_best.pt --num_envs 1 --mode standing
+```
+
+#### TRAIN
+
+**Stage 1: Locomotion (from scratch)**
+```powershell
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/29dof/train_unified_stage_1.py --num_envs 4096 --max_iterations 50000 --headless
+```
+
+**Stage 2: Arm Reaching (from Stage 1 checkpoint)**
+```powershell
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/29dof/train_unified_stage_2_arm.py --stage1_checkpoint logs/ulc/g1_unified_stage1_2026-02-27_00-05-20/model_best.pt --num_envs 4096 --max_iterations 30000 --headless
+```
+
+**Stage 3: Orient Fine-Tune (from Stage 2 checkpoint -- failed experiment)**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\29dof\train_unified_stage_3_orient.py --stage2_checkpoint logs/ulc/g1_stage2_arm_2026-03-06_18-51-31/model_best.pt --orient_weight 2.0 --num_envs 4096 --max_iterations 20000 --headless
+```
+
+### Hierarchical VLM+RL
+
+**Loco+Arm Hierarchical Test**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\high_low_hierarchical_g1\scripts\test_hierarchical.py --num_envs 4 --max_steps 3000 --checkpoint C:\IsaacLab\logs\ulc\g1_unified_stage1_2026-02-27_00-05-20\model_best.pt --arm_checkpoint C:\IsaacLab\logs\ulc\ulc_g1_stage7_antigaming_2026-02-06_17-41-47\model_best.pt
+```
+
+**VLM Planning Demo**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\high_low_hierarchical_g1\scripts\demo_vlm_planning.py --num_envs 4 --checkpoint C:\IsaacLab\logs\ulc\g1_unified_stage1_2026-02-27_00-05-20\model_best.pt --arm_checkpoint C:\IsaacLab\logs\ulc\ulc_g1_stage7_antigaming_2026-02-06_17-41-47\model_best.pt --task "Pick up the red cup and place it on the second table" --planner simple
+```
+
+### TensorBoard
+
+```powershell
+tensorboard --logdir logs/
+```
+
+### Legacy 23DoF Pipeline (Archive)
+
+<details>
+<summary>Click to expand legacy commands</summary>
+
+#### PLAY (Legacy)
+
+**Stage 1: Standing**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_1.py --checkpoint logs\ulc\ulc_g1_stage1_2026-01-05_17-27-57\model_best.pt --num_envs 4
+```
+
+**Stage 2: Walking**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_2.py --checkpoint logs\ulc\ulc_g1_stage2_v2_2026-01-08_16-42-40\model_best.pt --num_envs 4 --vx 0.5
+```
+
+**Stage 3: Torso Control**
+```powershell
+# Forward lean
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_3.py --checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt --num_envs 4 --vx 0.0 --pitch -0.35
+
+# Walking + lean
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_3.py --checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt --num_envs 4 --vx 0.3 --pitch -0.2
+
+# Side lean
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_3.py --checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt --num_envs 4 --vx 0.2 --roll 0.15
+```
+
+**Stage 4: Dual Policy Arm Control**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_4_arm_dual.py
+```
+
+**Stage 5: Arm Reaching**
+```powershell
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_ulc_stage_5_arm.py --checkpoint logs/ulc/g1_arm_reach_2026-01-22_14-06-41/model_19998.pt --num_envs 1
+```
+
+**Stage 5.5: Combined Loco+Arm**
+```powershell
+$env:PROJECT_ROOT = "C:\unitree_sim_isaaclab"
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_5.5_both.py --loco_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt --arm_checkpoint logs/ulc/g1_arm_reach_2026-01-22_14-06-41/model_19998.pt --num_envs 1 --vx 0.0
+```
+
+**Stage 6: Loco-Manipulation (Gaming detected)**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_6_simplified.py --checkpoint logs/ulc/ulc_g1_stage6_simplified_2026-02-04_23-41-18/model_best.pt --num_envs 4 --mode walking
+```
+
+**Stage 7: Anti-Gaming Arm Reaching**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_7.py --checkpoint logs\ulc\ulc_g1_stage7_antigaming_2026-02-06_17-41-47\model_best.pt --num_envs 1 --mode walking
+```
+
+**Paper Video Mode (30s+30s)**
+```powershell
+# Stage 7 paper demo
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_7.py --checkpoint logs\ulc\ulc_g1_stage7_antigaming_2026-02-06_17-41-47\model_best.pt --mode paper
+
+# Stage 6 gaming demo
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_ulc_stage_6_unified.py --checkpoint logs/ulc/ulc_g1_stage6_complete_2026-01-31_20-49-39/model_final.pt --loco_checkpoint logs/ulc/ulc_g1_stage7_antigaming_2026-02-06_17-41-47/model_best.pt --mode paper
+```
+
+#### TRAIN (Legacy)
+
+**Stage 1-3: Standing -> Walking -> Torso**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_ulc.py --num_envs 4096 --headless --max_iterations 1500
+
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_ulc_stage_2.py --num_envs 4096 --headless --max_iterations 6000 --stage1_checkpoint logs/ulc/ulc_g1_stage1_2026-01-05_17-27-57/model_best.pt
+
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_ulc_stage_3.py --stage2_checkpoint logs/ulc/ulc_g1_stage2_v2_2026-01-08_16-42-40/model_best.pt --num_envs 4096 --headless --max_iterations 4000
+```
+
+**Stage 4-5: Arm Control**
+```powershell
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_4_arm.py --num_envs 4096 --max_iterations 5000 --headless
+
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/train_ulc_stage_5_arm_full.py --num_envs 2048 --max_iterations 15000 --headless
+```
+
+**Stage 6-8: Loco-Manipulation**
+```powershell
+$env:PROJECT_ROOT = "C:\unitree_sim_isaaclab"
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_ulc_stage_6_simplified.py --stage3_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt --num_envs 2048 --max_iterations 30000 --headless
+
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_ulc_stage_7.py --stage3_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt --num_envs 2048 --max_iterations 30000 --headless
+
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_ulc_stage_8.py --stage3_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt --num_envs 2048 --max_iterations 30000 --headless
+```
+
+</details>
+
+---
+
+## Task Difficulty Reference
+
+| Task | Difficulty | Isaac Lab Feasible | Priority |
+|------|-----------|-------------------|----------|
+| Pick-place | Easy | Yes | High |
+| Drawer opening | Easy | Yes | High |
+| Door opening (lever) | Hard | Yes | High |
+| Window cleaning | Medium | Yes | Medium |
+| Sock inside-out | Medium | Cloth sim needed | Low |
+| Pan washing | Hard | Fluid sim needed | Low |
+| Key -> Lock | Very Hard | Difficult | Low |
+| Peanut butter sandwich | Very Long | No | Low |
+
+> Note: Even pi-0.5 fails when trained "from scratch" (VLM initialization). Fine-tuning is required.
 
 ---
 
@@ -150,7 +282,8 @@ g1/isaac_g1_ulc/
   config/                  Environment and scene configuration
   curriculum/              Sequential curriculum definitions
   envs/                    RL environments (ULC, arm reach, dual arm)
-  train/                   Training scripts per stage
+  train/
+    29dof/                 Active 29DoF training scripts (Stage 1-3)
   play/                    Evaluation and demo scripts
   rewards/                 Modular reward functions
   utils/                   COM tracker, quintic interpolator, delay buffer
@@ -165,36 +298,35 @@ external/                  Hardware integration (DDS, action provider)
 
 ---
 
-## Quick Start
+## Lessons Learned
 
-All commands run from the Isaac Lab root directory.
-
-```bash
-# Stage 7 training (from Stage 6 checkpoint)
-./isaaclab.bat -p source/isaaclab_tasks/.../train/train_ulc_stage_7.py \
-    --stage6_checkpoint logs/ulc/.../model_best.pt \
-    --num_envs 4096 --headless
-
-# Evaluation (position reaching, no orientation check)
-./isaaclab.bat -p source/isaaclab_tasks/.../play/play_ulc_stage_7.py \
-    --checkpoint logs/ulc/.../model_best.pt \
-    --num_envs 1 --mode standing --no_orient
-
-# Showcase demo with video recording
-./isaaclab.bat -p source/isaaclab_tasks/.../play/play_ulc_stage_7.py \
-    --checkpoint logs/ulc/.../model_best.pt \
-    --mode showcase --record --record_duration 10
-```
+- **Separate policy, separate obs is essential.** Unified 188-dim obs (65% zeros) caused LayerNorm pollution and gradient dilution. 1 month of failed V1-V5.2. Each policy must define its own obs space.
+- **Curriculum gaming is real.** Proximity rewards + smoothness penalties incentivize stillness. Movement-centric rewards (velocity toward target, progress) and 3-condition reach validation are essential.
+- **Multi-task needs multi-critic.** A single critic receiving mixed signals produces noisy value estimates. Separate critics with separate GAE and PPO updates work much better.
+- **Never change reward weights mid-training.** Changing orient weight from 3.0 to 6.0 on a trained checkpoint caused catastrophic position collapse (4.3cm -> 35cm). The critic's value landscape was invalidated.
+- **Critic reset preserves position.** Resetting the critic to Xavier init while loading actor weights from a previous stage avoids reward scale mismatch. Position precision was fully preserved.
+- **Orientation is not learnable with small gate.** ORIENT_GATE_DISTANCE=0.08m means orient reward only fires within 8cm of target, just before episode terminates. Two experiments (orient_weight 0.5 and 2.0) both failed. OrErr stuck at ~2.18 rad.
+- **Training-play consistency matters.** Observation thresholds, action scales, and workspace definitions must match exactly between training and evaluation.
 
 ---
 
-## Lessons Learned
+## Checkpoints
 
-- **Curriculum gaming is real.** Proximity rewards combined with smoothness penalties incentivize stillness. Movement-centric rewards (velocity toward target, progress tracking) are essential.
-- **Multi-task needs multi-critic.** A single critic receiving mixed locomotion and arm signals produces noisy value estimates. Separate critics with separate GAE and PPO updates work much better.
-- **Reach validation needs three conditions.** Position threshold alone is insufficient -- EE displacement and time limits prevent counting lucky spawns as genuine reaches.
-- **Training-play consistency matters.** Observation thresholds, action scales, and workspace definitions must match exactly between training and evaluation. A 0.04 m vs 0.08 m mismatch in the `target_reached` observation caused the policy to receive incorrect signals.
-- **Orientation is much harder than position.** The arm policy learned reliable position reaching but failed to learn palm orientation. Statistical success in 4096 parallel environments does not transfer to single-environment evaluation.
+| Stage | Checkpoint | Key Metrics |
+|-------|-----------|-------------|
+| Stage 1 (Loco) | `logs/ulc/g1_unified_stage1_2026-02-27_00-05-20/model_best.pt` | 9-level curriculum complete |
+| Stage 2 (Arm) | `logs/ulc/g1_stage2_arm_2026-03-06_18-51-31/model_best.pt` | EE=3.08cm, 86.9% rate |
+| Stage 3 (Orient) | `logs/ulc/g1_stage3_orient_2026-03-09_13-20-39/model_best.pt` | Failed, OrErr=2.18 |
+
+---
+
+## Next Steps
+
+1. **Hand Grasping (Stage 4):** HandPolicy (~50 obs -> 14 act), loco+arm frozen, DEX3 per-finger force sensors
+2. **Skill Chaining (Stage 5):** walk_to -> squat -> grasp -> stand_up -> walk_to -> place
+3. **VLM Planner:** SayCan/Berkeley architecture, task decomposition + skill executor
+4. **End-to-end:** "Pick up the cup from the floor, place it on the table"
+5. **Workshop paper** (ICRA/RSS)
 
 ---
 
@@ -227,5 +359,6 @@ For collaboration or usage inquiries: mehmetturanyardimci@hotmail.com
 ## Author
 
 **Mehmet Turan Yardimci**
+- Cukurova University, Computer Engineering
 - GitHub: [@mturan33](https://github.com/mturan33)
 - LinkedIn: [/in/mehmetturanyardimci](https://linkedin.com/in/mehmetturanyardimci)
