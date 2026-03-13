@@ -182,3 +182,4 @@ cython_debug/
 
 # Paper preparation (private notes, not for repo)
 ICRA2026_WORKSHOP_PAPER_PREP.md
+g1/isaac_g1_ulc/train/29dof/STAGE2_LOCO_TRAINING_PROMPT.md
