@@ -34,7 +34,14 @@ CURRICULUM (8 levels):
   L7: FINAL — extreme perturbation
 
 REWARD: V6.2 22 terms preserved + 2 new (arm_stability_bonus, transition_stability)
-  Modified: vy scale 4->6, height weight 3->4, orientation weight 6->8
+  vx=6.0 (walk incentive), orientation=6.0, height=3.0 (V6.2 originals)
+
+CURRICULUM FIX (2026-03-14): Gates tightened to prevent fast advancement.
+  - MIN_DWELL=500 iter per level (was 100)
+  - vx gate: relative error < 0.35 (was 0.5)
+  - vy gate: abs error < 0.08 (was 0.1)
+  - vyaw gate: abs error < 0.25 (was 0.3)
+  - Standing envs filtered from gate evaluation (15% standing biased averages)
 
 USAGE:
     isaaclab.bat -p ... --stage1_checkpoint V6.2_model.pt --arm_checkpoint stage2_arm_model.pt --num_envs 4096 --headless
@@ -95,6 +102,8 @@ ARM_ACT_DIM = 7
 # ============================================================================
 # CURRICULUM — 8 levels (arm perturbation + load + push progression)
 # ============================================================================
+
+MIN_DWELL = 500  # Minimum iterations per curriculum level before gate check
 
 CURRICULUM = [
     {
@@ -1282,37 +1291,58 @@ def create_env(num_envs, device):
 
         def update_curriculum(self, r):
             self.curr_hist.append(r)
-            if len(self.curr_hist) >= 100:
-                avg = np.mean(self.curr_hist[-100:])
-                thr = CURRICULUM[self.curr_level]["threshold"]
-                if thr is not None and avg > thr and self.curr_level < len(CURRICULUM) - 1:
-                    # Check tracking quality (V6.2 identical)
-                    lv_b = quat_apply_inverse(self.robot.data.root_quat_w, self.robot.data.root_lin_vel_w)
-                    av_b = quat_apply_inverse(self.robot.data.root_quat_w, self.robot.data.root_ang_vel_w)
+            # MIN_DWELL: must stay at each level for at least MIN_DWELL iterations
+            if len(self.curr_hist) < max(100, MIN_DWELL):
+                return
+            avg = np.mean(self.curr_hist[-100:])
+            thr = CURRICULUM[self.curr_level]["threshold"]
+            if thr is not None and avg > thr and self.curr_level < len(CURRICULUM) - 1:
+                # Check tracking quality — filter standing envs from gate
+                lv_b = quat_apply_inverse(self.robot.data.root_quat_w, self.robot.data.root_lin_vel_w)
+                av_b = quat_apply_inverse(self.robot.data.root_quat_w, self.robot.data.root_ang_vel_w)
 
+                # Filter: only evaluate walking envs (|vx_cmd| > 0.02)
+                # Standing envs have vx=0 cmd, their small drift biases the average
+                speed_mag = self.vel_cmd[:, 0].abs() + self.vel_cmd[:, 1].abs() + self.vel_cmd[:, 2].abs()
+                walk_mask = speed_mag > 0.02
+                n_walk = walk_mask.sum().item()
+
+                if n_walk > 0:
+                    vx_actual = lv_b[walk_mask, 0].mean().item()
+                    vx_cmd = self.vel_cmd[walk_mask, 0].mean().item()
+                    vy_actual = lv_b[walk_mask, 1].mean().item()
+                    vy_cmd = self.vel_cmd[walk_mask, 1].mean().item()
+                    vyaw_actual = av_b[walk_mask, 2].mean().item()
+                    vyaw_cmd = self.vel_cmd[walk_mask, 2].mean().item()
+                else:
+                    # All standing (L0) — use full average
                     vx_actual = lv_b[:, 0].mean().item()
                     vx_cmd = self.vel_cmd[:, 0].mean().item()
-                    vx_err_rel = abs(vx_actual - vx_cmd) / max(abs(vx_cmd), 0.1)
-                    vx_ok = vx_err_rel < 0.5
-
                     vy_actual = lv_b[:, 1].mean().item()
                     vy_cmd = self.vel_cmd[:, 1].mean().item()
-                    vy_err_abs = abs(vy_actual - vy_cmd)
-                    vy_ok = vy_err_abs < 0.1 or abs(vy_cmd) < 0.05
-
                     vyaw_actual = av_b[:, 2].mean().item()
                     vyaw_cmd = self.vel_cmd[:, 2].mean().item()
-                    vyaw_err_abs = abs(vyaw_actual - vyaw_cmd)
-                    vyaw_ok = vyaw_err_abs < 0.3 or abs(vyaw_cmd) < 0.1
 
-                    if vx_ok and vy_ok and vyaw_ok:
-                        self.curr_level += 1
-                        new_lv = CURRICULUM[self.curr_level]
-                        print(f"\n*** LEVEL UP! Now {self.curr_level}: {new_lv['description']} ***")
-                        print(f"    Load: {new_lv['load_range']}, Push: {new_lv['push_force']}")
-                        self.curr_hist = []
-                        self._sample_commands(torch.arange(self.num_envs, device=self.device))
-                        self._sample_load(torch.arange(self.num_envs, device=self.device))
+                vx_err_rel = abs(vx_actual - vx_cmd) / max(abs(vx_cmd), 0.1)
+                vx_ok = vx_err_rel < 0.35  # tightened: was 0.5
+
+                vy_err_abs = abs(vy_actual - vy_cmd)
+                vy_ok = vy_err_abs < 0.08 or abs(vy_cmd) < 0.05  # tightened: was 0.1
+
+                vyaw_err_abs = abs(vyaw_actual - vyaw_cmd)
+                vyaw_ok = vyaw_err_abs < 0.25 or abs(vyaw_cmd) < 0.1  # tightened: was 0.3
+
+                if vx_ok and vy_ok and vyaw_ok:
+                    self.curr_level += 1
+                    new_lv = CURRICULUM[self.curr_level]
+                    print(f"\n*** LEVEL UP! Now {self.curr_level}: {new_lv['description']} ***")
+                    print(f"    Load: {new_lv['load_range']}, Push: {new_lv['push_force']}")
+                    print(f"    Gate: vx={vx_actual:.3f}({vx_cmd:.3f}) err={vx_err_rel:.2f}"
+                          f" vy={vy_actual:.3f}({vy_cmd:.3f}) vyaw={vyaw_actual:.3f}({vyaw_cmd:.3f})"
+                          f" [walk_envs={n_walk}/{self.num_envs}]")
+                    self.curr_hist = []
+                    self._sample_commands(torch.arange(self.num_envs, device=self.device))
+                    self._sample_load(torch.arange(self.num_envs, device=self.device))
 
     return Stage2LocoEnv(EnvCfg())
 
