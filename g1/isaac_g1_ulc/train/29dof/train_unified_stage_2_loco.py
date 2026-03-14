@@ -184,17 +184,17 @@ CURRICULUM = [
 # ============================================================================
 
 REWARD_WEIGHTS = {
-    # Velocity tracking
-    "vx": 4.0,
+    # Velocity tracking — vx INCREASED to prevent standing exploit
+    "vx": 6.0,                   # was 4.0, policy refused to walk
     "vy": 4.0,                   # vy error scale changed 4->6 inside compute
     "vyaw": 4.0,
     # Gait control
     "gait_knee": 3.0,
     "gait_clearance": 2.0,
     "gait_contact": 2.0,
-    # Stability — INCREASED for perturbation robustness
-    "height": 4.0,               # V6.2: 3.0 -> 4.0
-    "orientation": 8.0,          # V6.2: 6.0 -> 8.0
+    # Stability — REVERTED to V6.2 values (increasing caused standing exploit)
+    "height": 3.0,               # REVERTED: 4.0 -> 3.0 (V6.2 original)
+    "orientation": 6.0,          # REVERTED: 8.0 -> 6.0 (V6.2 original)
     "ang_vel_penalty": 1.0,
     # Posture
     "ankle_penalty": 2.0,
@@ -303,6 +303,22 @@ def compute_orientation_error(palm_quat, target_dir):
 # NETWORK — DualActorCritic (Loco fine-tune + Arm frozen)
 # ============================================================================
 
+KL_COEFF = 0.5  # KL penalty to V6.2 reference — prevents forgetting walking
+
+
+def build_ref_actor(device):
+    """Build frozen copy of V6.2 loco actor for KL reference."""
+    layers = []
+    prev = OBS_DIM
+    for h in [512, 256, 128]:
+        layers += [nn.Linear(prev, h), nn.LayerNorm(h), nn.ELU()]
+        prev = h
+    layers.append(nn.Linear(prev, ACT_DIM))
+    actor = nn.Sequential(*layers).to(device)
+    log_std = torch.zeros(ACT_DIM, device=device)
+    return actor, log_std
+
+
 class DualActorCritic(nn.Module):
     def __init__(self):
         super().__init__()
@@ -367,11 +383,16 @@ class DualActorCritic(nn.Module):
 # ============================================================================
 
 class LocoPPO:
-    def __init__(self, net, device, actor_lr=1e-4, critic_lr=3e-4):
+    def __init__(self, net, device, ref_actor=None, ref_log_std=None,
+                 actor_lr=1e-4, critic_lr=3e-4, kl_coeff=KL_COEFF):
         self.net = net
         self.device = device
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
+        self.kl_coeff = kl_coeff
+        # Reference policy (frozen V6.2) for KL penalty
+        self.ref_actor = ref_actor  # nn.Sequential, frozen, no grad
+        self.ref_log_std = ref_log_std  # tensor, frozen
         # Dual parameter groups
         self.opt = torch.optim.AdamW([
             {"params": list(net.loco_actor.parameters()) + [net.loco_log_std],
@@ -389,9 +410,26 @@ class LocoPPO:
             adv[t] = last = delta + 0.99 * 0.95 * (1 - d[t]) * last
         return adv, adv + v
 
+    def _compute_kl(self, obs, act):
+        """Mean-only KL penalty — prevents forgetting V6.2 walking.
+        Only penalizes mean divergence, NOT std divergence.
+        Std is managed by external schedule, so full KL would fight it
+        (V6.2 ref_std ~0.2, current starts at 0.5 -> KL ~25 from std alone).
+        At iter 0 (same weights): cur_mean == ref_mean -> KL = 0. Correct.
+        """
+        if self.ref_actor is None:
+            return torch.tensor(0.0, device=self.device)
+        with torch.no_grad():
+            ref_mean = self.ref_actor(obs)
+            ref_std = self.ref_log_std.clamp(-2, 1).exp()
+        cur_mean = self.net.loco_actor(obs)
+        # Mean-only KL: penalize mean divergence, ignore std term
+        kl = ((cur_mean - ref_mean) ** 2 / (2 * ref_std ** 2 + 1e-8)).sum(-1)
+        return kl.mean()
+
     def update(self, obs, act, old_lp, ret, adv, old_v):
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-        tot_a, tot_c, tot_e, n = 0, 0, 0, 0
+        tot_a, tot_c, tot_e, tot_kl, n = 0, 0, 0, 0, 0
         bs = obs.shape[0]
 
         for _ in range(5):
@@ -405,7 +443,9 @@ class LocoPPO:
                 a_loss = -torch.min(s1, s2).mean()
                 v_clip = old_v[mb] + (val - old_v[mb]).clamp(-0.2, 0.2)
                 c_loss = 0.5 * torch.max((val - ret[mb]) ** 2, (v_clip - ret[mb]) ** 2).mean()
-                loss = a_loss + 0.5 * c_loss - 0.01 * ent.mean()
+                # KL penalty to V6.2 reference
+                kl = self._compute_kl(obs[mb], act[mb])
+                loss = a_loss + 0.5 * c_loss - 0.01 * ent.mean() + self.kl_coeff * kl
                 self.opt.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(
@@ -417,10 +457,12 @@ class LocoPPO:
                 tot_a += a_loss.item()
                 tot_c += c_loss.item()
                 tot_e += ent.mean().item()
+                tot_kl += kl.item()
                 n += 1
 
         return {"a": tot_a / max(n, 1), "c": tot_c / max(n, 1),
-                "e": tot_e / max(n, 1), "lr_a": self.actor_lr, "lr_c": self.critic_lr}
+                "e": tot_e / max(n, 1), "kl": tot_kl / max(n, 1),
+                "lr_a": self.actor_lr, "lr_c": self.critic_lr}
 
 
 # ============================================================================
@@ -1280,7 +1322,10 @@ def create_env(num_envs, device):
 # ============================================================================
 
 def load_checkpoints(net, stage1_path, arm_path, device):
-    """Load V6.2 loco weights into loco_actor (fine-tune) and Stage 2 arm weights (frozen)."""
+    """Load V6.2 loco weights into loco_actor (fine-tune) and Stage 2 arm weights (frozen).
+    Also builds frozen reference actor for KL penalty.
+    Returns: (ref_actor, ref_log_std) — frozen V6.2 policy for KL constraint.
+    """
     # 1. Loco actor from V6.2
     print(f"\n[Transfer] Loading V6.2 loco: {stage1_path}")
     ckpt = torch.load(stage1_path, map_location=device, weights_only=False)
@@ -1305,7 +1350,27 @@ def load_checkpoints(net, stage1_path, arm_path, device):
         if key in ckpt:
             print(f"  V6.2 {key}: {ckpt[key]}")
 
-    # 2. Arm actor from Stage 2
+    # 2. Build FROZEN reference actor (V6.2 copy for KL penalty)
+    print(f"\n[KL Reference] Building frozen V6.2 reference actor...")
+    ref_actor, ref_log_std = build_ref_actor(device)
+    ref_transferred = 0
+    ref_state = ref_actor.state_dict()
+    for s1_key, s1_val in s1_state.items():
+        if s1_key.startswith("actor."):
+            ref_key = s1_key[6:]  # actor.0.weight -> 0.weight
+            if ref_key in ref_state and ref_state[ref_key].shape == s1_val.shape:
+                ref_state[ref_key].copy_(s1_val)
+                ref_transferred += 1
+        elif s1_key == "log_std":
+            ref_log_std.copy_(s1_val)
+            ref_transferred += 1
+    ref_actor.load_state_dict(ref_state)
+    ref_actor.eval()
+    for p in ref_actor.parameters():
+        p.requires_grad = False
+    print(f"  Ref actor: {ref_transferred} params loaded, FROZEN")
+
+    # 3. Arm actor from Stage 2
     print(f"\n[Transfer] Loading Stage 2 arm: {arm_path}")
     arm_ckpt = torch.load(arm_path, map_location=device, weights_only=False)
     arm_state = arm_ckpt.get("model", arm_ckpt)
@@ -1327,7 +1392,7 @@ def load_checkpoints(net, stage1_path, arm_path, device):
             print(f"  [WARN] Arm key skip: {key} -> {our_key} (not found or shape mismatch)")
     print(f"  Transferred {arm_transferred} arm actor parameters")
 
-    # 3. Freeze arm
+    # 4. Freeze arm
     net.arm_actor.eval()
     frozen = 0
     for name, p in net.named_parameters():
@@ -1336,16 +1401,19 @@ def load_checkpoints(net, stage1_path, arm_path, device):
             frozen += 1
     print(f"  Frozen {frozen} arm parameters")
 
-    # 4. Loco log_std for fine-tune (lower exploration than from-scratch)
+    # 5. Loco log_std for fine-tune (lower exploration than from-scratch)
     net.loco_log_std.data.fill_(np.log(0.5))
     print(f"  Loco log_std = log(0.5) (fine-tune exploration)")
 
-    # 5. Critic is already fresh Xavier init (from constructor)
+    # 6. Critic is already fresh Xavier init (from constructor)
     print(f"  Loco critic: FRESH Xavier init")
 
     trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
     frozen_n = sum(p.numel() for p in net.parameters() if not p.requires_grad)
     print(f"\n  Trainable: {trainable:,} | Frozen: {frozen_n:,}")
+    print(f"  KL coeff: {KL_COEFF}")
+
+    return ref_actor, ref_log_std
 
 
 # ============================================================================
@@ -1360,6 +1428,9 @@ def main():
     start_iter = 0
     best_reward = float('-inf')
 
+    ref_actor = None
+    ref_log_std = None
+
     if args_cli.checkpoint:
         print(f"\n[Load] Resuming from {args_cli.checkpoint}")
         ckpt = torch.load(args_cli.checkpoint, map_location=device, weights_only=False)
@@ -1372,15 +1443,37 @@ def main():
         for name, p in net.named_parameters():
             if name.startswith("arm_actor."):
                 p.requires_grad = False
-        ppo = LocoPPO(net, device)
+        # Load reference actor for KL (from saved stage1 path or CLI)
+        s1_path = ckpt.get("stage1_checkpoint", args_cli.stage1_checkpoint)
+        if s1_path and os.path.exists(s1_path):
+            print(f"  [KL] Loading reference from {s1_path}")
+            ref_actor, ref_log_std = build_ref_actor(device)
+            s1_ckpt = torch.load(s1_path, map_location=device, weights_only=False)
+            s1_state = s1_ckpt.get("model", s1_ckpt)
+            ref_state = ref_actor.state_dict()
+            for s1_key, s1_val in s1_state.items():
+                if s1_key.startswith("actor."):
+                    ref_key = s1_key[6:]
+                    if ref_key in ref_state and ref_state[ref_key].shape == s1_val.shape:
+                        ref_state[ref_key].copy_(s1_val)
+                elif s1_key == "log_std":
+                    ref_log_std.copy_(s1_val)
+            ref_actor.load_state_dict(ref_state)
+            ref_actor.eval()
+            for p in ref_actor.parameters():
+                p.requires_grad = False
+            print(f"  [KL] Reference actor loaded, KL_COEFF={KL_COEFF}")
+        else:
+            print(f"  [WARN] No stage1 checkpoint for KL reference — KL penalty DISABLED")
+        ppo = LocoPPO(net, device, ref_actor=ref_actor, ref_log_std=ref_log_std)
         if "loco_optimizer" in ckpt:
             ppo.opt.load_state_dict(ckpt["loco_optimizer"])
         print(f"  Resumed: iter={start_iter}, R={best_reward:.2f}, Lv={env.curr_level}")
     else:
         if args_cli.stage1_checkpoint is None or args_cli.arm_checkpoint is None:
             raise ValueError("--stage1_checkpoint AND --arm_checkpoint required for fresh start")
-        load_checkpoints(net, args_cli.stage1_checkpoint, args_cli.arm_checkpoint, device)
-        ppo = LocoPPO(net, device)
+        ref_actor, ref_log_std = load_checkpoints(net, args_cli.stage1_checkpoint, args_cli.arm_checkpoint, device)
+        ppo = LocoPPO(net, device, ref_actor=ref_actor, ref_log_std=ref_log_std)
 
     # Logging
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1407,6 +1500,8 @@ def main():
     print("STARTING STAGE 2 LOCO: PERTURBATION-ROBUST FINE-TUNE")
     print(f"  Loco: FINE-TUNE (66->15), actor_lr=1e-4, critic_lr=3e-4")
     print(f"  Arm: FROZEN perturbation (39->7)")
+    print(f"  KL penalty: coeff={KL_COEFF}, ref={'V6.2' if ref_actor is not None else 'DISABLED'}")
+    print(f"  Reward: vx=6.0, orient=6.0, height=3.0 (V6.2 reverted)")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
@@ -1482,6 +1577,7 @@ def main():
             writer.add_scalar("loss/actor", losses["a"], iteration)
             writer.add_scalar("loss/critic", losses["c"], iteration)
             writer.add_scalar("loss/entropy", losses["e"], iteration)
+            writer.add_scalar("loss/kl_penalty", losses["kl"], iteration)
             writer.add_scalar("train/lr_actor", losses["lr_a"], iteration)
             writer.add_scalar("train/lr_critic", losses["lr_c"], iteration)
             writer.add_scalar("train/log_std", net.loco_log_std.data.mean().item(), iteration)
@@ -1519,7 +1615,7 @@ def main():
                   f"vy={avg_vy:.3f}({cmd_vy:.3f}) "
                   f"vyaw={avg_vyaw:.3f}({cmd_vyaw:.3f}) "
                   f"Lv={env.curr_level} load={load_avg:.2f}kg "
-                  f"LR={losses['lr_a']:.2e}/{losses['lr_c']:.2e} "
+                  f"KL={losses['kl']:.3f} "
                   f"std={np.exp(net.loco_log_std.data.mean().item()):.3f}")
 
         # Save checkpoints
