@@ -4,12 +4,15 @@ Unified Stage 2 Loco: Perturbation-Robust Locomotion — Play/Evaluation
 Loco fine-tuned with frozen arm perturbation + payload forces.
 DualActorCritic: LocoActor (66->15, fine-tuned) + ArmActor (39->7, frozen).
 
+Supports variable height commands for squat evaluation (v2: 2026-03-15).
+
 MODES:
 - standing: vx=0, arm active + load — pure stability test
 - walk: vx=0.4, arm active + load — normal walking
 - mixed: varying commands + arm + load — full demo simulation
 - push: walk + enhanced push — robustness test
 - arm_test: standing, arm reaches rapidly, heavy load — worst case
+- squat_test: standing, cycles through heights [0.78, 0.65, 0.50, 0.40]
 
 MUST match training: obs, act, termination, clamps, arm obs, external forces.
 """
@@ -71,7 +74,11 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--mode", type=str, default="walk",
-                        choices=["standing", "walk", "mixed", "push", "arm_test"])
+                        choices=["standing", "walk", "mixed", "push", "arm_test", "squat_test"])
+    parser.add_argument("--height_cmd", type=float, default=None,
+                        help="Override height command (m). Default: 0.78 or mode-dependent.")
+    parser.add_argument("--squat_test", action="store_true",
+                        help="Alias for --mode squat_test")
     parser.add_argument("--max_steps", type=int, default=3000)
     parser.add_argument("--load_kg", type=float, default=None,
                         help="Override payload mass (kg). Default: mode-dependent.")
@@ -129,9 +136,28 @@ MODE_CONFIGS = {
         "push_force": (0, 10), "push_interval": (300, 600), "push_duration": (5, 15),
         "load_kg": 2.0, "arm_change_interval": (30, 80),  # Rapid arm motion
     },
+    "squat_test": {
+        "vx": 0.0, "vy": 0.0, "vyaw": 0.0,
+        "push_force": (0, 10), "push_interval": (300, 600), "push_duration": (5, 15),
+        "load_kg": 0.5, "arm_change_interval": (100, 300),
+    },
 }
 
+# Handle --squat_test alias
+if args_cli.squat_test:
+    args_cli.mode = "squat_test"
+
 mode_cfg = MODE_CONFIGS[args_cli.mode]
+
+# Squat test height schedule: (step, height)
+SQUAT_SCHEDULE = [
+    (0,    0.78),   # Standing
+    (500,  0.65),   # Light squat
+    (1000, 0.50),   # Medium squat
+    (1500, 0.40),   # Deep squat
+    (2000, 0.50),   # Rise back up
+    (2500, 0.78),   # Full stand
+]
 
 # Override load if specified
 if args_cli.load_kg is not None:
@@ -151,11 +177,14 @@ MIXED_SCHEDULE = [
     (2700, 0.0,  0.0,  0.0),    # Stop
 ]
 
+_height_display = f"{args_cli.height_cmd:.2f}m" if args_cli.height_cmd is not None else (
+    "schedule" if args_cli.mode == "squat_test" else f"{HEIGHT_DEFAULT}m")
 print("=" * 80)
 print(f"STAGE 2 LOCO: PLAY — Mode: {args_cli.mode}")
 print(f"  Cartesian: vx={mode_cfg['vx']}, vy={mode_cfg['vy']}, vyaw={mode_cfg['vyaw']}")
 print(f"  Push: force={mode_cfg['push_force']}, interval={mode_cfg['push_interval']}")
 print(f"  Load: {mode_cfg['load_kg']:.1f}kg, Arm: {'OFF' if args_cli.no_arm else 'ON'}")
+print(f"  Height: {_height_display}")
 print(f"  Obs: {OBS_DIM}, Loco Act: {ACT_DIM}, Arm Act: {ARM_ACT_DIM}")
 print(f"  Checkpoint: {args_cli.checkpoint}")
 print("=" * 80)
@@ -423,7 +452,8 @@ def create_env(num_envs, device):
             self.shoulder_offset = torch.tensor(SHOULDER_OFFSET_RIGHT, device=self.device, dtype=torch.float32)
 
             # Commands — Cartesian (vx, vy, vyaw)
-            self.height_cmd = torch.ones(self.num_envs, device=self.device) * HEIGHT_DEFAULT
+            _init_height = args_cli.height_cmd if args_cli.height_cmd is not None else HEIGHT_DEFAULT
+            self.height_cmd = torch.ones(self.num_envs, device=self.device) * _init_height
             self.vel_cmd = torch.zeros(self.num_envs, 3, device=self.device)
             self.vel_cmd[:, 0] = mode_cfg["vx"]
             self.vel_cmd[:, 1] = mode_cfg["vy"]
@@ -740,7 +770,7 @@ def create_env(num_envs, device):
             return torch.zeros(self.num_envs, device=self.device)
 
         # ================================================================
-        # TERMINATION (V6.2 identical)
+        # TERMINATION (match training — variable height for squat)
         # ================================================================
 
         def _get_dones(self):
@@ -749,7 +779,11 @@ def create_env(num_envs, device):
             gravity_vec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(q, gravity_vec)
 
-            fallen = (pos[:, 2] < 0.55) | (pos[:, 2] > 1.2)
+            # Variable min_height for squat (match training)
+            min_height = torch.where(self.height_cmd < 0.60,
+                                      torch.clamp(self.height_cmd - 0.10, min=0.35),
+                                      torch.tensor(0.55, device=self.device))
+            fallen = (pos[:, 2] < min_height) | (pos[:, 2] > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
 
             jp = self.robot.data.joint_pos[:, self.loco_idx]
@@ -805,7 +839,10 @@ def create_env(num_envs, device):
             n = len(env_ids)
             default_pos = self.robot.data.default_joint_pos[env_ids].clone()
             self.robot.write_joint_state_to_sim(default_pos, torch.zeros_like(default_pos), None, env_ids)
-            root_pos = torch.tensor([[0.0, 0.0, HEIGHT_DEFAULT]], device=self.device).expand(n, -1).clone()
+            # Spawn at current height command (may be squat)
+            _spawn_h = self.height_cmd[env_ids[0]].item() if len(env_ids) > 0 else HEIGHT_DEFAULT
+            _spawn_h = max(_spawn_h, 0.45)  # Safety: don't spawn below 0.45m
+            root_pos = torch.tensor([[0.0, 0.0, _spawn_h]], device=self.device).expand(n, -1).clone()
             default_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device).expand(n, -1)  # wxyz identity
             self.robot.write_root_pose_to_sim(torch.cat([root_pos, default_quat], dim=-1), env_ids)
             self.robot.write_root_velocity_to_sim(torch.zeros(n, 6, device=self.device), env_ids)
@@ -865,12 +902,25 @@ def main():
         print("  Mixed schedule:")
         for s, vx, vy, vyaw in MIXED_SCHEDULE:
             print(f"    Step {s:5d}: vx={vx:.1f}, vy={vy:.2f}, vyaw={vyaw:.2f}")
+    if args_cli.mode == "squat_test":
+        print("  Squat schedule:")
+        for s, h in SQUAT_SCHEDULE:
+            print(f"    Step {s:5d}: height={h:.2f}m")
     print("-" * 70)
 
     mixed_idx = 0
+    squat_idx = 0
     arm_reaches = 0  # Count how many times arm gets close to target
 
     for step in range(args_cli.max_steps):
+        # Update squat test height schedule
+        if args_cli.mode == "squat_test" and squat_idx < len(SQUAT_SCHEDULE) - 1:
+            if step >= SQUAT_SCHEDULE[squat_idx + 1][0]:
+                squat_idx += 1
+                _, new_h = SQUAT_SCHEDULE[squat_idx]
+                env.height_cmd[:] = new_h
+                print(f"  >>> Step {step}: height_cmd={new_h:.2f}m")
+
         # Update mixed mode commands
         if args_cli.mode == "mixed" and mixed_idx < len(MIXED_SCHEDULE) - 1:
             if step >= MIXED_SCHEDULE[mixed_idx + 1][0]:
@@ -982,7 +1032,8 @@ def main():
             hipR = (jp[:, env.hip_roll_loco_idx] - env.default_loco[env.hip_roll_loco_idx]).abs().mean().item()
             dist = env.distance_traveled.mean().item()
 
-            print(f"  [Step {step:5d}] H={height:.3f}m Tilt={tilt:.1f}deg "
+            h_cmd_avg = env.height_cmd.mean().item()
+            print(f"  [Step {step:5d}] H={height:.3f}m({h_cmd_avg:.2f}) Tilt={tilt:.1f}deg "
                   f"vx={actual_vx:.3f}(cmd:{cmd_vx:.3f}) vy={actual_vy:.3f}(cmd:{cmd_vy:.3f}) "
                   f"vyaw={actual_vyaw:.3f}(cmd:{cmd_vyaw:.3f})")
             print(f"              Knees: L={lk:.2f} R={rk:.2f} | ankR={ankR:.3f} hipR={hipR:.3f} | "
@@ -1023,7 +1074,8 @@ def main():
 
     print(f"  Mode: {args_cli.mode}")
     print(f"  Steps: {args_cli.max_steps}")
-    print(f"  Final height: {height:.3f}m (target: {HEIGHT_DEFAULT}m)")
+    h_cmd_final = env.height_cmd.mean().item()
+    print(f"  Final height: {height:.3f}m (target: {h_cmd_final:.2f}m)")
     print(f"  Height stability: std={h_std:.4f}, min={h_min:.3f}, max={h_max:.3f}")
     print(f"  Distance: {dist:.2f}m")
     print(f"  Falls: {env.total_falls}, Pushes: {env.total_pushes}")
