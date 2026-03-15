@@ -23,18 +23,26 @@ PERTURBATION:
   4. Enhanced 3D torso push (5-15 step duration, up to 80N)
   5. Arm freeze mode (30% chance hold position 50-200 steps)
 
-CURRICULUM (8 levels):
-  L0: Standing + arm (no walk, no load)
-  L1: Slow walk + arm
-  L2: Medium walk + light load (0-0.5kg)
-  L3: Walk + lateral + medium load (0-1.0kg)
-  L4: Omnidirectional + arm + load
-  L5: Full range + heavy load (0-2kg)
-  L6: Aggressive + walk/stop transitions
-  L7: FINAL — extreme perturbation
+CURRICULUM (12 levels):
+  L0-L7: Perturbation progression (fixed height 0.80m)
+    L0: Standing + arm (no walk, no load)
+    L1: Slow walk + arm
+    L2: Medium walk + light load (0-0.5kg)
+    L3: Walk + lateral + medium load (0-1.0kg)
+    L4: Omnidirectional + arm + load
+    L5: Full range + heavy load (0-2kg)
+    L6: Aggressive + walk/stop transitions
+    L7: Extreme perturbation
+  L8-L11: Variable height / squat progression
+    L8: Light squat [0.70, 0.78] + walk + arm + load
+    L9: Medium squat [0.60, 0.78] + walk + arm + load
+    L10: Deep squat [0.50, 0.78] + walk + arm + load
+    L11: Full squat [0.40, 0.78] + walk + arm + load + push (FINAL)
 
-REWARD: V6.2 22 terms preserved + 2 new (arm_stability_bonus, transition_stability)
-  vx=6.0 (walk incentive), orientation=6.0, height=3.0 (V6.2 originals)
+REWARD: V6.2 22 terms preserved + 3 new (arm_stability_bonus, transition_stability, squat_knee)
+  Height reward: exp(-8 * (h - h_cmd)^2) — tracks variable height command
+  Squat knee (HOMIE): couples height_cmd with knee bend — low height = bent knees
+  Gait rewards scaled 50% during squat (height_cmd < 0.70)
 
 CURRICULUM FIX (2026-03-14): Gates tightened to prevent fast advancement.
   - MIN_DWELL=500 iter per level (was 100)
@@ -43,9 +51,15 @@ CURRICULUM FIX (2026-03-14): Gates tightened to prevent fast advancement.
   - vyaw gate: abs error < 0.25 (was 0.3)
   - Standing envs filtered from gate evaluation (15% standing biased averages)
 
+SQUAT UPDATE (2026-03-15): Variable height_cmd + squat curriculum.
+  - height_cmd: [0.40, 0.78] random per curriculum level (was fixed 0.80)
+  - KL reference: Stage 2 Loco checkpoint (was V6.2) — preserves perturbation robustness
+  - Termination: relaxed for squat (min 0.35m floor)
+  - Squat knee reward: HOMIE formula couples height with knee bend
+
 USAGE:
-    isaaclab.bat -p ... --stage1_checkpoint V6.2_model.pt --arm_checkpoint stage2_arm_model.pt --num_envs 4096 --headless
-    isaaclab.bat -p ... --checkpoint stage2_loco_model.pt --num_envs 4096 --headless
+    isaaclab.bat -p ... --stage1_checkpoint V6.2_model.pt --arm_checkpoint stage2_arm_model.pt --num_envs 2048 --headless
+    isaaclab.bat -p ... --checkpoint stage2_loco_model.pt --num_envs 2048 --headless
 """
 
 import torch
@@ -114,6 +128,7 @@ CURRICULUM = [
         "push_force": (0, 10),
         "push_interval": (200, 500),
         "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
         "threshold": 28.0,
     },
     {
@@ -124,6 +139,7 @@ CURRICULUM = [
         "push_force": (0, 10),
         "push_interval": (200, 500),
         "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
         "threshold": 26.0,
     },
     {
@@ -134,6 +150,7 @@ CURRICULUM = [
         "push_force": (0, 15),
         "push_interval": (150, 400),
         "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
         "threshold": 24.0,
     },
     {
@@ -144,6 +161,7 @@ CURRICULUM = [
         "push_force": (0, 20),
         "push_interval": (100, 300),
         "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
         "threshold": 23.0,
     },
     {
@@ -154,6 +172,7 @@ CURRICULUM = [
         "push_force": (0, 30),
         "push_interval": (100, 300),
         "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
         "threshold": 22.0,
     },
     {
@@ -164,6 +183,7 @@ CURRICULUM = [
         "push_force": (0, 40),
         "push_interval": (80, 250),
         "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
         "threshold": 21.0,
     },
     {
@@ -174,16 +194,63 @@ CURRICULUM = [
         "push_force": (0, 60),
         "push_interval": (50, 200),
         "cmd_change_interval": (50, 150),
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
         "threshold": 20.0,
     },
     {
-        "description": "L7: FINAL — extreme perturbation",
+        "description": "L7: Extreme perturbation",
         "vx": (-0.5, 1.2), "vy": (-0.4, 0.4), "vyaw": (-1.0, 1.0),
         "arm_active": True,
         "load_range": (0.0, 2.0),
         "push_force": (0, 80),
         "push_interval": (50, 150),
         "cmd_change_interval": (30, 100),
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+        "threshold": 19.5,
+    },
+    # === SQUAT LEVELS (variable height_cmd) ===
+    {
+        "description": "L8: Light squat [0.70, 0.78] + walk + arm + load",
+        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
+        "arm_active": True,
+        "load_range": (0.0, 1.0),
+        "push_force": (0, 20),
+        "push_interval": (100, 300),
+        "cmd_change_interval": None,
+        "height_range": (0.70, 0.78),
+        "threshold": 19.0,
+    },
+    {
+        "description": "L9: Medium squat [0.60, 0.78] + walk + arm + load",
+        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
+        "arm_active": True,
+        "load_range": (0.0, 1.5),
+        "push_force": (0, 30),
+        "push_interval": (80, 250),
+        "cmd_change_interval": None,
+        "height_range": (0.60, 0.78),
+        "threshold": 18.0,
+    },
+    {
+        "description": "L10: Deep squat [0.50, 0.78] + walk + arm + load",
+        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
+        "arm_active": True,
+        "load_range": (0.0, 1.5),
+        "push_force": (0, 40),
+        "push_interval": (80, 250),
+        "cmd_change_interval": None,
+        "height_range": (0.50, 0.78),
+        "threshold": 17.0,
+    },
+    {
+        "description": "L11: Full squat [0.40, 0.78] + walk + arm + load + push (FINAL)",
+        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
+        "arm_active": True,
+        "load_range": (0.0, 2.0),
+        "push_force": (0, 60),
+        "push_interval": (50, 200),
+        "cmd_change_interval": (50, 150),
+        "height_range": (0.40, 0.78),
         "threshold": None,
     },
 ]
@@ -226,6 +293,8 @@ REWARD_WEIGHTS = {
     # NEW: Perturbation stability rewards
     "arm_stability_bonus": 2.0,
     "transition_stability": 1.5,
+    # NEW: Squat rewards
+    "squat_knee": 2.0,
 }
 
 # ============================================================================
@@ -242,7 +311,7 @@ def parse_args():
                         help="Stage 2 arm checkpoint (required for fresh start)")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from Stage 2 Loco checkpoint")
-    parser.add_argument("--experiment_name", type=str, default="g1_stage2_loco")
+    parser.add_argument("--experiment_name", type=str, default="g1_stage2_loco_squat")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
@@ -757,6 +826,12 @@ def create_env(num_envs, device):
             standing_mask = torch.rand(n, device=self.device) < 0.15
             if standing_mask.any():
                 self.vel_cmd[env_ids[standing_mask]] = 0.0
+            # Height sampling (variable for squat levels L8+, fixed for L0-L7)
+            h_lo, h_hi = lv.get("height_range", (HEIGHT_DEFAULT, HEIGHT_DEFAULT))
+            if h_hi - h_lo > 0.01:
+                self.height_cmd[env_ids] = torch.empty(n, device=self.device).uniform_(h_lo, h_hi)
+            else:
+                self.height_cmd[env_ids] = h_lo
 
         # ================================================================
         # ARM TARGET SAMPLING (Stage 2 workspace, body frame)
@@ -1087,10 +1162,17 @@ def create_env(num_envs, device):
             r_gait_clearance = r_gait_clearance * gait_scale + (1 - gait_scale) * 1.0
             r_gait_contact = r_gait_contact * gait_scale
 
+            # Reduce gait reward influence when squatting (height_cmd < 0.70)
+            squat_scale = torch.where(self.height_cmd < 0.70,
+                                       torch.tensor(0.5, device=self.device),
+                                       torch.tensor(1.0, device=self.device))
+            r_gait_knee = r_gait_knee * squat_scale + (1 - squat_scale) * 1.0
+            r_gait_clearance = r_gait_clearance * squat_scale + (1 - squat_scale) * 1.0
+            r_gait_contact = r_gait_contact * squat_scale
+
             # === STABILITY ===
             height = pos[:, 2]
-            h_err = (height - self.height_cmd).abs()
-            r_height = torch.exp(-10.0 * h_err)
+            r_height = torch.exp(-8.0 * (height - self.height_cmd) ** 2)
 
             r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))
             r_ang = torch.exp(-1.0 * (av_b[:, :2] ** 2).sum(-1))
@@ -1155,8 +1237,18 @@ def create_env(num_envs, device):
 
             r_energy = (jv.abs() * jp.abs()).sum(-1)
 
-            # === NEW: ARM STABILITY BONUS ===
-            r_arm_stability = (height > 0.65).float()
+            # === NEW: ARM STABILITY BONUS (relative to height_cmd) ===
+            r_arm_stability = (height > (self.height_cmd - 0.10)).float()
+
+            # === NEW: SQUAT KNEE (HOMIE formula) ===
+            # Couples height command with knee bend — low height = bent knees
+            knee_max = 1.5
+            lk_norm = lk.clamp(0, knee_max) / knee_max
+            rk_norm = rk.clamp(0, knee_max) / knee_max
+            knee_norm = (lk_norm + rk_norm) / 2.0
+            h_target_norm = ((self.height_cmd - 0.40) / (0.78 - 0.40)).clamp(0, 1)
+            desired_knee_norm = 1.0 - h_target_norm
+            r_squat_knee = -((knee_norm - desired_knee_norm) ** 2)
 
             # === NEW: TRANSITION STABILITY ===
             cmd_near_zero = (self.vel_cmd.abs().sum(-1) < 0.1).float()
@@ -1191,6 +1283,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["alive"]
                 + REWARD_WEIGHTS["arm_stability_bonus"] * r_arm_stability
                 + REWARD_WEIGHTS["transition_stability"] * r_transition
+                + REWARD_WEIGHTS["squat_knee"] * r_squat_knee
             )
 
             return reward
@@ -1205,7 +1298,11 @@ def create_env(num_envs, device):
             gravity_vec = torch.tensor([0, 0, -1.], device=self.device).expand(self.num_envs, -1)
             proj_gravity = quat_apply_inverse(q, gravity_vec)
 
-            fallen = (pos[:, 2] < 0.55) | (pos[:, 2] > 1.2)
+            # Height termination: relaxed for squat (min 0.35m floor)
+            min_height = torch.where(self.height_cmd < 0.60,
+                                      torch.clamp(self.height_cmd - 0.10, min=0.35),
+                                      torch.tensor(0.55, device=self.device))
+            fallen = (pos[:, 2] < min_height) | (pos[:, 2] > 1.2)
             bad_orientation = proj_gravity[:, :2].abs().max(dim=-1)[0] > 0.7
 
             jp = self.robot.data.joint_pos[:, self.loco_idx]
@@ -1473,28 +1570,23 @@ def main():
         for name, p in net.named_parameters():
             if name.startswith("arm_actor."):
                 p.requires_grad = False
-        # Load reference actor for KL (from saved stage1 path or CLI)
-        s1_path = ckpt.get("stage1_checkpoint", args_cli.stage1_checkpoint)
-        if s1_path and os.path.exists(s1_path):
-            print(f"  [KL] Loading reference from {s1_path}")
-            ref_actor, ref_log_std = build_ref_actor(device)
-            s1_ckpt = torch.load(s1_path, map_location=device, weights_only=False)
-            s1_state = s1_ckpt.get("model", s1_ckpt)
-            ref_state = ref_actor.state_dict()
-            for s1_key, s1_val in s1_state.items():
-                if s1_key.startswith("actor."):
-                    ref_key = s1_key[6:]
-                    if ref_key in ref_state and ref_state[ref_key].shape == s1_val.shape:
-                        ref_state[ref_key].copy_(s1_val)
-                elif s1_key == "log_std":
-                    ref_log_std.copy_(s1_val)
-            ref_actor.load_state_dict(ref_state)
-            ref_actor.eval()
-            for p in ref_actor.parameters():
-                p.requires_grad = False
-            print(f"  [KL] Reference actor loaded, KL_COEFF={KL_COEFF}")
-        else:
-            print(f"  [WARN] No stage1 checkpoint for KL reference — KL penalty DISABLED")
+        # Build KL reference from THIS checkpoint (Stage 2 Loco weights)
+        # This preserves perturbation-robust walking as the reference baseline
+        print(f"  [KL] Building reference from resumed checkpoint (Stage 2 Loco)")
+        ref_actor, ref_log_std = build_ref_actor(device)
+        ref_state = ref_actor.state_dict()
+        for key, val in ckpt["model"].items():
+            if key.startswith("loco_actor."):
+                ref_key = key[len("loco_actor."):]
+                if ref_key in ref_state and ref_state[ref_key].shape == val.shape:
+                    ref_state[ref_key].copy_(val)
+            elif key == "loco_log_std":
+                ref_log_std.copy_(val)
+        ref_actor.load_state_dict(ref_state)
+        ref_actor.eval()
+        for p in ref_actor.parameters():
+            p.requires_grad = False
+        print(f"  [KL] Reference actor loaded from Stage 2 Loco, KL_COEFF={KL_COEFF}")
         ppo = LocoPPO(net, device, ref_actor=ref_actor, ref_log_std=ref_log_std)
         if "loco_optimizer" in ckpt:
             ppo.opt.load_state_dict(ckpt["loco_optimizer"])
@@ -1624,6 +1716,7 @@ def main():
             writer.add_scalar("robot/vyaw_actual", av_b[:, 2].mean().item(), iteration)
             writer.add_scalar("robot/vyaw_cmd", env.vel_cmd[:, 2].mean().item(), iteration)
             writer.add_scalar("perturbation/load_mass_avg", env.load_mass.mean().item(), iteration)
+            writer.add_scalar("robot/height_cmd_avg", env.height_cmd.mean().item(), iteration)
 
         # Console log
         if iteration % 50 == 0:
@@ -1638,10 +1731,11 @@ def main():
             avg_vyaw = av_b[:, 2].mean().item()
             cmd_vyaw = env.vel_cmd[:, 2].mean().item()
             load_avg = env.load_mass.mean().item()
+            h_cmd_avg = env.height_cmd.mean().item()
 
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
-                  f"H={height:.3f} vx={avg_vx:.3f}({cmd_vx:.3f}) "
+                  f"H={height:.3f}({h_cmd_avg:.2f}) vx={avg_vx:.3f}({cmd_vx:.3f}) "
                   f"vy={avg_vy:.3f}({cmd_vy:.3f}) "
                   f"vyaw={avg_vyaw:.3f}({cmd_vyaw:.3f}) "
                   f"Lv={env.curr_level} load={load_avg:.2f}kg "
