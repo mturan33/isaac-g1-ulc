@@ -77,6 +77,8 @@ def parse_args():
                         help="Override payload mass (kg). Default: mode-dependent.")
     parser.add_argument("--no_arm", action="store_true",
                         help="Disable arm perturbation (baseline comparison)")
+    parser.add_argument("--no_reset", action="store_true",
+                        help="Disable auto-reset on termination (count but don't reset, for visual debug)")
     return parser.parse_args()
 
 args_cli = parse_args()
@@ -455,6 +457,9 @@ def create_env(num_envs, device):
             self.push_duration = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
             self.push_force_active = torch.zeros(self.num_envs, 3, device=self.device)
 
+            # No-reset mode (for visual debug — count but don't reset)
+            self._no_reset = args_cli.no_reset
+
             # Contact sensor
             self._contact_sensor = self.scene["contact_forces"]
             self._illegal_contact_ids, illegal_names = self._contact_sensor.find_bodies(
@@ -463,6 +468,8 @@ def create_env(num_envs, device):
 
             # Tracking
             self.total_falls = 0
+            self.fall_reasons = {"height": 0, "orientation": 0, "knee": 0,
+                                 "waist": 0, "hip_yaw": 0, "illegal_contact": 0}
             self.total_pushes = 0
             self.vx_history = []
             self.vx_cmd_history = []
@@ -769,7 +776,21 @@ def create_env(num_envs, device):
 
             terminated = fallen | bad_orientation | knee_bad | waist_excessive | hip_yaw_excessive | illegal_contact
             if terminated.any():
-                self.total_falls += terminated.sum().item()
+                n_term = terminated.sum().item()
+                self.total_falls += n_term
+                # Per-reason counting (a single step can trigger multiple reasons)
+                self.fall_reasons["height"] += fallen.sum().item()
+                self.fall_reasons["orientation"] += bad_orientation.sum().item()
+                self.fall_reasons["knee"] += knee_bad.sum().item()
+                self.fall_reasons["waist"] += waist_excessive.sum().item()
+                self.fall_reasons["hip_yaw"] += hip_yaw_excessive.sum().item()
+                self.fall_reasons["illegal_contact"] += illegal_contact.sum().item()
+
+            # --no_reset mode: count terminations but don't actually reset
+            if self._no_reset:
+                time_out = self.episode_length_buf >= self.max_episode_length
+                return torch.zeros_like(terminated), time_out
+
             time_out = self.episode_length_buf >= self.max_episode_length
             return terminated, time_out
 
@@ -1006,13 +1027,21 @@ def main():
     print(f"  Height stability: std={h_std:.4f}, min={h_min:.3f}, max={h_max:.3f}")
     print(f"  Distance: {dist:.2f}m")
     print(f"  Falls: {env.total_falls}, Pushes: {env.total_pushes}")
+    if env.total_falls > 0:
+        fr = env.fall_reasons
+        print(f"  Fall reasons: height={fr['height']} orient={fr['orientation']} knee={fr['knee']} "
+              f"waist={fr['waist']} hip_yaw={fr['hip_yaw']} contact={fr['illegal_contact']}")
     print(f"  Velocity tracking — MAE: {vx_err:.4f}, RMSE: {vx_rmse:.4f}")
     print(f"  Posture — AnkRoll: {ankR:.3f}, HipRoll: {hipR:.3f}")
     print(f"  Load: {mode_cfg['load_kg']:.1f}kg, Arm: {'OFF' if args_cli.no_arm else 'ON'}")
     if not args_cli.no_arm:
         print(f"  Arm reaches (<0.05m): {arm_reaches}")
-    survival_pct = (1.0 - env.total_falls / max(args_cli.max_steps * env.num_envs * 0.001, 1.0)) * 100
-    print(f"  Survival estimate: {survival_pct:.1f}%")
+    avg_ep_len = args_cli.max_steps / max(env.total_falls, 1)
+    survival_pct = (1.0 - env.total_falls / args_cli.max_steps) * 100 if env.total_falls < args_cli.max_steps else 0.0
+    print(f"  Avg episode length: {avg_ep_len:.0f} steps")
+    print(f"  Survival: {survival_pct:.1f}%")
+    if args_cli.no_reset:
+        print(f"  [NO_RESET mode — falls counted but robot not reset]")
 
     print("\n[Play] Simulasyon acik. Ctrl+C ile kapat.")
     try:
