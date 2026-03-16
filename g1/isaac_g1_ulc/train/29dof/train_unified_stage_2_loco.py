@@ -269,7 +269,7 @@ REWARD_WEIGHTS = {
     "gait_clearance": 2.0,
     "gait_contact": 2.0,
     # Stability — REVERTED to V6.2 values (increasing caused standing exploit)
-    "height": 3.0,               # REVERTED: 4.0 -> 3.0 (V6.2 original)
+    "height": 8.0,               # Increased: 3.0 -> 8.0 (squat needs strong height tracking)
     "orientation": 6.0,          # REVERTED: 8.0 -> 6.0 (V6.2 original)
     "ang_vel_penalty": 1.0,
     # Posture
@@ -294,7 +294,7 @@ REWARD_WEIGHTS = {
     "arm_stability_bonus": 2.0,
     "transition_stability": 1.5,
     # NEW: Squat rewards
-    "squat_knee": 2.0,
+    "squat_knee": 4.0,           # Increased: 2.0 -> 4.0, formula changed to positive exp
 }
 
 # ============================================================================
@@ -381,7 +381,7 @@ def compute_orientation_error(palm_quat, target_dir):
 # NETWORK — DualActorCritic (Loco fine-tune + Arm frozen)
 # ============================================================================
 
-KL_COEFF = 0.5  # KL penalty to V6.2 reference — prevents forgetting walking
+KL_COEFF = 0.1  # Reduced from 0.5 — allow policy to learn squat (was too restrictive)
 
 
 def build_ref_actor(device):
@@ -1172,7 +1172,7 @@ def create_env(num_envs, device):
 
             # === STABILITY ===
             height = pos[:, 2]
-            r_height = torch.exp(-8.0 * (height - self.height_cmd) ** 2)
+            r_height = torch.exp(-15.0 * (height - self.height_cmd) ** 2)
 
             r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))
             r_ang = torch.exp(-1.0 * (av_b[:, :2] ** 2).sum(-1))
@@ -1208,6 +1208,10 @@ def create_env(num_envs, device):
             leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2
             r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))
             r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
+            # Disable standing_posture when squatting — default pose is 0.78m upright,
+            # actively fights squat by penalizing bent knees/hips
+            squat_posture_mask = (self.height_cmd >= 0.70).float()
+            r_standing_posture = squat_posture_mask * r_standing_posture + (1 - squat_posture_mask) * 1.0
 
             # === PHYSICS PENALTIES ===
             vz = lv_b[:, 2]
@@ -1240,15 +1244,16 @@ def create_env(num_envs, device):
             # === NEW: ARM STABILITY BONUS (relative to height_cmd) ===
             r_arm_stability = (height > (self.height_cmd - 0.10)).float()
 
-            # === NEW: SQUAT KNEE (HOMIE formula) ===
+            # === NEW: SQUAT KNEE (HOMIE formula, positive exp) ===
             # Couples height command with knee bend — low height = bent knees
+            # Changed from negative squared to positive exp for active incentive
             knee_max = 1.5
             lk_norm = lk.clamp(0, knee_max) / knee_max
             rk_norm = rk.clamp(0, knee_max) / knee_max
             knee_norm = (lk_norm + rk_norm) / 2.0
             h_target_norm = ((self.height_cmd - 0.40) / (0.78 - 0.40)).clamp(0, 1)
             desired_knee_norm = 1.0 - h_target_norm
-            r_squat_knee = -((knee_norm - desired_knee_norm) ** 2)
+            r_squat_knee = torch.exp(-8.0 * (knee_norm - desired_knee_norm) ** 2)
 
             # === NEW: TRANSITION STABILITY ===
             cmd_near_zero = (self.vel_cmd.abs().sum(-1) < 0.1).float()
