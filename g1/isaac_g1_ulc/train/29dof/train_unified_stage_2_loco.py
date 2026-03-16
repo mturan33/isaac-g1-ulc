@@ -1421,7 +1421,7 @@ def create_env(num_envs, device):
                     vyaw_cmd = self.vel_cmd[:, 2].mean().item()
 
                 vx_err_rel = abs(vx_actual - vx_cmd) / max(abs(vx_cmd), 0.1)
-                vx_ok = vx_err_rel < 0.35  # tightened: was 0.5
+                vx_ok = vx_err_rel < 0.50  # relaxed for squat curriculum (was 0.35)
 
                 vy_err_abs = abs(vy_actual - vy_cmd)
                 vy_ok = vy_err_abs < 0.08 or abs(vy_cmd) < 0.05  # tightened: was 0.1
