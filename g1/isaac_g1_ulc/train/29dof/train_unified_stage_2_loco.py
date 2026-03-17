@@ -269,7 +269,7 @@ REWARD_WEIGHTS = {
     "gait_clearance": 2.0,
     "gait_contact": 2.0,
     # Stability — REVERTED to V6.2 values (increasing caused standing exploit)
-    "height": 8.0,               # Increased: 3.0 -> 8.0 (squat needs strong height tracking)
+    "height": 15.0,              # Increased: 3.0 -> 8.0 -> 15.0 (multiplicative gate + additive)
     "orientation": 6.0,          # REVERTED: 8.0 -> 6.0 (V6.2 original)
     "ang_vel_penalty": 1.0,
     # Posture
@@ -381,7 +381,7 @@ def compute_orientation_error(palm_quat, target_dir):
 # NETWORK — DualActorCritic (Loco fine-tune + Arm frozen)
 # ============================================================================
 
-KL_COEFF = 0.1  # Reduced from 0.5 — allow policy to learn squat (was too restrictive)
+KL_COEFF = 0.0  # DISABLED — squat requires large deviation from reference, KL was blocking it
 
 
 def build_ref_actor(device):
@@ -1162,9 +1162,10 @@ def create_env(num_envs, device):
             r_gait_clearance = r_gait_clearance * gait_scale + (1 - gait_scale) * 1.0
             r_gait_contact = r_gait_contact * gait_scale
 
-            # Reduce gait reward influence when squatting (height_cmd < 0.70)
+            # Disable gait rewards when squatting — gait targets (knee=0.42-0.65) conflict
+            # with squat knee targets (knee=1.0+), was 0.5 but still fighting squat
             squat_scale = torch.where(self.height_cmd < 0.70,
-                                       torch.tensor(0.5, device=self.device),
+                                       torch.tensor(0.0, device=self.device),
                                        torch.tensor(1.0, device=self.device))
             r_gait_knee = r_gait_knee * squat_scale + (1 - squat_scale) * 1.0
             r_gait_clearance = r_gait_clearance * squat_scale + (1 - squat_scale) * 1.0
@@ -1172,7 +1173,7 @@ def create_env(num_envs, device):
 
             # === STABILITY ===
             height = pos[:, 2]
-            r_height = torch.exp(-15.0 * (height - self.height_cmd) ** 2)
+            r_height = torch.exp(-25.0 * (height - self.height_cmd) ** 2)
 
             r_orient = torch.exp(-15.0 * (g[:, :2] ** 2).sum(-1))
             r_ang = torch.exp(-1.0 * (av_b[:, :2] ** 2).sum(-1))
@@ -1260,17 +1261,22 @@ def create_env(num_envs, device):
             vel_near_zero = (lv_b[:, :2].norm(dim=-1) < 0.15).float()
             r_transition = cmd_near_zero * vel_near_zero
 
-            # === TOTAL ===
-            reward = (
+            # === MULTIPLICATIVE HEIGHT GATE ===
+            # Policy cannot get full reward from ANY term without matching height_cmd.
+            # Additive height reward was only ~8% of total — policy ignored it.
+            # Multiplicative gate makes height tracking a prerequisite for all rewards.
+            height_err_sq = (height - self.height_cmd) ** 2
+            height_gate = torch.exp(-25.0 * height_err_sq)  # 0.40 at 0.18m err, 1.0 at 0
+
+            # Gated: tracking + gait + posture (height_gate multiplied)
+            # Policy cannot get full tracking/gait reward without matching height_cmd
+            r_gated = (
                 REWARD_WEIGHTS["vx"] * r_vx
                 + REWARD_WEIGHTS["vy"] * r_vy
                 + REWARD_WEIGHTS["vyaw"] * r_vyaw
                 + REWARD_WEIGHTS["gait_knee"] * r_gait_knee
                 + REWARD_WEIGHTS["gait_clearance"] * r_gait_clearance
                 + REWARD_WEIGHTS["gait_contact"] * r_gait_contact
-                + REWARD_WEIGHTS["height"] * r_height
-                + REWARD_WEIGHTS["orientation"] * r_orient
-                + REWARD_WEIGHTS["ang_vel_penalty"] * r_ang
                 + REWARD_WEIGHTS["ankle_penalty"] * r_ankle
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
@@ -1278,18 +1284,34 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["hip_yaw_penalty"] * r_hip_yaw
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
                 + REWARD_WEIGHTS["standing_posture"] * r_standing_posture
-                + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
+                + REWARD_WEIGHTS["arm_stability_bonus"] * r_arm_stability
+                + REWARD_WEIGHTS["transition_stability"] * r_transition
+                + REWARD_WEIGHTS["squat_knee"] * r_squat_knee
+            )
+
+            # Ungated safety: orientation + ang_vel + alive — always full strength
+            # Robot must stay balanced at ANY height, gate must not weaken this
+            r_safety = (
+                REWARD_WEIGHTS["orientation"] * r_orient
+                + REWARD_WEIGHTS["ang_vel_penalty"] * r_ang
+                + REWARD_WEIGHTS["alive"]
+            )
+
+            # Penalties NOT gated — always apply regardless of height
+            r_penalties = (
+                REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
                 + REWARD_WEIGHTS["yaw_rate_penalty"] * r_yaw_rate_penalty
                 + REWARD_WEIGHTS["feet_slip"] * r_feet_slip
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
-                + REWARD_WEIGHTS["alive"]
-                + REWARD_WEIGHTS["arm_stability_bonus"] * r_arm_stability
-                + REWARD_WEIGHTS["transition_stability"] * r_transition
-                + REWARD_WEIGHTS["squat_knee"] * r_squat_knee
             )
+
+            # Additive height reward on top (direct incentive)
+            r_height_additive = REWARD_WEIGHTS["height"] * r_height
+
+            reward = height_gate * r_gated + r_safety + r_penalties + r_height_additive
 
             return reward
 
