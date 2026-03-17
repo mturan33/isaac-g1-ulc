@@ -1628,7 +1628,7 @@ def main():
     print(f"  Loco: FINE-TUNE (66->15), actor_lr=1e-4, critic_lr=3e-4")
     print(f"  Arm: FROZEN perturbation (39->7)")
     print(f"  KL penalty: coeff={KL_COEFF}, ref={'V6.2' if ref_actor is not None else 'DISABLED'}")
-    print(f"  Reward: vx=6.0, orient=6.0, height=3.0 (V6.2 reverted)")
+    print(f"  Reward: vx={REWARD_WEIGHTS['vx']}, orient={REWARD_WEIGHTS['orientation']}, height={REWARD_WEIGHTS['height']}, squat_knee={REWARD_WEIGHTS['squat_knee']}")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
