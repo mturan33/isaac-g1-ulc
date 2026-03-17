@@ -381,7 +381,7 @@ def compute_orientation_error(palm_quat, target_dir):
 # NETWORK — DualActorCritic (Loco fine-tune + Arm frozen)
 # ============================================================================
 
-KL_COEFF = 0.0  # DISABLED — squat requires large deviation from reference, KL was blocking it
+KL_COEFF = 0.02  # Light brake — prevents KL explosion while allowing squat learning
 
 
 def build_ref_actor(device):
@@ -1266,7 +1266,7 @@ def create_env(num_envs, device):
             # Additive height reward was only ~8% of total — policy ignored it.
             # Multiplicative gate makes height tracking a prerequisite for all rewards.
             height_err_sq = (height - self.height_cmd) ** 2
-            height_gate = torch.exp(-25.0 * height_err_sq)  # 0.40 at 0.18m err, 1.0 at 0
+            height_gate = 0.3 + 0.7 * torch.exp(-25.0 * height_err_sq)  # floor=0.3, vx never zeroed
 
             # Gated: tracking + gait + posture (height_gate multiplied)
             # Policy cannot get full tracking/gait reward without matching height_cmd
