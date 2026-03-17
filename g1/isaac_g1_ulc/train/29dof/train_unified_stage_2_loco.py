@@ -312,6 +312,8 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from Stage 2 Loco checkpoint")
     parser.add_argument("--experiment_name", type=str, default="g1_stage2_loco_squat")
+    parser.add_argument("--curriculum_level", type=int, default=None,
+                        help="Force curriculum level (overrides checkpoint level)")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
@@ -1261,22 +1263,26 @@ def create_env(num_envs, device):
             vel_near_zero = (lv_b[:, :2].norm(dim=-1) < 0.15).float()
             r_transition = cmd_near_zero * vel_near_zero
 
-            # === MULTIPLICATIVE HEIGHT GATE ===
-            # Policy cannot get full reward from ANY term without matching height_cmd.
-            # Additive height reward was only ~8% of total — policy ignored it.
-            # Multiplicative gate makes height tracking a prerequisite for all rewards.
+            # === MULTIPLICATIVE HEIGHT GATE (velocity-only) ===
+            # Gate ONLY velocity tracking — robot can't get vx/vy/vyaw reward without
+            # matching height_cmd. Gait/posture/orient ungated → balance preserved.
             height_err_sq = (height - self.height_cmd) ** 2
-            height_gate = 0.3 + 0.7 * torch.exp(-25.0 * height_err_sq)  # floor=0.3, vx never zeroed
+            height_gate = torch.exp(-50.0 * height_err_sq)  # no floor, scale -50
 
-            # Gated: tracking + gait + posture (height_gate multiplied)
-            # Policy cannot get full tracking/gait reward without matching height_cmd
-            r_gated = (
+            # Gated: ONLY velocity tracking rewards
+            r_vel_gated = (
                 REWARD_WEIGHTS["vx"] * r_vx
                 + REWARD_WEIGHTS["vy"] * r_vy
                 + REWARD_WEIGHTS["vyaw"] * r_vyaw
-                + REWARD_WEIGHTS["gait_knee"] * r_gait_knee
+            )
+
+            # Ungated: gait, posture, stability — always full strength
+            r_ungated = (
+                REWARD_WEIGHTS["gait_knee"] * r_gait_knee
                 + REWARD_WEIGHTS["gait_clearance"] * r_gait_clearance
                 + REWARD_WEIGHTS["gait_contact"] * r_gait_contact
+                + REWARD_WEIGHTS["orientation"] * r_orient
+                + REWARD_WEIGHTS["ang_vel_penalty"] * r_ang
                 + REWARD_WEIGHTS["ankle_penalty"] * r_ankle
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
@@ -1287,17 +1293,10 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["arm_stability_bonus"] * r_arm_stability
                 + REWARD_WEIGHTS["transition_stability"] * r_transition
                 + REWARD_WEIGHTS["squat_knee"] * r_squat_knee
-            )
-
-            # Ungated safety: orientation + ang_vel + alive — always full strength
-            # Robot must stay balanced at ANY height, gate must not weaken this
-            r_safety = (
-                REWARD_WEIGHTS["orientation"] * r_orient
-                + REWARD_WEIGHTS["ang_vel_penalty"] * r_ang
                 + REWARD_WEIGHTS["alive"]
             )
 
-            # Penalties NOT gated — always apply regardless of height
+            # Penalties — always apply regardless of height
             r_penalties = (
                 REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
@@ -1308,10 +1307,10 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["energy"] * r_energy
             )
 
-            # Additive height reward on top (direct incentive)
+            # Additive height reward (direct incentive)
             r_height_additive = REWARD_WEIGHTS["height"] * r_height
 
-            reward = height_gate * r_gated + r_safety + r_penalties + r_height_additive
+            reward = height_gate * r_vel_gated + r_ungated + r_penalties + r_height_additive
 
             return reward
 
@@ -1456,14 +1455,24 @@ def create_env(num_envs, device):
                 vyaw_err_abs = abs(vyaw_actual - vyaw_cmd)
                 vyaw_ok = vyaw_err_abs < 0.25 or abs(vyaw_cmd) < 0.1  # tightened: was 0.3
 
-                if vx_ok and vy_ok and vyaw_ok:
+                # Height tracking gate for squat levels (L8+)
+                # Robot must demonstrate height tracking before advancing
+                height_ok = True
+                height_err_avg = 0.0
+                if self.curr_level >= 8:
+                    h_actual = self.robot.data.root_pos_w[:, 2]
+                    height_err_avg = (h_actual - self.height_cmd).abs().mean().item()
+                    height_ok = height_err_avg < 0.10  # must track within 10cm
+
+                if vx_ok and vy_ok and vyaw_ok and height_ok:
                     self.curr_level += 1
                     new_lv = CURRICULUM[self.curr_level]
                     print(f"\n*** LEVEL UP! Now {self.curr_level}: {new_lv['description']} ***")
                     print(f"    Load: {new_lv['load_range']}, Push: {new_lv['push_force']}")
+                    height_str = f" h_err={height_err_avg:.3f}" if self.curr_level > 8 else ""
                     print(f"    Gate: vx={vx_actual:.3f}({vx_cmd:.3f}) err={vx_err_rel:.2f}"
                           f" vy={vy_actual:.3f}({vy_cmd:.3f}) vyaw={vyaw_actual:.3f}({vyaw_cmd:.3f})"
-                          f" [walk_envs={n_walk}/{self.num_envs}]")
+                          f"{height_str} [walk_envs={n_walk}/{self.num_envs}]")
                     self.curr_hist = []
                     self._sample_commands(torch.arange(self.num_envs, device=self.device))
                     self._sample_load(torch.arange(self.num_envs, device=self.device))
@@ -1617,6 +1626,12 @@ def main():
         ppo = LocoPPO(net, device, ref_actor=ref_actor, ref_log_std=ref_log_std)
         if "loco_optimizer" in ckpt:
             ppo.opt.load_state_dict(ckpt["loco_optimizer"])
+        # CLI curriculum level override (e.g., --curriculum_level 8 to restart at L8)
+        if args_cli.curriculum_level is not None:
+            forced = min(args_cli.curriculum_level, len(CURRICULUM) - 1)
+            print(f"  [Curriculum] Forced level: {env.curr_level} -> {forced}")
+            env.curr_level = forced
+            env.curr_hist = []
         print(f"  Resumed: iter={start_iter}, R={best_reward:.2f}, Lv={env.curr_level}")
     else:
         if args_cli.stage1_checkpoint is None or args_cli.arm_checkpoint is None:
