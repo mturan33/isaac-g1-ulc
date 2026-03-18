@@ -294,7 +294,10 @@ REWARD_WEIGHTS = {
     "arm_stability_bonus": 2.0,
     "transition_stability": 1.5,
     # NEW: Squat rewards
-    "squat_knee": 4.0,           # Increased: 2.0 -> 4.0, formula changed to positive exp
+    "squat_knee": 2.0,           # Reduced: 4.0 -> 2.0 (homie_knee is dominant now)
+    # HOMIE knee-height coupled reward (RSS 2025, arXiv 2502.13013)
+    # Directly tells policy "bend knees when height_cmd is low"
+    "homie_knee": 8.0,           # UNGATED — always active, shortens gradient chain
 }
 
 # ============================================================================
@@ -1247,16 +1250,29 @@ def create_env(num_envs, device):
             # === NEW: ARM STABILITY BONUS (relative to height_cmd) ===
             r_arm_stability = (height > (self.height_cmd - 0.10)).float()
 
-            # === NEW: SQUAT KNEE (HOMIE formula, positive exp) ===
+            # === NEW: SQUAT KNEE (positive exp, secondary to HOMIE) ===
             # Couples height command with knee bend — low height = bent knees
-            # Changed from negative squared to positive exp for active incentive
-            knee_max = 1.5
+            knee_max = 2.0  # matched with termination limit
             lk_norm = lk.clamp(0, knee_max) / knee_max
             rk_norm = rk.clamp(0, knee_max) / knee_max
             knee_norm = (lk_norm + rk_norm) / 2.0
             h_target_norm = ((self.height_cmd - 0.40) / (0.78 - 0.40)).clamp(0, 1)
             desired_knee_norm = 1.0 - h_target_norm
             r_squat_knee = torch.exp(-8.0 * (knee_norm - desired_knee_norm) ** 2)
+
+            # === NEW: HOMIE Knee-Height Coupled Reward (RSS 2025) ===
+            # r = -|height_err * (knee_norm - 0.5)|
+            # When h_cmd < h_actual AND knees straight → BIG penalty
+            # When h_cmd < h_actual AND knees bent → small penalty (correct direction)
+            # When h_cmd ≈ h_actual → penalty ≈ 0 (height correct)
+            KNEE_MIN = 0.0   # straight leg (rad)
+            KNEE_MAX = 2.0   # deep squat (rad) — G1 knee joint range
+            lk_norm_homie = (lk.clamp(KNEE_MIN, KNEE_MAX) - KNEE_MIN) / (KNEE_MAX - KNEE_MIN)
+            rk_norm_homie = (rk.clamp(KNEE_MIN, KNEE_MAX) - KNEE_MIN) / (KNEE_MAX - KNEE_MIN)
+            h_err_signed = self.height_cmd - height  # negative = need to squat
+            r_homie_left = -torch.abs(h_err_signed * (lk_norm_homie - 0.5))
+            r_homie_right = -torch.abs(h_err_signed * (rk_norm_homie - 0.5))
+            r_homie_knee = (r_homie_left + r_homie_right) / 2.0
 
             # === NEW: TRANSITION STABILITY ===
             cmd_near_zero = (self.vel_cmd.abs().sum(-1) < 0.1).float()
@@ -1310,7 +1326,10 @@ def create_env(num_envs, device):
             # Additive height reward (direct incentive)
             r_height_additive = REWARD_WEIGHTS["height"] * r_height
 
-            reward = height_gate * r_vel_gated + r_ungated + r_penalties + r_height_additive
+            # HOMIE knee reward — UNGATED (already contains height_err, double-gating would weaken it)
+            r_homie_additive = REWARD_WEIGHTS["homie_knee"] * r_homie_knee
+
+            reward = height_gate * r_vel_gated + r_ungated + r_penalties + r_height_additive + r_homie_additive
 
             return reward
 
@@ -1334,7 +1353,7 @@ def create_env(num_envs, device):
             jp = self.robot.data.joint_pos[:, self.loco_idx]
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
-            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 1.5) | (rk > 1.5)
+            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)  # relaxed 1.5->2.0 for squat
 
             waist_pitch_val = jp[:, 14]
             waist_roll_val = jp[:, 13]
@@ -1371,12 +1390,56 @@ def create_env(num_envs, device):
 
             default_pos = self.robot.data.default_joint_pos[env_ids].clone()
             noise = torch.randn_like(default_pos) * 0.02
-            self.robot.write_joint_state_to_sim(
-                default_pos + noise,
-                torch.zeros_like(default_pos), None, env_ids)
+            joint_pos = default_pos + noise
 
             root_pos = torch.tensor([[0.0, 0.0, HEIGHT_DEFAULT]], device=self.device).expand(n, -1).clone()
             root_pos[:, :2] += torch.randn(n, 2, device=self.device) * 0.05
+
+            # === SQUAT INITIAL STATE: 30% of envs start in squat (L8+ only) ===
+            if self.curr_level >= 8:
+                squat_mask = torch.rand(n, device=self.device) < 0.3
+                n_squat = squat_mask.sum().item()
+                if n_squat > 0:
+                    # Random knee bend: 0.6-1.2 rad (light to deep squat)
+                    squat_knee = torch.rand(n_squat, device=self.device) * 0.6 + 0.6
+                    # Hip pitch: compensate for knee bend (lean forward slightly)
+                    squat_hip_pitch = -squat_knee * 0.5 - 0.2
+                    # Ankle pitch: compensate to keep foot flat
+                    squat_ankle_pitch = squat_knee * 0.3
+
+                    # Apply to joint positions using full robot joint indices
+                    # self.loco_idx maps LOCO_JOINT_NAMES order → full robot joint order
+                    lhp = self.loco_idx[self.left_hip_pitch_idx].item()
+                    rhp = self.loco_idx[self.right_hip_pitch_idx].item()
+                    lk_full = self.loco_idx[self.left_knee_idx].item()
+                    rk_full = self.loco_idx[self.right_knee_idx].item()
+                    lap = self.loco_idx[self.ankle_pitch_loco_idx[0]].item()
+                    rap = self.loco_idx[self.ankle_pitch_loco_idx[1]].item()
+
+                    joint_pos[squat_mask, lhp] = squat_hip_pitch
+                    joint_pos[squat_mask, rhp] = squat_hip_pitch
+                    joint_pos[squat_mask, lk_full] = squat_knee
+                    joint_pos[squat_mask, rk_full] = squat_knee
+                    joint_pos[squat_mask, lap] = squat_ankle_pitch
+                    joint_pos[squat_mask, rap] = squat_ankle_pitch
+
+                    # Lower root height for squat envs (prevent floating)
+                    # Approximate: each 0.1 rad knee → ~0.03m height drop
+                    height_reduction = squat_knee * 0.08
+                    root_pos[squat_mask, 2] = (HEIGHT_DEFAULT - height_reduction).clamp(min=0.45)
+
+                    # Set height_cmd for squat envs to match squat depth
+                    # h_cmd range from curriculum level
+                    lv = CURRICULUM[self.curr_level]
+                    h_lo, h_hi = lv["height_range"]
+                    squat_h_cmd = torch.rand(n_squat, device=self.device) * (h_hi - h_lo) + h_lo
+                    # Use env_ids[squat_mask] to index into self.height_cmd
+                    self.height_cmd[env_ids[squat_mask]] = squat_h_cmd
+
+            self.robot.write_joint_state_to_sim(
+                joint_pos,
+                torch.zeros_like(joint_pos), None, env_ids)
+
             yaw = torch.randn(n, device=self.device) * 0.1
             qw = torch.cos(yaw / 2)
             root_quat = torch.stack([qw, torch.zeros_like(qw), torch.zeros_like(qw),
@@ -1665,7 +1728,7 @@ def main():
     print(f"  Loco: FINE-TUNE (66->15), actor_lr=1e-4, critic_lr=3e-4")
     print(f"  Arm: FROZEN perturbation (39->7)")
     print(f"  KL penalty: coeff={KL_COEFF}, ref={'V6.2' if ref_actor is not None else 'DISABLED'}")
-    print(f"  Reward: vx={REWARD_WEIGHTS['vx']}, orient={REWARD_WEIGHTS['orientation']}, height={REWARD_WEIGHTS['height']}, squat_knee={REWARD_WEIGHTS['squat_knee']}")
+    print(f"  Reward: vx={REWARD_WEIGHTS['vx']}, orient={REWARD_WEIGHTS['orientation']}, height={REWARD_WEIGHTS['height']}, homie_knee={REWARD_WEIGHTS['homie_knee']}, squat_knee={REWARD_WEIGHTS['squat_knee']}")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
@@ -1759,6 +1822,10 @@ def main():
             writer.add_scalar("robot/vyaw_cmd", env.vel_cmd[:, 2].mean().item(), iteration)
             writer.add_scalar("perturbation/load_mass_avg", env.load_mass.mean().item(), iteration)
             writer.add_scalar("robot/height_cmd_avg", env.height_cmd.mean().item(), iteration)
+            # Knee angles for squat tracking
+            jp_loco = env.robot.data.joint_pos[:, env.loco_idx]
+            avg_knee = (jp_loco[:, env.left_knee_idx].mean().item() + jp_loco[:, env.right_knee_idx].mean().item()) / 2
+            writer.add_scalar("robot/knee_avg", avg_knee, iteration)
 
         # Console log
         if iteration % 50 == 0:
@@ -1775,9 +1842,11 @@ def main():
             load_avg = env.load_mass.mean().item()
             h_cmd_avg = env.height_cmd.mean().item()
 
+            jp_loco_log = env.robot.data.joint_pos[:, env.loco_idx]
+            knee_avg = (jp_loco_log[:, env.left_knee_idx].mean().item() + jp_loco_log[:, env.right_knee_idx].mean().item()) / 2
             print(f"[{iteration:5d}/{args_cli.max_iterations}] "
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
-                  f"H={height:.3f}({h_cmd_avg:.2f}) vx={avg_vx:.3f}({cmd_vx:.3f}) "
+                  f"H={height:.3f}({h_cmd_avg:.2f}) K={knee_avg:.2f} vx={avg_vx:.3f}({cmd_vx:.3f}) "
                   f"vy={avg_vy:.3f}({cmd_vy:.3f}) "
                   f"vyaw={avg_vyaw:.3f}({cmd_vyaw:.3f}) "
                   f"Lv={env.curr_level} load={load_avg:.2f}kg "
