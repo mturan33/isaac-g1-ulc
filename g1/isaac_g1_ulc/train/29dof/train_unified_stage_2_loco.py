@@ -298,6 +298,8 @@ REWARD_WEIGHTS = {
     # HOMIE knee-height coupled reward (RSS 2025, arXiv 2502.13013)
     # Directly tells policy "bend knees when height_cmd is low"
     "homie_knee": 8.0,           # UNGATED — always active, shortens gradient chain
+    # Yaw drift penalty — penalizes accumulated yaw change over 100 steps
+    "yaw_drift": -2.0,           # prevents slow heading drift during sustained arm perturbation
 }
 
 # ============================================================================
@@ -648,7 +650,7 @@ def create_env(num_envs, device):
     @configclass
     class EnvCfg(DirectRLEnvCfg):
         decimation = 4
-        episode_length_s = 20.0
+        episode_length_s = 40.0  # increased from 20s for long-horizon stability (demo ~90s)
         action_space = ACT_DIM
         observation_space = OBS_DIM
         state_space = 0
@@ -790,6 +792,10 @@ def create_env(num_envs, device):
             self.push_duration = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
             self.push_force_active = torch.zeros(self.num_envs, 3, device=self.device)
 
+            # Yaw drift tracking (ring buffer of last 100 yaw values)
+            self._yaw_history = torch.zeros(self.num_envs, 100, device=self.device)
+            self._yaw_history_idx = 0
+
             # Command resample timer
             self.cmd_timer = torch.randint(0, 400, (self.num_envs,), device=self.device)
             self.cmd_resample_lo = 150
@@ -831,6 +837,14 @@ def create_env(num_envs, device):
             standing_mask = torch.rand(n, device=self.device) < 0.15
             if standing_mask.any():
                 self.vel_cmd[env_ids[standing_mask]] = 0.0
+            # 15% pure lateral (L5+): vx≈0, |vy|=0.2-0.4 (carry walk simulation)
+            if self.curr_level >= 5:
+                lateral_mask = (~standing_mask) & (torch.rand(n, device=self.device) < 0.15)
+                if lateral_mask.any():
+                    n_lat = lateral_mask.sum().item()
+                    self.vel_cmd[env_ids[lateral_mask], 0] = torch.empty(n_lat, device=self.device).uniform_(-0.05, 0.05)
+                    vy_sign = torch.sign(torch.randn(n_lat, device=self.device))
+                    self.vel_cmd[env_ids[lateral_mask], 1] = vy_sign * torch.empty(n_lat, device=self.device).uniform_(0.20, 0.40)
             # Height sampling (variable for squat levels L8+, fixed for L0-L7)
             h_lo, h_hi = lv.get("height_range", (HEIGHT_DEFAULT, HEIGHT_DEFAULT))
             if h_hi - h_lo > 0.01:
@@ -844,7 +858,14 @@ def create_env(num_envs, device):
 
         def _sample_arm_targets(self, env_ids):
             n = len(env_ids)
-            # Spherical sampling from shoulder (Stage 2 identical)
+
+            # --- Demo pose bias: 30% forward-high targets (L5+ only) ---
+            # Demo position: arm forward and elevated (reach/lift/carry)
+            demo_mask = torch.zeros(n, dtype=torch.bool, device=self.device)
+            if self.curr_level >= 5:
+                demo_mask = torch.rand(n, device=self.device) < 0.30
+
+            # Standard spherical sampling from shoulder (Stage 2 identical)
             azimuth = torch.empty(n, device=self.device).uniform_(-0.3, 1.2)
             elevation = torch.empty(n, device=self.device).uniform_(-0.3, 0.5)
             radius = torch.empty(n, device=self.device).uniform_(0.15, 0.45)
@@ -852,6 +873,13 @@ def create_env(num_envs, device):
             target_x = radius * torch.cos(elevation) * torch.cos(azimuth) + self.shoulder_offset[0]
             target_y = -radius * torch.cos(elevation) * torch.sin(azimuth) + self.shoulder_offset[1]
             target_z = radius * torch.sin(elevation) + self.shoulder_offset[2]
+
+            # Override demo envs with forward-high targets
+            if demo_mask.any():
+                n_demo = demo_mask.sum().item()
+                target_x[demo_mask] = torch.empty(n_demo, device=self.device).uniform_(0.20, 0.35)
+                target_y[demo_mask] = torch.empty(n_demo, device=self.device).uniform_(-0.15, -0.05)
+                target_z[demo_mask] = torch.empty(n_demo, device=self.device).uniform_(0.10, 0.25)
 
             target_x = target_x.clamp(-0.10, 0.55)
             target_y = target_y.clamp(-0.60, -0.05)
@@ -865,10 +893,10 @@ def create_env(num_envs, device):
 
             self.arm_steps_since_spawn[env_ids] = 0
 
-            # Arm freeze mode: 30% chance
+            # Arm freeze mode: 30% chance, 50-500 step duration (increased from 50-200)
             freeze_mask = torch.rand(n, device=self.device) < 0.3
             self.arm_frozen[env_ids] = freeze_mask
-            freeze_dur = torch.randint(50, 200, (n,), device=self.device)
+            freeze_dur = torch.randint(50, 500, (n,), device=self.device)  # extended for demo robustness
             self.arm_freeze_timer[env_ids] = torch.where(freeze_mask, freeze_dur,
                                                           torch.zeros(n, dtype=torch.long, device=self.device))
 
@@ -879,7 +907,21 @@ def create_env(num_envs, device):
         def _sample_load(self, env_ids):
             lv = CURRICULUM[self.curr_level]
             lo, hi = lv["load_range"]
-            self.load_mass[env_ids] = torch.empty(len(env_ids), device=self.device).uniform_(lo, hi)
+            n = len(env_ids)
+            self.load_mass[env_ids] = torch.empty(n, device=self.device).uniform_(lo, hi)
+            # Correlated carry mode (L5+): 40% envs get high load + forward arm target
+            if self.curr_level >= 5 and hi > 0.5:
+                carry_mask = torch.rand(n, device=self.device) < 0.40
+                if carry_mask.any():
+                    n_carry = carry_mask.sum().item()
+                    # Minimum 1.0kg load for carry envs
+                    carry_load = torch.empty(n_carry, device=self.device).uniform_(max(1.0, lo), hi)
+                    self.load_mass[env_ids[carry_mask]] = carry_load
+                    # Set arm target to forward-high (carry position)
+                    carry_ids = env_ids[carry_mask]
+                    self.arm_target_pos_body[carry_ids, 0] = torch.empty(n_carry, device=self.device).uniform_(0.20, 0.35)
+                    self.arm_target_pos_body[carry_ids, 1] = torch.empty(n_carry, device=self.device).uniform_(-0.15, -0.05)
+                    self.arm_target_pos_body[carry_ids, 2] = torch.empty(n_carry, device=self.device).uniform_(0.10, 0.25)
 
         # ================================================================
         # ARM OBS (Stage 2 identical — 39 dim)
@@ -998,7 +1040,15 @@ def create_env(num_envs, device):
                 change_ids = change_mask.nonzero(as_tuple=False).squeeze(-1)
                 self._sample_arm_targets(change_ids)
                 self.arm_target_timer[change_ids] = 0
-                self.arm_target_change_at[change_ids] = torch.randint(100, 300, (len(change_ids),), device=self.device)
+                n_ch = len(change_ids)
+                # Sustained mode: 30% hold same target for 500-1500 steps (L5+)
+                if self.curr_level >= 5:
+                    sustained = torch.rand(n_ch, device=self.device) < 0.30
+                    normal_dur = torch.randint(100, 300, (n_ch,), device=self.device)
+                    sustained_dur = torch.randint(500, 1500, (n_ch,), device=self.device)
+                    self.arm_target_change_at[change_ids] = torch.where(sustained, sustained_dur, normal_dur)
+                else:
+                    self.arm_target_change_at[change_ids] = torch.randint(100, 300, (n_ch,), device=self.device)
 
             # Apply external forces (load + push)
             self._apply_forces()
@@ -1247,6 +1297,26 @@ def create_env(num_envs, device):
 
             r_energy = (jv.abs() * jp.abs()).sum(-1)
 
+            # === NEW: YAW DRIFT PENALTY ===
+            # Track accumulated yaw change over 100 steps
+            # Penalizes unintended heading drift (e.g. from asymmetric arm perturbation)
+            torso_euler_rew = quat_to_euler_xyz(q)
+            current_yaw = torso_euler_rew[:, 2]  # rad
+            self._yaw_history[:, self._yaw_history_idx] = current_yaw
+            oldest_idx = (self._yaw_history_idx + 1) % 100
+            oldest_yaw = self._yaw_history[:, oldest_idx]
+            # Wrap-safe yaw difference
+            yaw_change = torch.atan2(
+                torch.sin(current_yaw - oldest_yaw),
+                torch.cos(current_yaw - oldest_yaw)
+            ).abs()
+            self._yaw_history_idx = (self._yaw_history_idx + 1) % 100
+            # Penalize drift beyond 15 deg (0.2618 rad), scaled by how much exceeds threshold
+            # Only penalize when vyaw_cmd is small (robot shouldn't be turning)
+            vyaw_cmd_drift = self.vel_cmd[:, 2].abs()
+            drift_active = (vyaw_cmd_drift < 0.2).float()  # only when not commanded to turn
+            r_yaw_drift = torch.clamp(yaw_change - 0.2618, min=0.0) * drift_active
+
             # === NEW: ARM STABILITY BONUS (relative to height_cmd) ===
             r_arm_stability = (height > (self.height_cmd - 0.10)).float()
 
@@ -1321,6 +1391,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
+                + REWARD_WEIGHTS["yaw_drift"] * r_yaw_drift
             )
 
             # Additive height reward (direct incentive)
@@ -1448,6 +1519,7 @@ def create_env(num_envs, device):
             self.robot.write_root_velocity_to_sim(torch.zeros(n, 6, device=self.device), env_ids)
 
             # Reset state
+            self._yaw_history[env_ids] = 0
             self.prev_act[env_ids] = 0
             self._prev_act[env_ids] = 0
             self.prev_arm_act[env_ids] = 0
