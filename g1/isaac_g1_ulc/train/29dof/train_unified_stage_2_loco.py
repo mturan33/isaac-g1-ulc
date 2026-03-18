@@ -23,26 +23,26 @@ PERTURBATION:
   4. Enhanced 3D torso push (5-15 step duration, up to 80N)
   5. Arm freeze mode (30% chance hold position 50-200 steps)
 
-CURRICULUM (12 levels):
-  L0-L7: Perturbation progression (fixed height 0.80m)
-    L0: Standing + arm (no walk, no load)
-    L1: Slow walk + arm
-    L2: Medium walk + light load (0-0.5kg)
-    L3: Walk + lateral + medium load (0-1.0kg)
-    L4: Omnidirectional + arm + load
-    L5: Full range + heavy load (0-2kg)
-    L6: Aggressive + walk/stop transitions
-    L7: Extreme perturbation
-  L8-L11: Variable height / squat progression
-    L8: Light squat [0.70, 0.78] + walk + arm + load
-    L9: Medium squat [0.60, 0.78] + walk + arm + load
-    L10: Deep squat [0.50, 0.78] + walk + arm + load
-    L11: Full squat [0.40, 0.78] + walk + arm + load + push (FINAL)
+CURRICULUM (8 levels, fixed height 0.80m):
+  L0: Standing + arm (no walk, no load)
+  L1: Slow walk + arm
+  L2: Medium walk + light load (0-0.5kg)
+  L3: Walk + lateral + medium load (0-1.0kg)
+  L4: Omnidirectional + arm + load
+  L5: Full range + heavy load (0-2kg) + demo robustness (lateral bias, carry mode)
+  L6: Aggressive + walk/stop transitions
+  L7: Extreme perturbation (FINAL)
+  Squat levels (L8-L11) moved to Stage 3 Loco.
 
-REWARD: V6.2 22 terms preserved + 3 new (arm_stability_bonus, transition_stability, squat_knee)
-  Height reward: exp(-8 * (h - h_cmd)^2) — tracks variable height command
-  Squat knee (HOMIE): couples height_cmd with knee bend — low height = bent knees
-  Gait rewards scaled 50% during squat (height_cmd < 0.70)
+DEMO ROBUSTNESS (2026-03-18):
+  - Episode length: 40s (was 20s)
+  - Sustained arm: 30% hold 500-1500 steps, 30% demo pose bias (L5+)
+  - Lateral bias: 15% pure lateral (L5+)
+  - Correlated load+arm: 40% carry mode min 1.0kg (L5+)
+  - Yaw drift penalty: 100-step tracking, 15 deg threshold
+  - Arm freeze: 50-500 steps (was 50-200)
+
+REWARD: V6.2 base + arm_stability, transition_stability, yaw_drift
 
 CURRICULUM FIX (2026-03-14): Gates tightened to prevent fast advancement.
   - MIN_DWELL=500 iter per level (was 100)
@@ -206,52 +206,7 @@ CURRICULUM = [
         "push_interval": (50, 150),
         "cmd_change_interval": (30, 100),
         "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
-        "threshold": 19.5,
-    },
-    # === SQUAT LEVELS (variable height_cmd) ===
-    {
-        "description": "L8: Light squat [0.70, 0.78] + walk + arm + load",
-        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
-        "arm_active": True,
-        "load_range": (0.0, 1.0),
-        "push_force": (0, 20),
-        "push_interval": (100, 300),
-        "cmd_change_interval": None,
-        "height_range": (0.70, 0.78),
-        "threshold": 19.0,
-    },
-    {
-        "description": "L9: Medium squat [0.60, 0.78] + walk + arm + load",
-        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
-        "arm_active": True,
-        "load_range": (0.0, 1.5),
-        "push_force": (0, 30),
-        "push_interval": (80, 250),
-        "cmd_change_interval": None,
-        "height_range": (0.60, 0.78),
-        "threshold": 18.0,
-    },
-    {
-        "description": "L10: Deep squat [0.50, 0.78] + walk + arm + load",
-        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
-        "arm_active": True,
-        "load_range": (0.0, 1.5),
-        "push_force": (0, 40),
-        "push_interval": (80, 250),
-        "cmd_change_interval": None,
-        "height_range": (0.50, 0.78),
-        "threshold": 17.0,
-    },
-    {
-        "description": "L11: Full squat [0.40, 0.78] + walk + arm + load + push (FINAL)",
-        "vx": (-0.3, 0.7), "vy": (-0.3, 0.3), "vyaw": (-0.8, 0.8),
-        "arm_active": True,
-        "load_range": (0.0, 2.0),
-        "push_force": (0, 60),
-        "push_interval": (50, 200),
-        "cmd_change_interval": (50, 150),
-        "height_range": (0.40, 0.78),
-        "threshold": None,
+        "threshold": None,  # FINAL level (squat levels moved to Stage 3 Loco)
     },
 ]
 
@@ -269,7 +224,7 @@ REWARD_WEIGHTS = {
     "gait_clearance": 2.0,
     "gait_contact": 2.0,
     # Stability — REVERTED to V6.2 values (increasing caused standing exploit)
-    "height": 15.0,              # Increased: 3.0 -> 8.0 -> 15.0 (multiplicative gate + additive)
+    "height": 3.0,               # V6.2 original (squat moved to Stage 3)
     "orientation": 6.0,          # REVERTED: 8.0 -> 6.0 (V6.2 original)
     "ang_vel_penalty": 1.0,
     # Posture
@@ -293,11 +248,9 @@ REWARD_WEIGHTS = {
     # NEW: Perturbation stability rewards
     "arm_stability_bonus": 2.0,
     "transition_stability": 1.5,
-    # NEW: Squat rewards
-    "squat_knee": 2.0,           # Reduced: 4.0 -> 2.0 (homie_knee is dominant now)
-    # HOMIE knee-height coupled reward (RSS 2025, arXiv 2502.13013)
-    # Directly tells policy "bend knees when height_cmd is low"
-    "homie_knee": 8.0,           # UNGATED — always active, shortens gradient chain
+    # Squat rewards — DISABLED (moved to Stage 3 Loco)
+    "squat_knee": 0.0,
+    "homie_knee": 0.0,
     # Yaw drift penalty — penalizes accumulated yaw change over 100 steps
     "yaw_drift": -2.0,           # prevents slow heading drift during sustained arm perturbation
 }
@@ -316,7 +269,7 @@ def parse_args():
                         help="Stage 2 arm checkpoint (required for fresh start)")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from Stage 2 Loco checkpoint")
-    parser.add_argument("--experiment_name", type=str, default="g1_stage2_loco_squat")
+    parser.add_argument("--experiment_name", type=str, default="g1_stage2_loco")
     parser.add_argument("--curriculum_level", type=int, default=None,
                         help="Force curriculum level (overrides checkpoint level)")
     parser.add_argument("--headless", action="store_true")
@@ -1217,14 +1170,7 @@ def create_env(num_envs, device):
             r_gait_clearance = r_gait_clearance * gait_scale + (1 - gait_scale) * 1.0
             r_gait_contact = r_gait_contact * gait_scale
 
-            # Disable gait rewards when squatting — gait targets (knee=0.42-0.65) conflict
-            # with squat knee targets (knee=1.0+), was 0.5 but still fighting squat
-            squat_scale = torch.where(self.height_cmd < 0.70,
-                                       torch.tensor(0.0, device=self.device),
-                                       torch.tensor(1.0, device=self.device))
-            r_gait_knee = r_gait_knee * squat_scale + (1 - squat_scale) * 1.0
-            r_gait_clearance = r_gait_clearance * squat_scale + (1 - squat_scale) * 1.0
-            r_gait_contact = r_gait_contact * squat_scale
+            # Squat gait scaling removed (squat moved to Stage 3)
 
             # === STABILITY ===
             height = pos[:, 2]
@@ -1264,10 +1210,7 @@ def create_env(num_envs, device):
             leg_pos_err = (jp[:, :12] - self.default_loco[:12]) ** 2
             r_standing_posture_raw = torch.exp(-3.0 * leg_pos_err.sum(-1))
             r_standing_posture = standing_scale * r_standing_posture_raw + (1 - standing_scale) * 1.0
-            # Disable standing_posture when squatting — default pose is 0.78m upright,
-            # actively fights squat by penalizing bent knees/hips
-            squat_posture_mask = (self.height_cmd >= 0.70).float()
-            r_standing_posture = squat_posture_mask * r_standing_posture + (1 - squat_posture_mask) * 1.0
+            # squat_posture_mask removed (squat moved to Stage 3)
 
             # === PHYSICS PENALTIES ===
             vz = lv_b[:, 2]
@@ -1349,26 +1292,21 @@ def create_env(num_envs, device):
             vel_near_zero = (lv_b[:, :2].norm(dim=-1) < 0.15).float()
             r_transition = cmd_near_zero * vel_near_zero
 
-            # === MULTIPLICATIVE HEIGHT GATE (velocity-only) ===
-            # Gate ONLY velocity tracking — robot can't get vx/vy/vyaw reward without
-            # matching height_cmd. Gait/posture/orient ungated → balance preserved.
-            height_err_sq = (height - self.height_cmd) ** 2
-            height_gate = torch.exp(-50.0 * height_err_sq)  # no floor, scale -50
-
-            # Gated: ONLY velocity tracking rewards
-            r_vel_gated = (
+            # === REWARD SUM (no gating — squat moved to Stage 3) ===
+            reward = (
+                # Velocity tracking
                 REWARD_WEIGHTS["vx"] * r_vx
                 + REWARD_WEIGHTS["vy"] * r_vy
                 + REWARD_WEIGHTS["vyaw"] * r_vyaw
-            )
-
-            # Ungated: gait, posture, stability — always full strength
-            r_ungated = (
-                REWARD_WEIGHTS["gait_knee"] * r_gait_knee
+                # Gait control
+                + REWARD_WEIGHTS["gait_knee"] * r_gait_knee
                 + REWARD_WEIGHTS["gait_clearance"] * r_gait_clearance
                 + REWARD_WEIGHTS["gait_contact"] * r_gait_contact
+                # Stability
+                + REWARD_WEIGHTS["height"] * r_height
                 + REWARD_WEIGHTS["orientation"] * r_orient
                 + REWARD_WEIGHTS["ang_vel_penalty"] * r_ang
+                # Posture
                 + REWARD_WEIGHTS["ankle_penalty"] * r_ankle
                 + REWARD_WEIGHTS["foot_flatness"] * r_foot_flat
                 + REWARD_WEIGHTS["symmetry_gait"] * r_sym_gait
@@ -1376,15 +1314,11 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["hip_yaw_penalty"] * r_hip_yaw
                 + REWARD_WEIGHTS["waist_posture"] * r_waist_posture
                 + REWARD_WEIGHTS["standing_posture"] * r_standing_posture
+                # Perturbation stability
                 + REWARD_WEIGHTS["arm_stability_bonus"] * r_arm_stability
                 + REWARD_WEIGHTS["transition_stability"] * r_transition
-                + REWARD_WEIGHTS["squat_knee"] * r_squat_knee
-                + REWARD_WEIGHTS["alive"]
-            )
-
-            # Penalties — always apply regardless of height
-            r_penalties = (
-                REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
+                # Penalties
+                + REWARD_WEIGHTS["knee_negative_penalty"] * r_knee_neg_penalty
                 + REWARD_WEIGHTS["vz_penalty"] * r_vz_penalty
                 + REWARD_WEIGHTS["yaw_rate_penalty"] * r_yaw_rate_penalty
                 + REWARD_WEIGHTS["feet_slip"] * r_feet_slip
@@ -1392,15 +1326,9 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["jerk"] * jerk
                 + REWARD_WEIGHTS["energy"] * r_energy
                 + REWARD_WEIGHTS["yaw_drift"] * r_yaw_drift
+                # Alive
+                + REWARD_WEIGHTS["alive"]
             )
-
-            # Additive height reward (direct incentive)
-            r_height_additive = REWARD_WEIGHTS["height"] * r_height
-
-            # HOMIE knee reward — UNGATED (already contains height_err, double-gating would weaken it)
-            r_homie_additive = REWARD_WEIGHTS["homie_knee"] * r_homie_knee
-
-            reward = height_gate * r_vel_gated + r_ungated + r_penalties + r_height_additive + r_homie_additive
 
             return reward
 
@@ -1424,7 +1352,7 @@ def create_env(num_envs, device):
             jp = self.robot.data.joint_pos[:, self.loco_idx]
             lk = jp[:, self.left_knee_idx]
             rk = jp[:, self.right_knee_idx]
-            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 2.0) | (rk > 2.0)  # relaxed 1.5->2.0 for squat
+            knee_bad = (lk < -0.05) | (rk < -0.05) | (lk > 1.5) | (rk > 1.5)  # V6.2 original (squat moved to Stage 3)
 
             waist_pitch_val = jp[:, 14]
             waist_roll_val = jp[:, 13]
@@ -1466,46 +1394,7 @@ def create_env(num_envs, device):
             root_pos = torch.tensor([[0.0, 0.0, HEIGHT_DEFAULT]], device=self.device).expand(n, -1).clone()
             root_pos[:, :2] += torch.randn(n, 2, device=self.device) * 0.05
 
-            # === SQUAT INITIAL STATE: 30% of envs start in squat (L8+ only) ===
-            if self.curr_level >= 8:
-                squat_mask = torch.rand(n, device=self.device) < 0.3
-                n_squat = squat_mask.sum().item()
-                if n_squat > 0:
-                    # Random knee bend: 0.6-1.2 rad (light to deep squat)
-                    squat_knee = torch.rand(n_squat, device=self.device) * 0.6 + 0.6
-                    # Hip pitch: compensate for knee bend (lean forward slightly)
-                    squat_hip_pitch = -squat_knee * 0.5 - 0.2
-                    # Ankle pitch: compensate to keep foot flat
-                    squat_ankle_pitch = squat_knee * 0.3
-
-                    # Apply to joint positions using full robot joint indices
-                    # self.loco_idx maps LOCO_JOINT_NAMES order → full robot joint order
-                    lhp = self.loco_idx[self.left_hip_pitch_idx].item()
-                    rhp = self.loco_idx[self.right_hip_pitch_idx].item()
-                    lk_full = self.loco_idx[self.left_knee_idx].item()
-                    rk_full = self.loco_idx[self.right_knee_idx].item()
-                    lap = self.loco_idx[self.ankle_pitch_loco_idx[0]].item()
-                    rap = self.loco_idx[self.ankle_pitch_loco_idx[1]].item()
-
-                    joint_pos[squat_mask, lhp] = squat_hip_pitch
-                    joint_pos[squat_mask, rhp] = squat_hip_pitch
-                    joint_pos[squat_mask, lk_full] = squat_knee
-                    joint_pos[squat_mask, rk_full] = squat_knee
-                    joint_pos[squat_mask, lap] = squat_ankle_pitch
-                    joint_pos[squat_mask, rap] = squat_ankle_pitch
-
-                    # Lower root height for squat envs (prevent floating)
-                    # Approximate: each 0.1 rad knee → ~0.03m height drop
-                    height_reduction = squat_knee * 0.08
-                    root_pos[squat_mask, 2] = (HEIGHT_DEFAULT - height_reduction).clamp(min=0.45)
-
-                    # Set height_cmd for squat envs to match squat depth
-                    # h_cmd range from curriculum level
-                    lv = CURRICULUM[self.curr_level]
-                    h_lo, h_hi = lv["height_range"]
-                    squat_h_cmd = torch.rand(n_squat, device=self.device) * (h_hi - h_lo) + h_lo
-                    # Use env_ids[squat_mask] to index into self.height_cmd
-                    self.height_cmd[env_ids[squat_mask]] = squat_h_cmd
+            # Squat initial state removed (moved to Stage 3 Loco)
 
             self.robot.write_joint_state_to_sim(
                 joint_pos,
@@ -1590,24 +1479,14 @@ def create_env(num_envs, device):
                 vyaw_err_abs = abs(vyaw_actual - vyaw_cmd)
                 vyaw_ok = vyaw_err_abs < 0.25 or abs(vyaw_cmd) < 0.1  # tightened: was 0.3
 
-                # Height tracking gate for squat levels (L8+)
-                # Robot must demonstrate height tracking before advancing
-                height_ok = True
-                height_err_avg = 0.0
-                if self.curr_level >= 8:
-                    h_actual = self.robot.data.root_pos_w[:, 2]
-                    height_err_avg = (h_actual - self.height_cmd).abs().mean().item()
-                    height_ok = height_err_avg < 0.10  # must track within 10cm
-
-                if vx_ok and vy_ok and vyaw_ok and height_ok:
+                if vx_ok and vy_ok and vyaw_ok:
                     self.curr_level += 1
                     new_lv = CURRICULUM[self.curr_level]
                     print(f"\n*** LEVEL UP! Now {self.curr_level}: {new_lv['description']} ***")
                     print(f"    Load: {new_lv['load_range']}, Push: {new_lv['push_force']}")
-                    height_str = f" h_err={height_err_avg:.3f}" if self.curr_level > 8 else ""
                     print(f"    Gate: vx={vx_actual:.3f}({vx_cmd:.3f}) err={vx_err_rel:.2f}"
                           f" vy={vy_actual:.3f}({vy_cmd:.3f}) vyaw={vyaw_actual:.3f}({vyaw_cmd:.3f})"
-                          f"{height_str} [walk_envs={n_walk}/{self.num_envs}]")
+                          f" [walk_envs={n_walk}/{self.num_envs}]")
                     self.curr_hist = []
                     self._sample_commands(torch.arange(self.num_envs, device=self.device))
                     self._sample_load(torch.arange(self.num_envs, device=self.device))
@@ -1800,7 +1679,7 @@ def main():
     print(f"  Loco: FINE-TUNE (66->15), actor_lr=1e-4, critic_lr=3e-4")
     print(f"  Arm: FROZEN perturbation (39->7)")
     print(f"  KL penalty: coeff={KL_COEFF}, ref={'V6.2' if ref_actor is not None else 'DISABLED'}")
-    print(f"  Reward: vx={REWARD_WEIGHTS['vx']}, orient={REWARD_WEIGHTS['orientation']}, height={REWARD_WEIGHTS['height']}, homie_knee={REWARD_WEIGHTS['homie_knee']}, squat_knee={REWARD_WEIGHTS['squat_knee']}")
+    print(f"  Reward: vx={REWARD_WEIGHTS['vx']}, orient={REWARD_WEIGHTS['orientation']}, height={REWARD_WEIGHTS['height']}, yaw_drift={REWARD_WEIGHTS['yaw_drift']}")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
