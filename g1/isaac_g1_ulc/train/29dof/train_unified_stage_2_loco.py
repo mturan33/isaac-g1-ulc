@@ -1726,12 +1726,15 @@ def main():
             print(f"  [Curriculum] Forced level: {env.curr_level} -> {forced}")
             env.curr_level = forced
             env.curr_hist = []
-        print(f"  Resumed: iter={start_iter}, R={best_reward:.2f}, Lv={env.curr_level}")
+        # Read std from checkpoint for decay schedule
+        std_start = np.exp(net.loco_log_std.data.mean().item())
+        print(f"  Resumed: iter={start_iter}, R={best_reward:.2f}, Lv={env.curr_level}, std={std_start:.3f}")
     else:
         if args_cli.stage1_checkpoint is None or args_cli.arm_checkpoint is None:
             raise ValueError("--stage1_checkpoint AND --arm_checkpoint required for fresh start")
         ref_actor, ref_log_std = load_checkpoints(net, args_cli.stage1_checkpoint, args_cli.arm_checkpoint, device)
         ppo = LocoPPO(net, device, ref_actor=ref_actor, ref_log_std=ref_log_std)
+        std_start = 0.5  # fresh start exploration
 
     # Logging
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1765,11 +1768,16 @@ def main():
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
-        # Std decay: 0.5 -> 0.2 (linear, fine-tune)
-        progress = iteration / args_cli.max_iterations
-        std = max(0.5 - 0.3 * progress, 0.2)
+        # Std decay: start_std -> 0.2 (linear)
+        # On resume, start_std comes from checkpoint (e.g. 0.201), not hardcoded 0.5
+        # This prevents resetting a converged std back to 0.5
+        remaining_iters = args_cli.max_iterations - start_iter
+        if remaining_iters > 0:
+            progress_since_start = (iteration - start_iter) / remaining_iters
+        else:
+            progress_since_start = 1.0
+        std = max(std_start - (std_start - 0.20) * progress_since_start, 0.20)
         net.loco_log_std.data.fill_(np.log(std))
-        net.loco_log_std.data.clamp_(min=np.log(0.2))
 
         # Collect rollout
         for t in range(T):
