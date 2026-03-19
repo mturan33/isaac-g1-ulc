@@ -23,7 +23,7 @@ PERTURBATION:
   4. Enhanced 3D torso push (5-15 step duration, up to 80N)
   5. Arm freeze mode (30% chance hold position 50-200 steps)
 
-CURRICULUM (8 levels, fixed height 0.80m):
+CURRICULUM (10 levels, fixed height 0.80m):
   L0: Standing + arm (no walk, no load)
   L1: Slow walk + arm
   L2: Medium walk + light load (0-0.5kg)
@@ -31,8 +31,10 @@ CURRICULUM (8 levels, fixed height 0.80m):
   L4: Omnidirectional + arm + load
   L5: Full range + heavy load (0-2kg) + demo robustness (lateral bias, carry mode)
   L6: Aggressive + walk/stop transitions
-  L7: Extreme perturbation (FINAL)
-  Squat levels (L8-L11) moved to Stage 3 Loco.
+  L7: Extreme perturbation
+  L8: Drift correction + smooth walking (extra rewards: vyaw=-6, smooth=-3, precision=+2/-2)
+  L9: Ultra-smooth precision walking (FINAL)
+  Squat levels moved to Stage 3 Loco.
 
 DEMO ROBUSTNESS (2026-03-18):
   - Episode length: 40s (was 20s)
@@ -206,7 +208,34 @@ CURRICULUM = [
         "push_interval": (50, 150),
         "cmd_change_interval": (30, 100),
         "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
-        "threshold": None,  # FINAL level (squat levels moved to Stage 3 Loco)
+        "threshold": 19.0,  # was FINAL, now gates to L8
+    },
+    # === DRIFT CORRECTION LEVELS (L8-L9) ===
+    # L8+ activate extra rewards: vyaw_drift_extra, smooth_vel, vx_precision
+    # L0-L7 rewards UNTOUCHED — these are additive on top
+    {
+        "description": "L8: Drift correction + smooth walking",
+        "vx": (-0.3, 0.8), "vy": (-0.4, 0.4), "vyaw": (-0.8, 0.8),
+        "arm_active": True,
+        "load_range": (0.5, 2.0),
+        "push_force": (0, 60),
+        "push_interval": (80, 250),
+        "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+        "lateral_bias": 0.20,
+        "threshold": 19.0,
+    },
+    {
+        "description": "L9: Ultra-smooth precision walking (FINAL)",
+        "vx": (-0.3, 0.8), "vy": (-0.4, 0.4), "vyaw": (-0.8, 0.8),
+        "arm_active": True,
+        "load_range": (0.5, 2.0),
+        "push_force": (0, 80),
+        "push_interval": (80, 250),
+        "cmd_change_interval": None,
+        "height_range": (HEIGHT_DEFAULT, HEIGHT_DEFAULT),
+        "lateral_bias": 0.25,
+        "threshold": None,  # FINAL
     },
 ]
 
@@ -749,6 +778,10 @@ def create_env(num_envs, device):
             self._yaw_history = torch.zeros(self.num_envs, 100, device=self.device)
             self._yaw_history_idx = 0
 
+            # L8+ smooth velocity tracking (step-to-step velocity change)
+            self._prev_lv_b = None
+            self._prev_av_b = None
+
             # Command resample timer
             self.cmd_timer = torch.randint(0, 400, (self.num_envs,), device=self.device)
             self.cmd_resample_lo = 150
@@ -790,9 +823,11 @@ def create_env(num_envs, device):
             standing_mask = torch.rand(n, device=self.device) < 0.15
             if standing_mask.any():
                 self.vel_cmd[env_ids[standing_mask]] = 0.0
-            # 15% pure lateral (L5+): vx≈0, |vy|=0.2-0.4 (carry walk simulation)
-            if self.curr_level >= 5:
-                lateral_mask = (~standing_mask) & (torch.rand(n, device=self.device) < 0.15)
+            # Pure lateral bias (L5+): vx≈0, |vy|=0.2-0.4 (carry walk simulation)
+            # L5-L7: 15%, L8+: from curriculum lateral_bias field
+            lateral_pct = lv.get("lateral_bias", 0.15) if self.curr_level >= 5 else 0.0
+            if lateral_pct > 0:
+                lateral_mask = (~standing_mask) & (torch.rand(n, device=self.device) < lateral_pct)
                 if lateral_mask.any():
                     n_lat = lateral_mask.sum().item()
                     self.vel_cmd[env_ids[lateral_mask], 0] = torch.empty(n_lat, device=self.device).uniform_(-0.05, 0.05)
@@ -1292,8 +1327,37 @@ def create_env(num_envs, device):
             vel_near_zero = (lv_b[:, :2].norm(dim=-1) < 0.15).float()
             r_transition = cmd_near_zero * vel_near_zero
 
-            # === REWARD SUM (no gating — squat moved to Stage 3) ===
-            reward = (
+            # === L8+ CONDITIONAL EXTRA REWARDS (drift correction) ===
+            # These are ADDITIVE on top of L0-L7 rewards. Zero for L0-L7.
+            r_drift_extra = torch.zeros(self.num_envs, device=self.device)
+            r_smooth_extra = torch.zeros(self.num_envs, device=self.device)
+            r_precision_extra = torch.zeros(self.num_envs, device=self.device)
+
+            if self.curr_level >= 8:
+                # 1. Strong vyaw drift penalty — tracks vyaw error more aggressively
+                vyaw_err_sq = (av_b[:, 2] - self.vel_cmd[:, 2]) ** 2
+                r_drift_extra = -6.0 * vyaw_err_sq
+
+                # 2. Smooth velocity — penalize step-to-step velocity oscillation
+                if self._prev_lv_b is not None:
+                    vx_change = (lv_b[:, 0] - self._prev_lv_b[:, 0]).abs()
+                    vy_change = (lv_b[:, 1] - self._prev_lv_b[:, 1]).abs()
+                    vyaw_change = (av_b[:, 2] - self._prev_av_b[:, 2]).abs()
+                    r_smooth_extra = -3.0 * (vx_change + vy_change + 0.5 * vyaw_change)
+                self._prev_lv_b = lv_b.clone()
+                self._prev_av_b = av_b.clone()
+
+                # 3. vx precision bonus — reward tight tracking, penalize large error
+                vx_err_abs = (lv_b[:, 0] - self.vel_cmd[:, 0]).abs()
+                r_precision_extra = torch.where(
+                    vx_err_abs < 0.08,
+                    torch.tensor(2.0, device=self.device),
+                    -2.0 * (vx_err_abs - 0.08)
+                )
+
+            # === REWARD SUM ===
+            # L0-L7 base rewards (UNTOUCHED)
+            reward_base = (
                 # Velocity tracking
                 REWARD_WEIGHTS["vx"] * r_vx
                 + REWARD_WEIGHTS["vy"] * r_vy
@@ -1329,6 +1393,9 @@ def create_env(num_envs, device):
                 # Alive
                 + REWARD_WEIGHTS["alive"]
             )
+
+            # L8+ extra rewards (conditional, zero for L0-L7)
+            reward = reward_base + r_drift_extra + r_smooth_extra + r_precision_extra
 
             return reward
 
@@ -1409,6 +1476,11 @@ def create_env(num_envs, device):
 
             # Reset state
             self._yaw_history[env_ids] = 0
+            # Reset L8+ smooth velocity buffers (set to None forces re-init on next step)
+            if self._prev_lv_b is not None:
+                self._prev_lv_b[env_ids] = 0
+            if self._prev_av_b is not None:
+                self._prev_av_b[env_ids] = 0
             self.prev_act[env_ids] = 0
             self._prev_act[env_ids] = 0
             self.prev_arm_act[env_ids] = 0
@@ -1479,14 +1551,22 @@ def create_env(num_envs, device):
                 vyaw_err_abs = abs(vyaw_actual - vyaw_cmd)
                 vyaw_ok = vyaw_err_abs < 0.25 or abs(vyaw_cmd) < 0.1  # tightened: was 0.3
 
-                if vx_ok and vy_ok and vyaw_ok:
+                # Extra gate for L7→L8: vyaw drift must be low
+                drift_ok = True
+                vyaw_drift_avg = 0.0
+                if self.curr_level == 7:
+                    vyaw_drift_avg = av_b[walk_mask, 2].abs().mean().item()
+                    drift_ok = vyaw_drift_avg < 0.10
+
+                if vx_ok and vy_ok and vyaw_ok and drift_ok:
                     self.curr_level += 1
                     new_lv = CURRICULUM[self.curr_level]
                     print(f"\n*** LEVEL UP! Now {self.curr_level}: {new_lv['description']} ***")
                     print(f"    Load: {new_lv['load_range']}, Push: {new_lv['push_force']}")
+                    drift_str = f" vyaw_drift={vyaw_drift_avg:.3f}" if self.curr_level > 8 else ""
                     print(f"    Gate: vx={vx_actual:.3f}({vx_cmd:.3f}) err={vx_err_rel:.2f}"
                           f" vy={vy_actual:.3f}({vy_cmd:.3f}) vyaw={vyaw_actual:.3f}({vyaw_cmd:.3f})"
-                          f" [walk_envs={n_walk}/{self.num_envs}]")
+                          f"{drift_str} [walk_envs={n_walk}/{self.num_envs}]")
                     self.curr_hist = []
                     self._sample_commands(torch.arange(self.num_envs, device=self.device))
                     self._sample_load(torch.arange(self.num_envs, device=self.device))
@@ -1680,6 +1760,8 @@ def main():
     print(f"  Arm: FROZEN perturbation (39->7)")
     print(f"  KL penalty: coeff={KL_COEFF}, ref={'V6.2' if ref_actor is not None else 'DISABLED'}")
     print(f"  Reward: vx={REWARD_WEIGHTS['vx']}, orient={REWARD_WEIGHTS['orientation']}, height={REWARD_WEIGHTS['height']}, yaw_drift={REWARD_WEIGHTS['yaw_drift']}")
+    print(f"  Levels: L0-L7 (perturbation) + L8-L9 (drift correction)")
+    print(f"  L8+ extra: vyaw_drift=-6.0, smooth=-3.0, vx_precision=+2.0/-2.0")
     print(f"{'='*80}\n")
 
     for iteration in range(start_iter, args_cli.max_iterations):
