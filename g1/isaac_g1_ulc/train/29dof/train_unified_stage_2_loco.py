@@ -48,7 +48,7 @@ REWARD: V6.2 base + arm_stability, transition_stability, yaw_drift
 
 CURRICULUM FIX (2026-03-14): Gates tightened to prevent fast advancement.
   - MIN_DWELL=500 iter per level (was 100)
-  - vx gate: relative error < 0.35 (was 0.5)
+  - vx gate: absolute error < 0.18 m/s (was relative 0.50, changed for perturbation-fairness)
   - vy gate: abs error < 0.08 (was 0.1)
   - vyaw gate: abs error < 0.25 (was 0.3)
   - Standing envs filtered from gate evaluation (15% standing biased averages)
@@ -1542,8 +1542,8 @@ def create_env(num_envs, device):
                     vyaw_actual = av_b[:, 2].mean().item()
                     vyaw_cmd = self.vel_cmd[:, 2].mean().item()
 
-                vx_err_rel = abs(vx_actual - vx_cmd) / max(abs(vx_cmd), 0.1)
-                vx_ok = vx_err_rel < 0.50  # relaxed for squat curriculum (was 0.35)
+                vx_err_abs = abs(vx_actual - vx_cmd)
+                vx_ok = vx_err_abs < 0.18  # absolute error gate (perturbation-fair, was relative 0.50)
 
                 vy_err_abs = abs(vy_actual - vy_cmd)
                 vy_ok = vy_err_abs < 0.08 or abs(vy_cmd) < 0.05  # tightened: was 0.1
@@ -1564,7 +1564,7 @@ def create_env(num_envs, device):
                     print(f"\n*** LEVEL UP! Now {self.curr_level}: {new_lv['description']} ***")
                     print(f"    Load: {new_lv['load_range']}, Push: {new_lv['push_force']}")
                     drift_str = f" vyaw_drift={vyaw_drift_avg:.3f}" if self.curr_level > 8 else ""
-                    print(f"    Gate: vx={vx_actual:.3f}({vx_cmd:.3f}) err={vx_err_rel:.2f}"
+                    print(f"    Gate: vx={vx_actual:.3f}({vx_cmd:.3f}) abs_err={vx_err_abs:.3f}"
                           f" vy={vy_actual:.3f}({vy_cmd:.3f}) vyaw={vyaw_actual:.3f}({vyaw_cmd:.3f})"
                           f"{drift_str} [walk_envs={n_walk}/{self.num_envs}]")
                     self.curr_hist = []
