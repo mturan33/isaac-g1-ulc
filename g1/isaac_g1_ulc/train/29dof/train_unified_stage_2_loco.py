@@ -1556,7 +1556,17 @@ def create_env(num_envs, device):
                 vyaw_drift_avg = 0.0
                 if self.curr_level == 7:
                     vyaw_drift_avg = av_b[walk_mask, 2].abs().mean().item()
-                    drift_ok = vyaw_drift_avg < 0.10
+                    drift_ok = vyaw_drift_avg < 0.15  # relaxed: 0.10 too strict (gait oscillation ~0.12)
+
+                # Debug: print gate values every 500 iter when stuck at threshold level
+                if not (vx_ok and vy_ok and vyaw_ok and drift_ok) and self.curr_level == 7:
+                    if len(self.curr_hist) % 50 == 0:  # every 50 gate checks (~500 iter)
+                        fails = []
+                        if not vx_ok: fails.append(f"vx_abs={vx_err_abs:.3f}>0.18")
+                        if not vy_ok: fails.append(f"vy={abs(vy_actual-vy_cmd):.3f}>0.08")
+                        if not vyaw_ok: fails.append(f"vyaw={vyaw_err_abs:.3f}>0.25")
+                        if not drift_ok: fails.append(f"drift={vyaw_drift_avg:.3f}>0.15")
+                        print(f"  [Gate L7→L8 BLOCKED] {', '.join(fails)}")
 
                 if vx_ok and vy_ok and vyaw_ok and drift_ok:
                     self.curr_level += 1
