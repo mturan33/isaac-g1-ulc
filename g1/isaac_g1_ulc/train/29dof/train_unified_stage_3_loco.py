@@ -98,7 +98,7 @@ ARM_ACT_DIM = 7
 # CURRICULUM — 4 squat levels (variable height + arm perturbation + load)
 # ============================================================================
 
-MIN_DWELL = 500  # Minimum iterations per curriculum level before gate check
+MIN_DWELL = 1500  # Minimum iterations per curriculum level before gate check (was 500 — too fast, robot didn't learn squat)
 
 CURRICULUM = [
     {
@@ -278,7 +278,7 @@ def compute_orientation_error(palm_quat, target_dir):
 # NETWORK — DualActorCritic (Loco fine-tune + Arm frozen)
 # ============================================================================
 
-KL_COEFF = 0.02  # Light brake — prevents KL explosion while allowing squat learning
+KL_COEFF = 0.005  # Very light brake — squat is radical behavior change, KL must not block it (was 0.02)
 
 
 def build_ref_actor(device):
@@ -1458,7 +1458,7 @@ def create_env(num_envs, device):
                 height_err_avg = 0.0
                 h_actual = self.robot.data.root_pos_w[:, 2]
                 height_err_avg = (h_actual - self.height_cmd).abs().mean().item()
-                height_ok = height_err_avg < 0.10
+                height_ok = height_err_avg < 0.05  # was 0.10 — too loose, robot passed without squatting
 
                 if vx_ok and vy_ok and vyaw_ok and height_ok:
                     self.curr_level += 1
