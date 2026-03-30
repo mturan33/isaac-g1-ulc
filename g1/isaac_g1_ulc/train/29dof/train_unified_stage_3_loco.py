@@ -1108,7 +1108,7 @@ def create_env(num_envs, device):
 
             # === STABILITY ===
             height = pos[:, 2]
-            r_height = torch.exp(-25.0 * (height - self.height_cmd) ** 2)
+            r_height = torch.exp(-200.0 * (height - self.height_cmd) ** 2)
 
             # Multiplicative height gate on velocity rewards
             height_err_sq = (height - self.height_cmd) ** 2
