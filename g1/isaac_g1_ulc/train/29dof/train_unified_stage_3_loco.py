@@ -85,6 +85,13 @@ GAIT_FREQUENCY = _cfg_mod.GAIT_FREQUENCY
 ACTUATOR_PARAMS = _cfg_mod.ACTUATOR_PARAMS
 SHOULDER_OFFSET_RIGHT = _cfg_mod.SHOULDER_OFFSET_RIGHT
 
+# Reward logger
+_utils_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "utils")
+import sys
+if _utils_path not in sys.path:
+    sys.path.insert(0, _utils_path)
+from reward_logger import RewardLogger
+
 # ============================================================================
 # DIMENSIONS
 # ============================================================================
@@ -701,8 +708,30 @@ def create_env(num_envs, device):
             self._sample_arm_targets(torch.arange(self.num_envs, device=self.device))
             self._sample_load(torch.arange(self.num_envs, device=self.device))
 
+            # Reward breakdown logger
+            reward_component_names = [
+                "vx", "vy", "vyaw",
+                "gait_knee", "gait_clearance", "gait_contact",
+                "height", "orientation", "ang_vel_penalty",
+                "ankle_penalty", "foot_flatness", "symmetry_gait",
+                "hip_roll_penalty", "hip_yaw_penalty", "waist_posture",
+                "standing_posture", "arm_stability_bonus", "transition_stability",
+                "squat_knee", "homie_knee",
+                "knee_negative_penalty", "vz_penalty", "yaw_rate_penalty",
+                "feet_slip", "action_rate", "jerk", "energy", "yaw_drift",
+                "alive",
+            ]
+            self.reward_logger = RewardLogger(
+                reward_names=reward_component_names,
+                reward_weights=REWARD_WEIGHTS,
+                num_envs=self.num_envs,
+                device=self.device,
+            )
+            self.reward_extras = {}
+
             print(f"\n[Stage3Loco] {self.num_envs} envs, Level {self.curr_level}")
             print(f"  Obs: {OBS_DIM}, Act: {ACT_DIM}")
+            print(f"  RewardLogger: {len(reward_component_names)} components")
 
         @property
         def robot(self):
@@ -1230,6 +1259,49 @@ def create_env(num_envs, device):
             cmd_near_zero = (self.vel_cmd.abs().sum(-1) < 0.1).float()
             vel_near_zero = (lv_b[:, :2].norm(dim=-1) < 0.15).float()
             r_transition = cmd_near_zero * vel_near_zero
+
+            # === REWARD LOGGER: record raw (unweighted) values ===
+            rl = self.reward_logger
+            # Velocity (will be gated below, but raw values logged here)
+            rl.record("vx", r_vx * height_gate)
+            rl.record("vy", r_vy * height_gate)
+            rl.record("vyaw", r_vyaw * height_gate)
+            # Gait
+            rl.record("gait_knee", r_gait_knee)
+            rl.record("gait_clearance", r_gait_clearance)
+            rl.record("gait_contact", r_gait_contact)
+            # Stability
+            rl.record("height", r_height)
+            rl.record("orientation", r_orient)
+            rl.record("ang_vel_penalty", r_ang)
+            # Posture
+            rl.record("ankle_penalty", r_ankle)
+            rl.record("foot_flatness", r_foot_flat)
+            rl.record("symmetry_gait", r_sym_gait)
+            rl.record("hip_roll_penalty", r_hip_roll)
+            rl.record("hip_yaw_penalty", r_hip_yaw)
+            rl.record("waist_posture", r_waist_posture)
+            rl.record("standing_posture", r_standing_posture)
+            # Perturbation
+            rl.record("arm_stability_bonus", r_arm_stability)
+            rl.record("transition_stability", r_transition)
+            # Squat
+            rl.record("squat_knee", r_squat_knee)
+            rl.record("homie_knee", r_homie_knee)
+            # Penalties (raw = positive magnitude, weight is negative)
+            rl.record("knee_negative_penalty", r_knee_neg_penalty)
+            rl.record("vz_penalty", r_vz_penalty)
+            rl.record("yaw_rate_penalty", r_yaw_rate_penalty)
+            rl.record("feet_slip", r_feet_slip)
+            rl.record("action_rate", r_action_rate)
+            rl.record("jerk", jerk)
+            rl.record("energy", r_energy)
+            rl.record("yaw_drift", r_yaw_drift)
+            # Alive (constant)
+            rl.record("alive", torch.ones(self.num_envs, device=self.device))
+
+            # Store extras for TensorBoard (training loop reads this)
+            self.reward_extras = rl.get_extras()
 
             # === REWARD SUM (with height gate on velocity rewards) ===
             # Velocity rewards are gated by height accuracy — robot must match
@@ -1773,6 +1845,10 @@ def main():
             jp_loco = env.robot.data.joint_pos[:, env.loco_idx]
             avg_knee = (jp_loco[:, env.left_knee_idx].mean().item() + jp_loco[:, env.right_knee_idx].mean().item()) / 2
             writer.add_scalar("robot/knee_avg", avg_knee, iteration)
+
+            # Reward breakdown (RR/raw, RW/weighted, RB/budget%)
+            for key, val in env.reward_extras.items():
+                writer.add_scalar(key, val, iteration)
 
         # Console log
         if iteration % 50 == 0:
