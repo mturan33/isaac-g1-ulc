@@ -81,17 +81,22 @@ ARM_PREGRASP_POSE = {
 MIN_DWELL = 1500
 
 CURRICULUM = [
-    {"description": "L0: Large sphere, no noise",
-     "sphere_radius": 0.04, "spawn_noise": 0.00, "threshold": 3.0},
-    {"description": "L1: Large sphere, 1cm noise",
-     "sphere_radius": 0.04, "spawn_noise": 0.01, "threshold": 4.0},
-    {"description": "L2: Medium sphere, 2cm noise",
-     "sphere_radius": 0.035, "spawn_noise": 0.02, "threshold": 5.0},
-    {"description": "L3: Small sphere, 3cm noise",
-     "sphere_radius": 0.03, "spawn_noise": 0.03, "threshold": 6.0},
-    {"description": "L4: Tiny sphere, 4cm noise (FINAL)",
-     "sphere_radius": 0.025, "spawn_noise": 0.04, "threshold": None},
+    {"description": "L0: All shapes, no noise",
+     "spawn_noise": 0.00, "threshold": 5.0},
+    {"description": "L1: All shapes, 1cm noise",
+     "spawn_noise": 0.01, "threshold": 7.0},
+    {"description": "L2: All shapes, 2cm noise",
+     "spawn_noise": 0.02, "threshold": 9.0},
+    {"description": "L3: All shapes, 3cm noise",
+     "spawn_noise": 0.03, "threshold": 11.0},
+    {"description": "L4: All shapes, 4cm noise (FINAL)",
+     "spawn_noise": 0.04, "threshold": None},
 ]
+
+# Shape constants — always 33/33/33 split across envs
+SHAPE_NAMES = ["sphere", "cylinder", "box"]
+SHAPE_IDS = {name: i for i, name in enumerate(SHAPE_NAMES)}
+NUM_SHAPES = len(SHAPE_NAMES)
 
 # ============================================================================
 # REWARD WEIGHTS
@@ -130,7 +135,7 @@ simulation_app = app_launcher.app
 
 import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
@@ -263,6 +268,30 @@ def create_env(num_envs, device):
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0, dynamic_friction=1.0, restitution=0.0))
 
+        # Lighting
+        light = AssetBaseCfg(
+            prim_path="/World/DomeLight",
+            spawn=sim_utils.DomeLightCfg(intensity=1500.0, color=(0.9, 0.9, 1.0)),
+        )
+
+        # Table (kinematic box, 0.7m tall)
+        table = RigidObjectCfg(
+            prim_path="/World/envs/env_.*/Table",
+            spawn=sim_utils.CuboidCfg(
+                size=(0.6, 0.8, 0.02),  # wide, deep, thin top
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                    kinematic_enabled=True, disable_gravity=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    static_friction=1.0, dynamic_friction=1.0, restitution=0.0),
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.4, 0.3, 0.2)),
+            ),
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=(0.35, 0.0, 0.69),  # table top at 0.70m (0.69 + 0.01 half-height)
+            ),
+        )
+
         robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
             spawn=sim_utils.UsdFileCfg(
@@ -344,30 +373,54 @@ def create_env(num_envs, device):
             },
         )
 
-        grasp_object = RigidObjectCfg(
-            prim_path="/World/envs/env_.*/GraspObject",
+        # 3 grasp objects — only 1 active at a time, others teleported underground
+        obj_sphere = RigidObjectCfg(
+            prim_path="/World/envs/env_.*/ObjSphere",
             spawn=sim_utils.SphereCfg(
-                radius=0.04,
+                radius=0.06,
                 activate_contact_sensors=True,
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                    disable_gravity=False,
-                    max_depenetration_velocity=5.0,
-                ),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False, max_depenetration_velocity=5.0),
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
                 collision_props=sim_utils.CollisionPropertiesCfg(),
-                physics_material=sim_utils.RigidBodyMaterialCfg(
-                    static_friction=0.8, dynamic_friction=0.8, restitution=0.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(
-                    diffuse_color=(1.0, 0.3, 0.0)),
+                physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.8, dynamic_friction=0.8, restitution=0.0),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.5, 0.0)),
             ),
-            init_state=RigidObjectCfg.InitialStateCfg(
-                pos=(0.30, -0.15, 1.0),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.25, -0.20, 0.75)),
+        )
+        obj_cylinder = RigidObjectCfg(
+            prim_path="/World/envs/env_.*/ObjCylinder",
+            spawn=sim_utils.CylinderCfg(
+                radius=0.035, height=0.12,
+                activate_contact_sensors=True,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False, max_depenetration_velocity=5.0),
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.8, dynamic_friction=0.8, restitution=0.0),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.7, 1.0)),
             ),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -5.0)),
+        )
+        obj_box = RigidObjectCfg(
+            prim_path="/World/envs/env_.*/ObjBox",
+            spawn=sim_utils.CuboidCfg(
+                size=(0.08, 0.08, 0.08),
+                activate_contact_sensors=True,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False, max_depenetration_velocity=5.0),
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.8, dynamic_friction=0.8, restitution=0.0),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 1.0, 0.2)),
+            ),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -5.0)),
         )
 
         finger_contact = ContactSensorCfg(
             prim_path="/World/envs/env_.*/Robot/.*",
-            filter_prim_paths_expr=["/World/envs/env_.*/GraspObject"],
+            filter_prim_paths_expr=[
+                "/World/envs/env_.*/ObjSphere",
+                "/World/envs/env_.*/ObjCylinder",
+                "/World/envs/env_.*/ObjBox",
+            ],
             history_length=1,
             update_period=0.0,
         )
@@ -460,6 +513,7 @@ def create_env(num_envs, device):
             # State buffers
             self.curr_level = 0
             self.curr_hist = []
+            self.env_shape_id = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
             self.finger_target = torch.zeros(self.num_envs, ACT_DIM, device=self.device)
             self.prev_action = torch.zeros(self.num_envs, ACT_DIM, device=self.device)
             self.grasp_counter = torch.zeros(self.num_envs, device=self.device)
@@ -486,40 +540,89 @@ def create_env(num_envs, device):
             return self.scene["robot"]
 
         @property
-        def grasp_obj(self):
-            return self.scene["grasp_object"]
+        def obj_sphere(self):
+            return self.scene["obj_sphere"]
+
+        @property
+        def obj_cylinder(self):
+            return self.scene["obj_cylinder"]
+
+        @property
+        def obj_box(self):
+            return self.scene["obj_box"]
+
+        def _get_active_obj_state(self):
+            """Return pos [N,3], quat [N,4], vel [N,3] from each env's assigned object."""
+            # Stack all 3 objects: [3, N, dim]
+            all_pos = torch.stack([
+                self.obj_sphere.data.root_pos_w[:, :3],
+                self.obj_cylinder.data.root_pos_w[:, :3],
+                self.obj_box.data.root_pos_w[:, :3],
+            ], dim=0)  # [3, N, 3]
+            all_quat = torch.stack([
+                self.obj_sphere.data.root_quat_w,
+                self.obj_cylinder.data.root_quat_w,
+                self.obj_box.data.root_quat_w,
+            ], dim=0)  # [3, N, 4]
+            all_vel = torch.stack([
+                self.obj_sphere.data.root_lin_vel_w,
+                self.obj_cylinder.data.root_lin_vel_w,
+                self.obj_box.data.root_lin_vel_w,
+            ], dim=0)  # [3, N, 3]
+
+            # Select per-env using env_shape_id
+            idx = self.env_shape_id  # [N]
+            pos = all_pos[idx, torch.arange(self.num_envs, device=self.device)]  # [N, 3]
+            quat = all_quat[idx, torch.arange(self.num_envs, device=self.device)]  # [N, 4]
+            vel = all_vel[idx, torch.arange(self.num_envs, device=self.device)]  # [N, 3]
+            return pos, quat, vel
 
         # ================================================================
         # OBJECT PLACEMENT
         # ================================================================
 
         def _sample_object_pos(self, env_ids):
+            """Per-env random shape assignment: ~33% sphere, ~33% cylinder, ~33% box."""
             n = len(env_ids)
             lv = CURRICULUM[self.curr_level]
             noise = lv["spawn_noise"]
 
+            # Random shape per env (0=sphere, 1=cylinder, 2=box)
+            self.env_shape_id[env_ids] = torch.randint(0, NUM_SHAPES, (n,), device=self.device)
+
             # Get palm position in world frame
             palm_pos = self.robot.data.body_pos_w[env_ids, self.palm_idx]
 
-            # Spawn object slightly below palm (where it would rest on a table)
+            # Target position: slightly below palm (on table surface)
             obj_pos = palm_pos.clone()
-            obj_pos[:, 2] -= 0.06  # 6cm below palm
-
-            # Add noise
+            obj_pos[:, 2] -= 0.06
             if noise > 0:
                 obj_pos[:, :3] += torch.empty(n, 3, device=self.device).uniform_(-noise, noise)
 
             self.obj_init_pos[env_ids] = obj_pos
 
-            # Write to sim
-            obj_state = torch.zeros(n, 7, device=self.device)
-            obj_state[:, :3] = obj_pos
-            obj_state[:, 3] = 1.0  # quat w=1 (identity)
-            self.grasp_obj.write_root_link_pose_to_sim(obj_state, env_ids=env_ids)
+            # Poses
+            active_pose = torch.zeros(n, 7, device=self.device)
+            active_pose[:, :3] = obj_pos
+            active_pose[:, 3] = 1.0
 
-            # Zero velocity
+            underground = torch.zeros(n, 7, device=self.device)
+            underground[:, 2] = -5.0
+            underground[:, 3] = 1.0
+
             vel = torch.zeros(n, 6, device=self.device)
-            self.grasp_obj.write_root_com_velocity_to_sim(vel, env_ids=env_ids)
+
+            # Per-env masks
+            is_sphere = (self.env_shape_id[env_ids] == 0)
+            is_cylinder = (self.env_shape_id[env_ids] == 1)
+            is_box = (self.env_shape_id[env_ids] == 2)
+
+            # Place each object: active if selected, underground otherwise
+            for shape_id, obj in enumerate([self.obj_sphere, self.obj_cylinder, self.obj_box]):
+                mask = (self.env_shape_id[env_ids] == shape_id)
+                pose = torch.where(mask.unsqueeze(-1), active_pose, underground)
+                obj.write_root_link_pose_to_sim(pose, env_ids=env_ids)
+                obj.write_root_com_velocity_to_sim(vel, env_ids=env_ids)
 
         # ================================================================
         # OBSERVATIONS
@@ -527,7 +630,7 @@ def create_env(num_envs, device):
 
         def _get_observations(self) -> dict:
             r = self.robot
-            obj = self.grasp_obj
+            obj_pos, obj_quat, obj_vel = self._get_active_obj_state()
 
             # Finger proprioception
             finger_pos = r.data.joint_pos[:, self.finger_idx]  # [N, 7]
@@ -545,9 +648,6 @@ def create_env(num_envs, device):
 
             # Object state relative to palm
             palm_pos = r.data.body_pos_w[:, self.palm_idx]  # [N, 3]
-            obj_pos = obj.data.root_pos_w[:, :3]  # [N, 3]
-            obj_quat = obj.data.root_quat_w  # [N, 4]
-            obj_vel = obj.data.root_lin_vel_w  # [N, 3]
 
             obj_rel = obj_pos - palm_pos  # [N, 3]
             palm_obj_dist = obj_rel.norm(dim=-1, keepdim=True)  # [N, 1]
@@ -559,7 +659,7 @@ def create_env(num_envs, device):
             grasp_phase[num_contacts.squeeze(-1) >= 1] = 1.0
             grasp_phase[self.grasp_counter >= 10] = 2.0
 
-            shape_id = torch.zeros(self.num_envs, 1, device=self.device)  # 0=sphere
+            shape_id = self.env_shape_id.float().unsqueeze(-1)  # [N, 1] per-env
 
             obs = torch.cat([
                 finger_pos,          # 7
@@ -586,12 +686,10 @@ def create_env(num_envs, device):
 
         def _get_rewards(self):
             r = self.robot
-            obj = self.grasp_obj
+            obj_pos, _, obj_vel = self._get_active_obj_state()
 
             # Palm and object positions
             palm_pos = r.data.body_pos_w[:, self.palm_idx]
-            obj_pos = obj.data.root_pos_w[:, :3]
-            obj_vel = obj.data.root_lin_vel_w
 
             # Fingertip positions (world frame)
             fingertip_pos = r.data.body_pos_w[:, self.fingertip_body_idx]  # [N, 3_tips, 3_xyz]
@@ -663,7 +761,7 @@ def create_env(num_envs, device):
         # ================================================================
 
         def _get_dones(self):
-            obj_pos = self.grasp_obj.data.root_pos_w[:, :3]
+            obj_pos, _, _ = self._get_active_obj_state()
             palm_pos = self.robot.data.body_pos_w[:, self.palm_idx]
 
             # Object fell far below initial position
@@ -865,7 +963,7 @@ def main():
             writer.add_scalar("grasp/grasp_counter_avg", env.grasp_counter.mean().item(), iteration)
 
             # Object state
-            obj_pos = env.grasp_obj.data.root_pos_w[:, :3]
+            obj_pos = env._get_active_obj_state()[0]
             palm_pos = env.robot.data.body_pos_w[:, env.palm_idx]
             palm_obj_dist = (obj_pos - palm_pos).norm(dim=-1).mean().item()
             writer.add_scalar("grasp/palm_obj_dist", palm_obj_dist, iteration)
@@ -886,7 +984,7 @@ def main():
             else:
                 avg_contacts = 0
 
-            obj_pos = env.grasp_obj.data.root_pos_w[:, :3]
+            obj_pos = env._get_active_obj_state()[0]
             palm_pos = env.robot.data.body_pos_w[:, env.palm_idx]
             palm_obj_dist = (obj_pos - palm_pos).norm(dim=-1).mean().item()
 
@@ -894,7 +992,7 @@ def main():
                   f"R={mean_reward:.2f} EpR={avg_ep:.2f} "
                   f"contacts={avg_contacts:.1f} dist={palm_obj_dist:.3f} "
                   f"grasp={env.grasp_counter.mean().item():.1f} "
-                  f"Lv={env.curr_level} std={np.exp(net.log_std.data.mean().item()):.3f}")
+                  f"Lv={env.curr_level} shapes=S{(env.env_shape_id==0).sum().item()}/C{(env.env_shape_id==1).sum().item()}/B{(env.env_shape_id==2).sum().item()} std={np.exp(net.log_std.data.mean().item()):.3f}")
 
         # Save checkpoints
         if iteration % 500 == 0 and iteration > 0:
