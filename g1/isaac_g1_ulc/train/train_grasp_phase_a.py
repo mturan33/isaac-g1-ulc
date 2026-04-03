@@ -103,11 +103,12 @@ NUM_SHAPES = len(SHAPE_NAMES)
 # ============================================================================
 
 REWARD_WEIGHTS = {
-    "approach": 3.0,
+    "approach": 6.0,           # INCREASED from 3.0 — was 4.6% budget, need fingers to actively reach
     "contact_count": 5.0,
-    "contact_force": 2.0,
+    "contact_force": 0.0,      # DISABLED — was 0.1% budget (dead), 1185N vs 2N target impossible
     "enclose": 1.0,
     "hold_stable": 8.0,
+    "finger_closure": 4.0,     # NEW — reward closing fingers toward object, breaks passive exploit
     "action_rate": -0.05,
     "joint_vel": -0.01,
     "alive": 1.0,
@@ -593,9 +594,9 @@ def create_env(num_envs, device):
             # Get palm position in world frame
             palm_pos = self.robot.data.body_pos_w[env_ids, self.palm_idx]
 
-            # Target position: slightly below palm (on table surface)
+            # Target position: on table, 12cm below palm — fingers must reach DOWN
             obj_pos = palm_pos.clone()
-            obj_pos[:, 2] -= 0.06
+            obj_pos[:, 2] -= 0.12
             if noise > 0:
                 obj_pos[:, :3] += torch.empty(n, 3, device=self.device).uniform_(-noise, noise)
 
@@ -720,9 +721,19 @@ def create_env(num_envs, device):
             # === REWARD COMPONENTS (raw, unweighted) ===
             r_approach = torch.exp(-10.0 * avg_finger_dist)
             r_contact_count = (num_contacts / 3.0).clamp(0, 1)
-            r_contact_force = torch.exp(-torch.abs(total_force - 2.0))
+            r_contact_force = torch.exp(-torch.abs(total_force - 2.0))  # kept for logging, weight=0
             r_enclose = (num_contacts >= 2).float() * 5.0
             r_hold_stable = is_grasped * torch.exp(-5.0 * obj_speed)
+
+            # Finger closure: reward fingers moving toward closed position
+            # finger_pos range: lower_limit (open) to upper_limit (closed for index/middle)
+            # Normalize to [0=open, 1=closed]
+            finger_pos = r.data.joint_pos[:, self.finger_idx]
+            finger_range = self.finger_upper - self.finger_lower  # [7]
+            finger_range = finger_range.clamp(min=0.1)  # avoid div by zero
+            finger_normalized = (finger_pos - self.finger_lower) / finger_range  # [N, 7], 0=open, 1=closed
+            # Average closure across all fingers (higher = more closed)
+            r_finger_closure = finger_normalized.mean(dim=-1).clamp(0, 1)  # [N]
 
             # Penalties
             action_diff = self.actions - self.prev_action
@@ -738,6 +749,7 @@ def create_env(num_envs, device):
             rl.record("contact_force", r_contact_force)
             rl.record("enclose", r_enclose)
             rl.record("hold_stable", r_hold_stable)
+            rl.record("finger_closure", r_finger_closure)
             rl.record("action_rate", r_action_rate)
             rl.record("joint_vel", r_joint_vel)
             rl.record("alive", r_alive)
@@ -750,6 +762,7 @@ def create_env(num_envs, device):
                 + REWARD_WEIGHTS["contact_force"] * r_contact_force
                 + REWARD_WEIGHTS["enclose"] * r_enclose
                 + REWARD_WEIGHTS["hold_stable"] * r_hold_stable
+                + REWARD_WEIGHTS["finger_closure"] * r_finger_closure
                 + REWARD_WEIGHTS["action_rate"] * r_action_rate
                 + REWARD_WEIGHTS["joint_vel"] * r_joint_vel
                 + REWARD_WEIGHTS["alive"] * r_alive
