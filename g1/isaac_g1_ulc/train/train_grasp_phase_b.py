@@ -369,7 +369,7 @@ def create_env(num_envs, device):
                 ),
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                     enabled_self_collisions=True,
-                    fix_root_link=False,
+                    fix_root_link=True,  # fixed root, arm reaches, fingers grasp
                     solver_position_iteration_count=4,
                     solver_velocity_iteration_count=1,
                 ),
@@ -965,11 +965,7 @@ def create_env(num_envs, device):
             palm_obj_dist = (obj_pos - palm_pos).norm(dim=-1)
             obj_far = palm_obj_dist > 0.5
 
-            # Robot fallen check (root not fixed anymore)
-            root_height = self.robot.data.root_pos_w[:, 2]
-            robot_fallen = root_height < 0.4  # robot fell down
-
-            terminated = obj_fallen | obj_far | robot_fallen
+            terminated = obj_fallen | obj_far
             time_out = self.episode_length_buf >= self.max_episode_length
             return terminated, time_out
 
