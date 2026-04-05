@@ -103,12 +103,12 @@ NUM_SHAPES = len(SHAPE_NAMES)
 # ============================================================================
 
 REWARD_WEIGHTS = {
-    "approach": 6.0,           # INCREASED from 3.0 — was 4.6% budget, need fingers to actively reach
+    "approach": 8.0,           # DOMINANT — must drive fingers toward object (was 6.0, still dead at 1%)
     "contact_count": 5.0,
-    "contact_force": 0.0,      # DISABLED — was 0.1% budget (dead), 1185N vs 2N target impossible
+    "contact_force": 0.0,      # DISABLED
     "enclose": 1.0,
-    "hold_stable": 8.0,
-    "finger_closure": 4.0,     # NEW — reward closing fingers toward object, breaks passive exploit
+    "hold_stable": 6.0,        # REDUCED from 8.0 — was too dominant, policy optimized hold over approach
+    "finger_closure": 3.0,     # REDUCED from 4.0 — now proximity-gated, less budget needed
     "action_rate": -0.05,
     "joint_vel": -0.01,
     "alive": 1.0,
@@ -594,9 +594,9 @@ def create_env(num_envs, device):
             # Get palm position in world frame
             palm_pos = self.robot.data.body_pos_w[env_ids, self.palm_idx]
 
-            # Target position: on table, 12cm below palm — fingers must reach DOWN
+            # Target position: near palm, 5cm below — within finger reach
             obj_pos = palm_pos.clone()
-            obj_pos[:, 2] -= 0.12
+            obj_pos[:, 2] -= 0.05
             if noise > 0:
                 obj_pos[:, :3] += torch.empty(n, 3, device=self.device).uniform_(-noise, noise)
 
@@ -725,15 +725,16 @@ def create_env(num_envs, device):
             r_enclose = (num_contacts >= 2).float() * 5.0
             r_hold_stable = is_grasped * torch.exp(-5.0 * obj_speed)
 
-            # Finger closure: reward fingers moving toward closed position
-            # finger_pos range: lower_limit (open) to upper_limit (closed for index/middle)
-            # Normalize to [0=open, 1=closed]
+            # Finger closure: reward closing fingers ONLY when near object
+            # Without proximity gate, policy exploits by closing fingers regardless of object position
             finger_pos = r.data.joint_pos[:, self.finger_idx]
-            finger_range = self.finger_upper - self.finger_lower  # [7]
-            finger_range = finger_range.clamp(min=0.1)  # avoid div by zero
+            finger_range = self.finger_upper - self.finger_lower
+            finger_range = finger_range.clamp(min=0.1)
             finger_normalized = (finger_pos - self.finger_lower) / finger_range  # [N, 7], 0=open, 1=closed
-            # Average closure across all fingers (higher = more closed)
-            r_finger_closure = finger_normalized.mean(dim=-1).clamp(0, 1)  # [N]
+            raw_closure = finger_normalized.mean(dim=-1).clamp(0, 1)  # [N]
+            # Proximity gate: closure only rewarded when fingertips near object
+            proximity = torch.exp(-5.0 * avg_finger_dist)  # ~1 when close, ~0 when far
+            r_finger_closure = raw_closure * proximity  # breaks passive exploit
 
             # Penalties
             action_diff = self.actions - self.prev_action

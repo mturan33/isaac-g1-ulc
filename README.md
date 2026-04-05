@@ -64,19 +64,30 @@ Each stage loads the previous checkpoint. Policies are trained sequentially with
 |-------|------|--------|-----|-----|--------|
 | 1 | Omnidirectional locomotion | LocoAC | 66 | 15 | **Complete** |
 | 2 | Arm position reaching | ArmAC (loco frozen) | 39 | 7 | **Complete** |
-| 3 | Orientation fine-tune | ArmAC (critic reset) | 39 | 7 | Failed |
-| 4 | Hand grasping | HandAC (loco+arm frozen) | ~50 | 14 | Planned |
-| 5 | Skill chaining | Full pipeline | -- | -- | Planned |
+| 2L | Perturbation-robust loco | LocoAC (arm frozen perturbation) | 66 | 15 | **Complete** |
+| 3L | Variable height / squat | LocoAC (arm frozen) | 66 | 15 | Parked (diminishing returns) |
+| 3G | DEX3 finger grasping | GraspAC (fix_root_link) | 45 | 7 | **Active** (Phase A V3) |
+| 4 | Skill chaining | Full pipeline | -- | -- | Planned |
 | VLM | Semantic task execution | Florence-2 + skills | -- | -- | Planned |
+
+### Grasp Training (Stage 3G -- Active)
+
+Fixed-base robot, 3 object shapes (sphere/cylinder/box, 33% each), finger-only policy.
+
+**Key findings:**
+- Passive grasp exploit: objects fall between fingers, policy learns "do nothing" (V1-V2)
+- Fix: proximity-gated finger closure reward (`closure * exp(-5*dist)`)
+- Reward budget analysis via RewardLogger (TensorBoard RR/RW/RB/ prefixes)
+- Object spawn must be within 5cm of palm (too far = fingers can't reach)
 
 ---
 
 ## Triple Actor-Critic Architecture
 
 ```
-LocoAC  (66 -> 15)  [512,256,128] + LayerNorm + ELU  -- Legs + waist
-ArmAC   (39 -> 7)   [256,256,128] + ELU               -- Right arm (7 joints)
-HandAC  (~50 -> 14)  [256,128,64] + ELU               -- DEX3 fingers (planned)
+LocoAC   (66 -> 15)  [512,256,128] + LayerNorm + ELU  -- Legs + waist
+ArmAC    (39 -> 7)   [256,256,128] + ELU               -- Right arm (7 joints)
+GraspAC  (45 -> 7)   [256,128,64]  + ELU               -- DEX3 right hand (7 finger joints)
 ```
 
 - Each policy has its **own obs space** (no shared/unified obs)
@@ -142,6 +153,20 @@ Modes: `--mode walk`, `--mode mixed`, `--mode push`
 **Stage 3: Orient Fine-Tune (from Stage 2 checkpoint -- failed experiment)**
 ```powershell
 .\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\29dof\train_unified_stage_3_orient.py --stage2_checkpoint logs/ulc/g1_stage2_arm_2026-03-06_18-51-31/model_best.pt --orient_weight 2.0 --num_envs 4096 --max_iterations 20000 --headless
+```
+
+**Grasp Phase A: Fixed-Base Finger Training (3 shapes: sphere/cylinder/box)**
+```powershell
+# Training (from scratch)
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_grasp_phase_a.py --num_envs 2048 --max_iterations 40000 --headless
+
+# Smoke test (visual)
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_grasp_phase_a.py --num_envs 64 --max_iterations 100
+```
+
+**Grasp Phase B: Fixed-Base + Frozen Arm Reaching**
+```powershell
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_grasp_phase_b.py --arm_checkpoint logs\ulc\g1_stage2_loco_2026-03-14_21-58-52\model_best.pt --num_envs 2048 --max_iterations 50000 --headless
 ```
 
 ### Hierarchical VLM+RL
@@ -279,21 +304,27 @@ $env:PROJECT_ROOT = "C:\unitree_sim_isaaclab"
 
 ```
 g1/isaac_g1_ulc/
-  config/                  Environment and scene configuration
+  config/                  Environment and scene configuration (29DoF joints, actuators)
   curriculum/              Sequential curriculum definitions
   envs/                    RL environments (ULC, arm reach, dual arm)
   train/
-    29dof/                 Active 29DoF training scripts (Stage 1-3)
+    29dof/                 Active 29DoF training scripts (Stage 1-3, loco/arm)
+    train_grasp_phase_a.py Grasp training: fixed base, finger-only, 3 shapes
+    train_grasp_phase_b.py Grasp training: fixed base + frozen arm reaching
   play/                    Evaluation and demo scripts
   rewards/                 Modular reward functions
-  utils/                   COM tracker, quintic interpolator, delay buffer
-  test/                    Kinematics, workspace, joint tests
+  utils/
+    reward_logger.py       Per-component reward breakdown (TensorBoard RR/RW/RB/)
+    com_tracker.py         Center-of-mass stability tracking
+    quintic_interpolator.py Smooth trajectory generation
+    delay_buffer.py        Action delay simulation
+  test/                    Kinematics, workspace, joint tests (20+ files)
   demo/                    Decoupled walking + reaching demos
   data/                    Pre-computed workspace maps
 
 vlm_integration/           VLM interface (Florence-2)
 agents/                    PPO hyperparameter configs
-external/                  Hardware integration (DDS, action provider)
+external/                  Hardware integration (DDS, action provider, camera)
 ```
 
 ---
@@ -303,9 +334,11 @@ external/                  Hardware integration (DDS, action provider)
 - **Separate policy, separate obs is essential.** Unified 188-dim obs (65% zeros) caused LayerNorm pollution and gradient dilution. 1 month of failed V1-V5.2. Each policy must define its own obs space.
 - **Curriculum gaming is real.** Proximity rewards + smoothness penalties incentivize stillness. Movement-centric rewards (velocity toward target, progress) and 3-condition reach validation are essential.
 - **Multi-task needs multi-critic.** A single critic receiving mixed signals produces noisy value estimates. Separate critics with separate GAE and PPO updates work much better.
-- **Never change reward weights mid-training.** Changing orient weight from 3.0 to 6.0 on a trained checkpoint caused catastrophic position collapse (4.3cm -> 35cm). The critic's value landscape was invalidated.
-- **Critic reset preserves position.** Resetting the critic to Xavier init while loading actor weights from a previous stage avoids reward scale mismatch. Position precision was fully preserved.
-- **Orientation is not learnable with small gate.** ORIENT_GATE_DISTANCE=0.08m means orient reward only fires within 8cm of target, just before episode terminates. Two experiments (orient_weight 0.5 and 2.0) both failed. OrErr stuck at ~2.18 rad.
+- **Passive grasp exploit is the #1 grasping failure mode.** If objects can fall into the hand via gravity, policy learns "do nothing." Fix: proximity-gated rewards (`reward * exp(-k*dist)`), spawn objects within finger reach (5cm), and ensure approach reward dominates budget.
+- **RewardLogger is essential for debugging.** TensorBoard RB/ (reward budget %) reveals dead rewards (<1%) and dominant rewards (>30%) instantly. Without it, reward design is blind guessing.
+- **Curriculum gate must check task-specific metrics.** Reward threshold alone is insufficient. Height tracking needs `h_err < 0.05m`, grasping needs `grasp_success_rate > 0.3`. Without task gates, robot advances without learning.
+- **KL penalty blocks radical behavior change.** Fine-tuning with KL=0.02 preserves old behavior. For new tasks (squat, grasp), KL must be 0.005 or lower.
+- **fix_root_link=True for grasp training.** Free-standing robot with frozen loco policy requires exact obs/action matching. Any mismatch causes immediate collapse. Use fixed root until loco integration is validated separately.
 - **Training-play consistency matters.** Observation thresholds, action scales, and workspace definitions must match exactly between training and evaluation.
 
 ---
@@ -314,19 +347,23 @@ external/                  Hardware integration (DDS, action provider)
 
 | Stage | Checkpoint | Key Metrics |
 |-------|-----------|-------------|
-| Stage 1 (Loco) | `logs/ulc/g1_unified_stage1_2026-02-27_00-05-20/model_best.pt` | 9-level curriculum complete |
-| Stage 2 (Arm) | `logs/ulc/g1_stage2_arm_2026-03-06_18-51-31/model_best.pt` | EE=3.08cm, 86.9% rate |
-| Stage 3 (Orient) | `logs/ulc/g1_stage3_orient_2026-03-09_13-20-39/model_best.pt` | Failed, OrErr=2.18 |
+| Stage 1 (Loco) | `g1_unified_stage1_2026-02-27_00-05-20/model_best.pt` | 9-level curriculum complete |
+| Stage 2 (Arm) | `g1_stage2_arm_2026-03-06_18-51-31/model_best.pt` | EE=3.08cm, 86.9% rate |
+| Stage 2L (Loco robust) | `g1_stage2_loco_2026-03-14_21-58-52/model_best.pt` | R=40.25, L5, 1kg stable |
+| Stage 3L (Squat) | `g1_stage3_loco_squat_2026-03-30_22-12-42/model_31000.pt` | Parked, H=0.763 (target 0.69) |
+| Grasp Phase A | `g1_grasp_phase_a_2026-04-03_23-04-01/model_best.pt` | R=19.7, contacts=1.9, 3 shapes |
 
 ---
 
 ## Next Steps
 
-1. **Hand Grasping (Stage 4):** HandPolicy (~50 obs -> 14 act), loco+arm frozen, DEX3 per-finger force sensors
-2. **Skill Chaining (Stage 5):** walk_to -> squat -> grasp -> stand_up -> walk_to -> place
-3. **VLM Planner:** SayCan/Berkeley architecture, task decomposition + skill executor
-4. **End-to-end:** "Pick up the cup from the floor, place it on the table"
-5. **Workshop paper** (ICRA/RSS)
+1. **Grasp Phase A V3:** Proximity-gated closure reward, approach=8.0, solve passive exploit
+2. **Grasp Phase B:** Frozen arm policy + finger training (fix_root_link=True)
+3. **Grasp Phase C:** Frozen loco + arm + finger (full standing robot)
+4. **Skill Chaining:** walk_to -> reach -> grasp -> stand_up -> walk_to -> place
+5. **VLM Planner:** SayCan/Berkeley architecture, task decomposition + skill executor
+6. **End-to-end:** "Pick up the cup from the table, place it in the box"
+7. **Workshop paper** (ICRA/RSS)
 
 ---
 
