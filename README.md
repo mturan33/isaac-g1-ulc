@@ -103,7 +103,7 @@ GraspAC  (45 -> 7)   [256,128,64]  + ELU               -- DEX3 right hand (7 fin
 - **RL:** Custom PPO (PyTorch), Dual/Triple Actor-Critic
 - **VLM (planned):** Florence-2 / Molmo2
 - **Robot:** Unitree G1 29DoF + DEX3 (43 joints: 12 legs + 3 waist + 14 arms + 14 fingers)
-- **Hardware:** NVIDIA RTX 5070 Ti (12 GB VRAM), Intel i9-13900HX, 32 GB RAM
+- **Hardware:** NVIDIA RTX 5070 Ti Laptop (12 GB VRAM), Intel i9-13900HX, 64 GB DDR5-5200 dual-channel
 - **Training:** 4096 parallel envs, ~17K steps/sec
 - **Platform:** Windows 11 Pro, Python 3.10 (Anaconda env: env_isaaclab)
 
@@ -122,20 +122,29 @@ conda activate env_isaaclab
 
 #### PLAY (Evaluation)
 
+> **Pre-trained checkpoints are included in the repository under `checkpoints/`**.
+> No need to train from scratch — just clone and run play/demo commands below.
+
 **Stage 1: Omnidirectional Locomotion**
 Modes: `--mode walk`, `--mode mixed`, `--mode push`
 ```powershell
-.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_unified_stage_1.py --checkpoint logs/ulc/g1_unified_stage1_2026-02-27_00-05-20/model_best.pt --num_envs 1 --mode mixed
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/play/play_unified_stage_1.py --checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/loco_stage1.pt --num_envs 1 --mode mixed
 ```
 
 **Stage 2: Arm Position Reaching (< 4cm, 55cm reach)**
 ```powershell
-.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_unified_stage_2_arm.py --checkpoint logs/ulc/g1_stage2_arm_2026-03-06_18-51-31/model_best.pt --num_envs 1 --mode standing --no_orient
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_unified_stage_2_arm.py --checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/arm_stage2.pt --num_envs 1 --mode standing --no_orient
 ```
 
-**Stage 3: Orient Fine-Tune (Failed -- decommissioned)**
+**Stage 2 Loco (Perturbation-robust, 50K iter)**
 ```powershell
-.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_unified_stage_3_orient.py --checkpoint logs/ulc/g1_stage3_orient_2026-03-09_13-20-39/model_best.pt --num_envs 1 --mode standing
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\play\play_unified_stage_2_loco.py --checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/loco_stage2.pt --num_envs 1 --mode walk
+```
+
+**Stage 3: Orient Fine-Tune (Failed -- decommissioned, no checkpoint shipped)**
+```powershell
+# Stage 3 was decommissioned (worse than Stage 2). Train your own if needed:
+# .\isaaclab.bat -p ...play_unified_stage_3_orient.py --checkpoint <your-stage3-ckpt> --num_envs 1 --mode standing
 ```
 
 #### TRAIN
@@ -147,12 +156,17 @@ Modes: `--mode walk`, `--mode mixed`, `--mode push`
 
 **Stage 2: Arm Reaching (from Stage 1 checkpoint)**
 ```powershell
-.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/29dof/train_unified_stage_2_arm.py --stage1_checkpoint logs/ulc/g1_unified_stage1_2026-02-27_00-05-20/model_best.pt --num_envs 4096 --max_iterations 30000 --headless
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/29dof/train_unified_stage_2_arm.py --stage1_checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/loco_stage1.pt --num_envs 4096 --max_iterations 30000 --headless
+```
+
+**Stage 2 Loco: Perturbation-robust (from Stage 1 + Stage 2 Arm)**
+```powershell
+.\isaaclab.bat -p source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/g1/isaac_g1_ulc/train/29dof/train_unified_stage_2_loco.py --stage1_checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/loco_stage1.pt --arm_checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/arm_stage2.pt --num_envs 2048 --max_iterations 50000 --headless
 ```
 
 **Stage 3: Orient Fine-Tune (from Stage 2 checkpoint -- failed experiment)**
 ```powershell
-.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\29dof\train_unified_stage_3_orient.py --stage2_checkpoint logs/ulc/g1_stage2_arm_2026-03-06_18-51-31/model_best.pt --orient_weight 2.0 --num_envs 4096 --max_iterations 20000 --headless
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\29dof\train_unified_stage_3_orient.py --stage2_checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/arm_stage2.pt --orient_weight 2.0 --num_envs 4096 --max_iterations 20000 --headless
 ```
 
 **Grasp Phase A: Fixed-Base Finger Training (3 shapes: sphere/cylinder/box)**
@@ -166,19 +180,19 @@ Modes: `--mode walk`, `--mode mixed`, `--mode push`
 
 **Grasp Phase B: Fixed-Base + Frozen Arm Reaching**
 ```powershell
-.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_grasp_phase_b.py --arm_checkpoint logs\ulc\g1_stage2_loco_2026-03-14_21-58-52\model_best.pt --num_envs 2048 --max_iterations 50000 --headless
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\isaac_g1_ulc\g1\isaac_g1_ulc\train\train_grasp_phase_b.py --arm_checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/loco_stage2.pt --num_envs 2048 --max_iterations 50000 --headless
 ```
 
 ### Hierarchical VLM+RL
 
 **Loco+Arm Hierarchical Test**
 ```powershell
-.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\high_low_hierarchical_g1\scripts\test_hierarchical.py --num_envs 4 --max_steps 3000 --checkpoint C:\IsaacLab\logs\ulc\g1_unified_stage1_2026-02-27_00-05-20\model_best.pt --arm_checkpoint C:\IsaacLab\logs\ulc\ulc_g1_stage7_antigaming_2026-02-06_17-41-47\model_best.pt
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\high_low_hierarchical_g1\scripts\test_hierarchical.py --num_envs 4 --max_steps 3000 --checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/loco_stage1.pt --arm_checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/arm_stage2.pt
 ```
 
-**VLM Planning Demo**
+**VLM Planning Demo (Pick-and-Place)**
 ```powershell
-.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\high_low_hierarchical_g1\scripts\demo_vlm_planning.py --num_envs 4 --checkpoint C:\IsaacLab\logs\ulc\g1_unified_stage1_2026-02-27_00-05-20\model_best.pt --arm_checkpoint C:\IsaacLab\logs\ulc\ulc_g1_stage7_antigaming_2026-02-06_17-41-47\model_best.pt --task "Pick up the red cup and place it on the second table" --planner simple
+.\isaaclab.bat -p source\isaaclab_tasks\isaaclab_tasks\direct\high_low_hierarchical_g1\scripts\demo_vlm_planning.py --num_envs 4 --checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/loco_stage2.pt --arm_checkpoint source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/arm_stage2.pt --task "Pick up the red cup and place it on the second table" --planner simple
 ```
 
 ### TensorBoard
@@ -345,13 +359,22 @@ external/                  Hardware integration (DDS, action provider, camera)
 
 ## Checkpoints
 
-| Stage | Checkpoint | Key Metrics |
+**Pre-trained checkpoints are shipped in this repository under `checkpoints/`** (no manual training required).
+
+| Stage | Repo Path | Key Metrics |
 |-------|-----------|-------------|
-| Stage 1 (Loco) | `g1_unified_stage1_2026-02-27_00-05-20/model_best.pt` | 9-level curriculum complete |
-| Stage 2 (Arm) | `g1_stage2_arm_2026-03-06_18-51-31/model_best.pt` | EE=3.08cm, 86.9% rate |
-| Stage 2L (Loco robust) | `g1_stage2_loco_2026-03-14_21-58-52/model_best.pt` | R=40.25, L5, 1kg stable |
-| Stage 3L (Squat) | `g1_stage3_loco_squat_2026-03-30_22-12-42/model_31000.pt` | Parked, H=0.763 (target 0.69) |
-| Grasp Phase A | `g1_grasp_phase_a_2026-04-03_23-04-01/model_best.pt` | R=19.7, contacts=1.9, 3 shapes |
+| Stage 1 (Loco) | `checkpoints/loco_stage1.pt` | 9-level curriculum complete, 20K iter |
+| Stage 2 (Arm) | `checkpoints/arm_stage2.pt` | EE=3.08 cm reach, 86.9% rate, 20K iter |
+| Stage 2L (Loco robust) | `checkpoints/loco_stage2.pt` | 50K iter, perturbation-robust, lateral carry stable |
+
+Run all play/demo commands from `C:\IsaacLab\` and reference the path
+`source/isaaclab_tasks/isaaclab_tasks/direct/isaac_g1_ulc/checkpoints/<file>.pt`.
+
+**Decommissioned (not shipped):**
+- Stage 3 Orient: failed experiment, worse than Stage 2
+- Stage 3 Squat: parked (diminishing returns)
+
+**Grasp Phase A:** train your own (see TRAIN section above).
 
 ---
 
