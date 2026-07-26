@@ -31,8 +31,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import sys
 import argparse
 from datetime import datetime
+
+# Shared run-configuration capture (utils/run_config.py). Imported by path so
+# utils/__init__.py is not pulled in before the Isaac Lab app launches.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "utils"))
+from run_config import set_global_seed, dump_run_config, DEFAULT_SEED
 
 # ============================================================================
 # CONFIGURATION
@@ -383,10 +390,16 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from Stage 8 checkpoint")
     parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage8_orient")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
+                        help="Random seed for python/numpy/torch. Recorded in run_config.json.")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
 args_cli = parse_args()
+
+# Seed before anything samples or initialises weights.
+SEED_APPLIED = set_global_seed(args_cli.seed)
+print(f"[seed] {SEED_APPLIED}")
 
 
 # ============================================================================
