@@ -27,8 +27,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import sys
 import argparse
 from datetime import datetime
+
+# Shared run-configuration capture (utils/run_config.py). Imported by path so
+# utils/__init__.py is not pulled in before the Isaac Lab app launches.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "utils"))
+from run_config import set_global_seed, dump_run_config, DEFAULT_SEED
 
 # ============================================================================
 # CONFIGURATION

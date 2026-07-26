@@ -72,20 +72,35 @@ best checkpoint at iteration 19,730.
 
 ### Train the unified-critic policy (S6u)
 
-Identical setup except for a single 109-dim critic over the concatenated observation.
+A single 109-dim critic over the concatenated observation. Note this script is not otherwise
+identical to the dual-critic one — it also has its own 40-level curriculum and a different
+locomotion reward weighting; see [Experimental caveats](#experimental-caveats).
 
 ```powershell
 .\isaaclab.bat -p REPO/g1/isaac_g1_ulc/train/23dof/train_ulc_stage_6_unified.py `
-  --stage3_checkpoint logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt `
-  --num_envs <TBD - verify> `
-  --max_iterations <TBD - verify> `
+  --stage3_checkpoint <NOT RECORDED - see below> `
+  --num_envs 2048 `
+  --max_iterations 20000 `
   --experiment_name ulc_g1_stage6_complete `
   --headless
 ```
 
 Run of record: `ulc_g1_stage6_complete_2026-01-31_20-49-39` — stopped at iteration 20,000 at
-curriculum level 10/12, with 3.3M training reaches and best reward 36.2. The exact
-`--num_envs` / `--max_iterations` for this run are not recorded in any config on disk.
+curriculum level 10 of 40, with 3.3M training reaches and best reward 36.2.
+
+**None of this run's launch flags were saved to disk.** The values above are reconstructed:
+
+- `--num_envs 2048` — *inferred, not recorded.* A run can log at most `num_envs × 24` reaches
+  per iteration; across all 20,000 iterations the observed maximum is 49,046, which never
+  exceeds the 2048 ceiling of 49,152 (99.78% of it) and exceeds the 1024 ceiling 69 times.
+  See [Experimental caveats](#experimental-caveats).
+- `--max_iterations 20000` — *read off the artifacts, not the flag.* The saved checkpoints run
+  to `model_20000.pt` and `model_final.pt` carries `iteration = 20000`, so the run ended there;
+  the flag value itself was never recorded (the script's own default is 25000).
+- `--stage3_checkpoint` — **unknown.** The dual-critic run started from
+  `logs/ulc/ulc_g1_stage3_2026-01-09_14-28-58/model_best.pt`, but there is no record of what
+  this run used, and nothing in the checkpoint identifies its initialisation. Do not assume the
+  two runs shared an upstream checkpoint.
 
 ### Train the anti-gaming variant (S7)
 
@@ -164,24 +179,79 @@ locomotion branch, fingers pinned open for every policy, seed 42.
 | S7 (dual + anti-gaming) | 4096 | recorded in the launch command |
 | S6u (unified critic) | 2048 — **inferred** | not recorded anywhere; see below |
 
-S6u's launch flags were never written to disk. Wall-clock timing cannot settle the question:
-the known-2048 and known-4096 runs take 3.39 and 3.22 s/iteration, so iteration cost on this
-machine does not scale with environment count. The reach counter can. S6u logs ≈48,940 reaches
-per iteration, and a run can register at most `num_envs × 24` reaches per iteration, giving a
-hard floor of **`num_envs` ≥ 2048**. That figure is 99.6% of the 2048 ceiling — saturated —
-whereas reproducing it with 4096 environments would require the rate to sit at exactly 49.8% of
-ceiling and hold there. 2048 is the strong reading, but it is an inference, not a record.
+S6u's launch flags were never written to disk. Wall-clock timing cannot settle the question: the
+known-2048 and known-4096 runs take 3.39 and 3.22 s/iteration, so iteration cost on this machine
+does not scale with environment count. The reach counter can. A run can log at most
+`num_envs × 24` reaches in a single iteration, so the counter's peak bounds the environment
+count from below. Scanning all 20,000 iterations of the S6u run:
+
+| Ceiling | `num_envs × 24` | Iterations exceeding it |
+|---|---|---|
+| 1024 | 24,576 | **69** |
+| 2048 | 49,152 | **0** |
+| 4096 | 98,304 | 0 |
+
+The largest single-iteration increment anywhere in the run is **49,046**. That puts a hard floor
+of `num_envs` ≥ 2044 and rules 1024 out outright, while sitting at 99.78% of the 2048 ceiling —
+106 reaches of headroom — without ever crossing it. For 4096 to be the answer, the counter would
+have to hover at 49.9% of its ceiling for 20,000 iterations and never once cross half. 2048 is
+the only reading consistent with the data, but it remains an inference, not a record.
 
 The paper states that all experiments used 4096 environments. That holds only for S7.
 
-### Not held constant
+### Curriculum — the two runs did not finish on the same task
 
-- **Curriculum.** S6u runs a 40-level curriculum (reaching → orientation → gripper →
-  height/load); S6s runs a 13-level one (standing → walking → fixed orientation → variable
-  orientation out to an 80° cone). These are different schedules, not long and short versions of
-  one schedule. S6u stopped at level 10 of 40 — the entry to its orientation phase, 25% of the
-  way through — while S6s completed 12 of 12. The paper's "Level 10/12" for S6u should read
-  10/40.
+This is the largest caveat, and it is not a matter of one run being a shorter version of the
+other. Read from the curriculum definitions, the task each policy was training on when its
+checkpoint was saved:
+
+| At its final level | S6u — level 10 of 40 | S6s — level 12 of 12 |
+|---|---|---|
+| Base motion | **standing still** (`vx`, `vy`, `vyaw` all 0) | **walking**, `vx` 0–0.6 m/s, `vy` ±0.13, `vyaw` ±0.22 |
+| Target distance | 0.18–0.28 m | 0.18–0.40 m |
+| Position tolerance | 0.05 m | 0.04 m |
+| Orientation target | fixed palm-down | **arbitrary**, sampled in a widening cone (80° at level 12) |
+| Orientation tolerance | 1.5 rad (≈86°) | 1.0 rad (≈57°) |
+
+The 40-level scheme is not a finer-grained version of the 13-level one. Three structural
+differences:
+
+1. **Different capability axes.** S6u ramps reaching → orientation → **gripper** → **height and
+   payload**. S6s trains none of gripper, height command or payload — two of S6u's four phases
+   target capabilities that are absent from the other run entirely.
+2. **Different shape.** S6u resets base motion at each phase boundary and re-ramps: its level 9
+   already commands `vx` up to 0.60 m/s at a 0.03 m tolerance, then level 10 drops back to
+   `vx` = 0 with a looser 0.05 m. S6s's ladder is monotonic — commanded velocity only rises
+   (0 → 0.2 → 0.3 → 0.35 → 0.4 → 0.45 → 0.5 → 0.55 → 0.6).
+3. **Different orientation goal.** S6u only ever trains a fixed palm-down target; the script has
+   no variable-orientation mechanism at all. S6s's last four levels train arbitrary end-effector
+   orientation.
+
+**Mapping level 10/40 onto the 13-level ladder.** There is no clean equivalent, because S6u's
+level 10 combines a locomotion demand from the bottom of the S6s ladder with an orientation term
+from its middle. On base motion — the dominant difficulty axis — standing puts it at S6s levels
+0–4. On orientation it sits near S6s levels 7–8 (fixed palm-down), though at a tighter tolerance
+than either. It is nowhere near S6s level 12.
+
+**So: S6u was evaluated as a policy that had progressed less far, not one that had reached a
+comparable task difficulty.** Its curriculum position is not a like-for-like measure of skill
+against S6s's, and the gap in final task difficulty is large.
+
+Two things temper how far that undercuts the result, and neither rescues the causal claim:
+
+- The benchmark does not test S6u out of distribution. Its targets average ≈0.21 m at a 0.06 m
+  tolerance, which falls inside S6u's own level-10 training range (0.18–0.28 m at 0.05 m) and is
+  slightly more forgiving. S6u underperformed on approximately its own final training task.
+- Both runs had the same budget — 20,000 iterations at 2048 environments. That the dual-critic
+  arm finished a 13-level curriculum in that budget while the unified arm reached level 10 of 40
+  is itself an observation about learning speed. But it is a *different* claim from the paper's,
+  and it is still confounded: the two ladders differ in length, in graduation gates (S6u demands
+  10,000 validated reaches at level 9 against S6s's 4,000–6,000), and in what they ask for.
+
+The paper's "Level 10/12" for S6u should read 10/40.
+
+### Not held constant, besides the curriculum
+
 - **Arm action dimensionality.** S6u's arm actor emits 12 values (5 arm + 7 finger) against
   S6s's 5, visible in the released weights as `arm_actor.log_std` with shape `(12,)` versus
   `(5,)`. Those seven finger outputs were sampled and did enter the log-probability and the PPO
@@ -189,9 +259,12 @@ The paper states that all experiments used 4096 environments. That holds only fo
   curriculum level 20 and the run ended at level 10. They are discarded again at evaluation
   (`arm_out[:, :5]`). The confound is therefore in exploration and policy entropy, not in the
   task being performed.
-- **Locomotion reward.** The velocity-tracking weight is 3.0 in the unified script and 5.0 in
-  the simplified one. Unlike the two items above, this was active for the entire length of both
-  runs.
+- **Locomotion reward.** Exactly one of the fourteen locomotion reward weights differs: forward
+  velocity tracking, `vx` = 3.0 in the unified script against 5.0 in the simplified one — a 67%
+  higher weight on the term that drives walking. The other thirteen (`vy` 1.5, `vyaw` 1.5,
+  height 3.0, orientation 4.0, gait 2.0, CoM stability 2.5, leg posture 2.5, standing still 2.0,
+  foot stability 1.5, and the four penalty/alive terms) are identical. Unlike the two items
+  above, this was active for the entire length of both runs.
 - The unified script also carries a gripper reward term the simplified one lacks; it is gated on
   the same level-20 flag and never fired here.
 
@@ -210,12 +283,18 @@ The evaluation itself is apples-to-apples — one harness, one shared locomotion
 target sequences — so the measured gap between the two arm policies (3.5x on steps-to-target, 2x
 on throughput) is a real property of these two checkpoints.
 
-What the experiment cannot carry on its own is the causal claim. Critic architecture remains the
-most plausible explanation, but curriculum schedule, arm action dimensionality and the
-locomotion reward weight vary alongside it, and there is a single seed per arm. Attributing the
-gap to the critic needs a single-variable ablation: identical curriculum, identical action
-space, identical rewards, only the critic swapped, across several seeds. That run has not been
-done.
+What the experiment cannot carry is the causal claim. Once the curricula are laid side by side,
+the simpler explanation for the gap is training progress: the two policies were not merely
+trained differently, they finished on tasks of very different difficulty, and the slower one had
+last been trained to stand still. Critic architecture may well be why one arm climbed further on
+the same budget — that is a reasonable hypothesis and the reason the ablation is worth running —
+but the measured 3.5x cannot be attributed to it, because curriculum ladder, graduation gates,
+locomotion reward weight and arm action dimensionality all vary alongside the critic, with a
+single seed per arm.
+
+Settling it needs a single-variable ablation: one curriculum, one action space, one reward set,
+only the critic swapped, several seeds. That run has not been done, and this repository should
+be read as its starting point rather than its conclusion.
 
 ## Repository structure
 
