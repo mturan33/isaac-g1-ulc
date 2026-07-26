@@ -132,9 +132,16 @@ locomotion weights instead.
 
 ### Checkpoints
 
-The trained policies for the paper are **not yet in this repository**. They will be published on
-Hugging Face: _link to be added_. Until then the commands above expect local run directories
-under `C:\IsaacLab\logs\ulc\`.
+The trained policies for the paper are published on Hugging Face:
+**https://huggingface.co/mturan33/g1-dual-critic-locomanip**
+
+```bash
+hf download mturan33/g1-dual-critic-locomanip --local-dir checkpoints_paper
+```
+
+The commands above expect local run directories under `C:\IsaacLab\logs\ulc\`; point the
+`--s6_checkpoint` / `--s6u_checkpoint` / `--s7_checkpoint` flags at the downloaded files instead
+(`dual_critic_s6s.pt`, `unified_critic_s6u.pt`, `dual_critic_antigaming_s7.pt`).
 
 Note: training scripts do not set a random seed, so runs are single-seed and not bit-reproducible.
 This is stated as a limitation in the paper.

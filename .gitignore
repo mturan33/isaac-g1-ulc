@@ -193,3 +193,6 @@ outputs/
 videos/
 benchmarks/
 *.tfevents.*
+
+# Hugging Face upload staging (checkpoint copies, published separately)
+hf_upload/
