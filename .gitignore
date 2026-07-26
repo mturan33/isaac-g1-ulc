@@ -185,3 +185,11 @@ ICRA2026_WORKSHOP_PAPER_PREP.md
 g1/isaac_g1_ulc/train/29dof/STAGE2_LOCO_TRAINING_PROMPT.md
 /.claude
 CLAUDE.md
+
+# Training and experiment outputs
+logs/
+wandb/
+outputs/
+videos/
+benchmarks/
+*.tfevents.*
