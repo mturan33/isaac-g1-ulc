@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: "Critic Architecture Matters: Dual vs. Unified Critics for Humanoid Loco-Manipulation"
+abstract: >-
+  Official implementation of a controlled comparison between dual and unified critic
+  architectures for multi-objective humanoid loco-manipulation. Policies are trained on
+  the Unitree G1 in NVIDIA Isaac Lab through a 13-level sequential curriculum spanning
+  stationary reaching to walking with variable-orientation targets.
+type: software
+authors:
+  - family-names: "Yardımcı"
+    given-names: "Mehmet Turan"
+    orcid: "https://orcid.org/0009-0004-8416-8368"
+    affiliation: "Çukurova University"
+repository-code: "https://github.com/mturan33/isaac-g1-ulc"
+license: MIT
+keywords:
+  - reinforcement-learning
+  - humanoid-robotics
+  - loco-manipulation
+  - actor-critic
+  - isaac-lab
+  - isaac-sim
+  - unitree-g1
+  - robot-learning
+preferred-citation:
+  type: article
+  title: "Critic Architecture Matters: Dual vs. Unified Critics for Humanoid Loco-Manipulation"
+  authors:
+    - family-names: "Yardımcı"
+      given-names: "Mehmet Turan"
+      orcid: "https://orcid.org/0009-0004-8416-8368"
+      affiliation: "Çukurova University"
+  year: 2026
+  journal: "arXiv preprint arXiv:2606.11891"
+  doi: "10.48550/arXiv.2606.11891"
+  url: "https://arxiv.org/abs/2606.11891"
+  collection-title: "ICRA 2026 Workshop on Reinforcement Learning for Imitation Learning (RL4IL)"
+  identifiers:
+    - type: other
+      value: "arXiv:2606.11891"
+      description: "arXiv preprint identifier"
