@@ -143,8 +143,79 @@ The commands above expect local run directories under `C:\IsaacLab\logs\ulc\`; p
 `--s6_checkpoint` / `--s6u_checkpoint` / `--s7_checkpoint` flags at the downloaded files instead
 (`dual_critic_s6s.pt`, `unified_critic_s6u.pt`, `dual_critic_antigaming_s7.pt`).
 
-Note: training scripts do not set a random seed, so runs are single-seed and not bit-reproducible.
-This is stated as a limitation in the paper.
+## Experimental caveats
+
+The headline comparison rests on a single pair of training runs, and those runs differ in more
+than the critic. This section states what was and was not held constant.
+
+### Held constant between S6u and S6s
+
+Robot and simulator; the 17 driven joints (12 leg + 5 arm); observation spaces (57-dim
+locomotion, 52-dim arm); network sizes ([512, 256, 128] locomotion, [256, 256, 128] arm); PPO
+settings (lr 3e-4 with cosine annealing, γ = 0.99, λ = 0.95, clip 0.2, 24-step rollouts);
+20,000 training iterations; and the entire evaluation path — one benchmark script, one shared
+locomotion branch, fingers pinned open for every policy, seed 42.
+
+### Parallel environments
+
+| Run | `num_envs` | Basis |
+|---|---|---|
+| S6s (dual critic) | 2048 | recorded in the launch notes written before the run |
+| S7 (dual + anti-gaming) | 4096 | recorded in the launch command |
+| S6u (unified critic) | 2048 — **inferred** | not recorded anywhere; see below |
+
+S6u's launch flags were never written to disk. Wall-clock timing cannot settle the question:
+the known-2048 and known-4096 runs take 3.39 and 3.22 s/iteration, so iteration cost on this
+machine does not scale with environment count. The reach counter can. S6u logs ≈48,940 reaches
+per iteration, and a run can register at most `num_envs × 24` reaches per iteration, giving a
+hard floor of **`num_envs` ≥ 2048**. That figure is 99.6% of the 2048 ceiling — saturated —
+whereas reproducing it with 4096 environments would require the rate to sit at exactly 49.8% of
+ceiling and hold there. 2048 is the strong reading, but it is an inference, not a record.
+
+The paper states that all experiments used 4096 environments. That holds only for S7.
+
+### Not held constant
+
+- **Curriculum.** S6u runs a 40-level curriculum (reaching → orientation → gripper →
+  height/load); S6s runs a 13-level one (standing → walking → fixed orientation → variable
+  orientation out to an 80° cone). These are different schedules, not long and short versions of
+  one schedule. S6u stopped at level 10 of 40 — the entry to its orientation phase, 25% of the
+  way through — while S6s completed 12 of 12. The paper's "Level 10/12" for S6u should read
+  10/40.
+- **Arm action dimensionality.** S6u's arm actor emits 12 values (5 arm + 7 finger) against
+  S6s's 5, visible in the released weights as `arm_actor.log_std` with shape `(12,)` versus
+  `(5,)`. Those seven finger outputs were sampled and did enter the log-probability and the PPO
+  update for the whole run, but they never reached the robot: finger control switches on at
+  curriculum level 20 and the run ended at level 10. They are discarded again at evaluation
+  (`arm_out[:, :5]`). The confound is therefore in exploration and policy entropy, not in the
+  task being performed.
+- **Locomotion reward.** The velocity-tracking weight is 3.0 in the unified script and 5.0 in
+  the simplified one. Unlike the two items above, this was active for the entire length of both
+  runs.
+- The unified script also carries a gripper reward term the simplified one lacks; it is gated on
+  the same level-20 flag and never fired here.
+
+### Seeding
+
+No training script sets a seed. `torch.manual_seed`, `np.random.seed`, an Isaac Lab `cfg.seed`
+and a `--seed` argument are all absent from every script in `train/23dof/`, and Isaac Lab leaves
+the seed unset by default. The scripts do draw from the RNG, so the runs are genuinely
+non-deterministic: every number reported here comes from one run, with no variance estimate. The
+benchmark does seed (default 42, re-applied before each policy), so the policies are compared on
+matched target sequences even though the training runs behind them are unseeded.
+
+### What survives this
+
+The evaluation itself is apples-to-apples — one harness, one shared locomotion branch, matched
+target sequences — so the measured gap between the two arm policies (3.5x on steps-to-target, 2x
+on throughput) is a real property of these two checkpoints.
+
+What the experiment cannot carry on its own is the causal claim. Critic architecture remains the
+most plausible explanation, but curriculum schedule, arm action dimensionality and the
+locomotion reward weight vary alongside it, and there is a single seed per arm. Attributing the
+gap to the critic needs a single-variable ablation: identical curriculum, identical action
+space, identical rewards, only the critic swapped, across several seeds. That run has not been
+done.
 
 ## Repository structure
 
