@@ -33,8 +33,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import sys
 import argparse
 from datetime import datetime
+
+# Shared run-configuration capture (utils/run_config.py). Imported by path so
+# utils/__init__.py is not pulled in before the Isaac Lab app launches.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "utils"))
+from run_config import set_global_seed, dump_run_config, DEFAULT_SEED
 
 # ============================================================================
 # CONFIGURATION
@@ -270,10 +277,16 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from Stage 7 checkpoint")
     parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage7_antigaming")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
+                        help="Random seed for python/numpy/torch. Recorded in run_config.json.")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
 args_cli = parse_args()
+
+# Seed before anything samples or initialises weights.
+SEED_APPLIED = set_global_seed(args_cli.seed)
+print(f"[seed] {SEED_APPLIED}")
 
 
 # ============================================================================
@@ -1570,6 +1583,22 @@ def train():
     log_dir = f"logs/ulc/{args_cli.experiment_name}_{timestamp}"
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
+
+    dump_run_config(
+        log_dir, args_cli, script=__file__,
+        curriculum=CURRICULUM,
+        reward_weights={"loco": LOCO_REWARD_WEIGHTS, "arm": ARM_REWARD_WEIGHTS},
+        dims={"loco_obs": 57, "arm_obs": 55, "loco_act": 12, "arm_act": 5,
+              "action_space": 17, "critic": "dual",
+              "controlled_joints": "12 leg (frozen) + 5 arm (fingers pinned open)",
+              "arm_obs_note": "55 = 52 base + 3 anti-gaming features"},
+        upstream={"stage6_checkpoint": args_cli.stage6_checkpoint,
+                  "resume_checkpoint": args_cli.checkpoint},
+        seed_applied=SEED_APPLIED,
+        extra={"rollout_steps": 24, "loco_branch": "frozen",
+               "ppo": {"arm_lr": 3e-4, "gamma": 0.99, "lam": 0.95,
+                       "clip": 0.2, "schedule": "cosine"}},
+    )
 
     print(f"\n[INFO] Logging to: {log_dir}")
 

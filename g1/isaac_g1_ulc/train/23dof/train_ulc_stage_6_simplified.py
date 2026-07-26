@@ -393,10 +393,16 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Resume from V3 simplified checkpoint")
     parser.add_argument("--experiment_name", type=str, default="ulc_g1_stage6_simplified")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
+                        help="Random seed for python/numpy/torch. Recorded in run_config.json.")
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
 args_cli = parse_args()
+
+# Seed before anything samples or initialises weights.
+SEED_APPLIED = set_global_seed(args_cli.seed)
+print(f"[seed] {SEED_APPLIED}")
 
 
 # ============================================================================
@@ -1710,6 +1716,21 @@ def train():
     log_dir = f"logs/ulc/{args_cli.experiment_name}_{timestamp}"
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
+
+    dump_run_config(
+        log_dir, args_cli, script=__file__,
+        curriculum=CURRICULUM,
+        reward_weights={"loco": LOCO_REWARD_WEIGHTS, "arm": ARM_REWARD_WEIGHTS},
+        dims={"loco_obs": 57, "arm_obs": 52, "loco_act": 12, "arm_act": 5,
+              "action_space": 17, "critic": "dual",
+              "controlled_joints": "12 leg + 5 arm (fingers pinned open)"},
+        upstream={"stage3_checkpoint": args_cli.stage3_checkpoint,
+                  "stage5_checkpoint": args_cli.stage5_checkpoint,
+                  "resume_checkpoint": args_cli.checkpoint},
+        seed_applied=SEED_APPLIED,
+        extra={"rollout_steps": 24, "ppo": {"lr": 3e-4, "gamma": 0.99, "lam": 0.95,
+                                            "clip": 0.2, "schedule": "cosine"}},
+    )
 
     print(f"\n[INFO] Logging to: {log_dir}")
 
