@@ -1714,6 +1714,20 @@ def train():
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
 
+    dump_run_config(
+        log_dir, args_cli, script=__file__,
+        curriculum=CURRICULUM,
+        reward_weights={"loco": LOCO_REWARD_WEIGHTS, "arm": ARM_REWARD_WEIGHTS},
+        dims={"loco_obs": 57, "arm_obs": 55, "loco_act": 12, "arm_act": 5,
+              "action_space": 17, "critic": "dual",
+              "controlled_joints": "12 leg (frozen) + 5 arm (fingers pinned open)",
+              "arm_obs_note": "55 = 52 base + 3 anti-gaming features"},
+        upstream={"stage7_checkpoint": args_cli.stage7_checkpoint,
+                  "resume_checkpoint": args_cli.checkpoint},
+        seed_applied=SEED_APPLIED,
+        extra={"rollout_steps": 24, "loco_branch": "frozen"},
+    )
+
     print(f"\n[INFO] Logging to: {log_dir}")
 
     best_reward = best_reward_resume if args_cli.checkpoint else float('-inf')
