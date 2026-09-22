@@ -75,11 +75,18 @@ best checkpoint at iteration 19,730.
 ### Train the unified-critic policy (S6u)
 
 A single 109-dim critic over the concatenated observation. Note this script is not otherwise
-identical to the dual-critic one — it also has its own 40-level curriculum and a different
-locomotion reward weighting; see [Experimental caveats](#experimental-caveats).
+identical to the dual-critic one — it also has its own 40-level curriculum, its own reward table,
+policy-driven fingers from level 10 on, and a different PPO update (one summed advantage, one
+likelihood ratio for both actors); see [Experimental caveats](#experimental-caveats).
+
+**Use the as-run file.** `train_ulc_stage_6_unified_asrun_c545e8a.py` is the exact script that
+produced the S6u run, restored byte-for-byte from commit `c545e8a` (blob `73b05dc`). The file
+`train_ulc_stage_6_unified.py` at the tip of this branch is **not** that script: it was rewritten
+afterwards and now builds `DualActorCritic` with separate `loco_critic` and `arm_critic`, so it
+does not reproduce S6u. Running it will train a dual-critic policy.
 
 ```powershell
-.\isaaclab.bat -p REPO/g1/isaac_g1_ulc/train/23dof/train_ulc_stage_6_unified.py `
+.\isaaclab.bat -p REPO/g1/isaac_g1_ulc/train/23dof/train_ulc_stage_6_unified_asrun_c545e8a.py `
   --stage3_checkpoint <NOT RECORDED - see below> `
   --num_envs 2048 `
   --max_iterations 20000 `
@@ -173,6 +180,13 @@ settings (lr 3e-4 with cosine annealing, γ = 0.99, λ = 0.95, clip 0.2, 24-step
 20,000 training iterations; and the entire evaluation path — one benchmark script, one shared
 locomotion branch, fingers pinned open for every policy, seed 42.
 
+Two of those "held constant" items cut against S6u specifically. The shared locomotion branch is
+the dual run's: S6s and S7 carry bit-identical locomotion weights (15 of 15 tensors equal), while
+S6u's own locomotion weights differ from them (largest absolute difference 3.38), so the harness
+replaces S6u's locomotion branch at load time unless `--s6u_own_loco` is passed. And pinning the
+fingers open matches how S6s and S7 trained, but not how S6u trained. The PPO *settings* are
+shared; the PPO *update rule* is not — see the update-rule item below.
+
 ### Parallel environments
 
 | Run | `num_envs` | Basis |
@@ -208,23 +222,25 @@ This is the largest caveat, and it is not a matter of one run being a shorter ve
 other. Read from the curriculum definitions, the task each policy was training on when its
 checkpoint was saved:
 
-| At its final level | S6u — level 10 of 40 | S6s — level 12 of 12 |
+| At its final level | S6u — level 10 of 40 | S6s — level 12 of 13 |
 |---|---|---|
 | Base motion | **standing still** (`vx`, `vy`, `vyaw` all 0) | **walking**, `vx` 0–0.6 m/s, `vy` ±0.13, `vyaw` ±0.22 |
 | Target distance | 0.18–0.28 m | 0.18–0.40 m |
 | Position tolerance | 0.05 m | 0.04 m |
 | Orientation target | fixed palm-down | **arbitrary**, sampled in a widening cone (80° at level 12) |
-| Orientation tolerance | 1.5 rad (≈86°) | 1.0 rad (≈57°) |
+| Orientation tolerance | 0.8 rad (≈46°) | 1.0 rad (≈57°) |
+| Gripper | **active** — the policy drives the seven finger joints and earns a gripper reward | not trained; fingers pinned open |
 
 The 40-level scheme is not a finer-grained version of the 13-level one. Three structural
 differences:
 
-1. **Different capability axes.** S6u ramps reaching → orientation → **gripper** → **height and
-   payload**. S6s trains none of gripper, height command or payload — two of S6u's four phases
-   target capabilities that are absent from the other run entirely.
+1. **Different capability axes.** S6u ramps reaching (0–9) → **orientation and gripper together**
+   (10–19) → **commanded torso height** (20–29) → **payload** (30–39). S6s trains none of gripper,
+   height command or payload. S6u did enter its gripper phase: `Curriculum/level` first reaches 10
+   at iteration 1,162 and stays there, 18,838 of 20,000 iterations.
 2. **Different shape.** S6u resets base motion at each phase boundary and re-ramps: its level 9
-   already commands `vx` up to 0.60 m/s at a 0.03 m tolerance, then level 10 drops back to
-   `vx` = 0 with a looser 0.05 m. S6s's ladder is monotonic — commanded velocity only rises
+   already commands `vx` up to 0.60 m/s, then level 10 drops back to `vx` = 0 while the position
+   tolerance stays at 0.05 m and orientation and gripper switch on. S6s's ladder is monotonic — commanded velocity only rises
    (0 → 0.2 → 0.3 → 0.35 → 0.4 → 0.45 → 0.5 → 0.55 → 0.6).
 3. **Different orientation goal.** S6u only ever trains a fixed palm-down target; the script has
    no variable-orientation mechanism at all. S6s's last four levels train arbitrary end-effector
@@ -250,42 +266,56 @@ Two things temper how far that undercuts the result, and neither rescues the cau
   is itself an observation about learning speed. But it is a *different* claim from the one v1 of
   the paper made,
   and it is still confounded: the two ladders differ in length, in graduation gates (S6u demands
-  10,000 validated reaches at level 9 against S6s's 4,000–6,000), and in what they ask for.
+  10,000 reaches at level 9 against S6s's 2,000–6,000, and the two runs do not even count a reach
+  the same way — the unified script has no notion of a *validated* reach), and in what they ask for.
 
 Version 1 of the paper reported S6u at "Level 10/12"; version 2 corrects this to 10/40.
 
 ### Not held constant, besides the curriculum
 
-- **Arm action dimensionality.** S6u's arm actor emits 12 values (5 arm + 7 finger) against
-  S6s's 5, visible in the released weights as `arm_actor.log_std` with shape `(12,)` versus
-  `(5,)`. Those seven finger outputs were sampled and did enter the log-probability and the PPO
-  update for the whole run, but they never reached the robot: finger control switches on at
-  curriculum level 20 and the run ended at level 10. They are discarded again at evaluation
-  (`arm_out[:, :5]`). The confound is therefore in exploration and policy entropy, not in the
-  task being performed.
-- **Locomotion reward.** Exactly one of the fourteen locomotion reward weights differs: forward
-  velocity tracking, `vx` = 3.0 in the unified script against 5.0 in the simplified one — a 67%
-  higher weight on the term that drives walking. The other thirteen (`vy` 1.5, `vyaw` 1.5,
-  height 3.0, orientation 4.0, gait 2.0, CoM stability 2.5, leg posture 2.5, standing still 2.0,
-  foot stability 1.5, and the four penalty/alive terms) are identical. Unlike the two items
-  above, this was active for the entire length of both runs.
-- The unified script also carries a gripper reward term the simplified one lacks; it is gated on
-  the same level-20 flag and never fired here.
+- **Arm action dimensionality and finger control.** S6u's arm actor emits 12 values (5 arm + 7
+  finger) against S6s's 5, visible in the released weights as `arm_actor.log_std` with shape
+  `(12,)` versus `(5,)`. Finger control switches on at curriculum **level 10**, not level 20, so
+  those seven outputs drove the robot's fingers for 18,838 of the 20,000 iterations
+  (`if lv["use_gripper"]:` in `_pre_physics_step` of the as-run script). They are discarded at
+  evaluation, where the benchmark pins the fingers open for every policy (`arm_out[:, :5]` and
+  `target_pos[:, self.finger_idx] = self.finger_lower`). S6u is therefore evaluated in a
+  configuration it did not train in, and the confound is in the task performed as well as in
+  exploration and policy entropy.
+- **Reward table.** The two scripts do not share a reward table. The as-run unified script keeps
+  one flat `REWARD_WEIGHTS` dict; the simplified one keeps separate `LOCO_REWARD_WEIGHTS` and
+  `ARM_REWARD_WEIGHTS`. Forward velocity tracking is 2.5 in the unified script against 5.0 in the
+  simplified one, and the term lists differ: the simplified configuration adds leg posture,
+  standing still and foot stability; the unified one adds gripper (5.0), height tracking (3.0)
+  and load stability (2.0). On the arm side only the distance weight (4.0) is common to both.
+  Unlike the curriculum position, this was active for the entire length of both runs.
+- **Update rule.** The difference is not only the critic. The unified script normalizes one
+  summed advantage, applies a single likelihood ratio to both actors and clips gradients over the
+  whole network with one optimizer. The simplified script computes a separate advantage per
+  reward stream, normalizes each one, and updates each actor with its own ratio, its own gradient
+  clipping and its own optimizer. Critic architecture and credit assignment move together between
+  these two runs, and no measurement here separates them.
+- The unified script's gripper reward term (`gripper_grasp`, 5.0) fired: `Env/R/gripper` is
+  non-zero for 18,837 of the 20,000 logged iterations, starting at iteration 1,163.
 
 ### Seeding
 
-No training script sets a seed. `torch.manual_seed`, `np.random.seed`, an Isaac Lab `cfg.seed`
-and a `--seed` argument are all absent from every script in `train/23dof/`, and Isaac Lab leaves
-the seed unset by default. The scripts do draw from the RNG, so the runs are genuinely
-non-deterministic: every number reported here comes from one run, with no variance estimate. The
+Neither training run set a seed. At the time of the S6u and S6s runs, `torch.manual_seed`,
+`np.random.seed`, an Isaac Lab `cfg.seed` and a `--seed` argument were all absent from the
+training scripts, and Isaac Lab leaves the seed unset by default. (Scripts in `train/23dof/`
+have taken a `--seed` argument since July 2026, defaulting to 42 and recorded in
+`run_config.json`; that came after these runs and changes nothing about them.) The scripts do
+draw from the RNG, so the runs are genuinely non-deterministic: every number reported here comes
+from one run, with no variance estimate. The
 benchmark does seed (default 42, re-applied before each policy), so the policies are compared on
 matched target sequences even though the training runs behind them are unseeded.
 
 ### What survives this
 
-The evaluation itself is apples-to-apples — one harness, one shared locomotion branch, matched
-target sequences — so the measured gap between the two arm policies (3.5x on steps-to-target, 2x
-on throughput) is a real property of these two checkpoints.
+The evaluation itself is apples-to-apples — one harness, one locomotion branch for all three
+policies, matched target sequences — so the measured gap between the two arm policies (3.5x on
+steps-to-target, 2x on throughput) is a real property of these two checkpoints as the harness
+runs them, with S6u's arm driven by the dual run's locomotion branch and with its fingers pinned.
 
 What the experiment cannot carry is the causal claim. Once the curricula are laid side by side,
 the simpler explanation for the gap is training progress: the two policies were not merely
