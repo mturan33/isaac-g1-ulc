@@ -1698,7 +1698,10 @@ def train():
         curriculum=CURRICULUM,
         reward_weights={"loco": LOCO_REWARD_WEIGHTS, "arm": ARM_REWARD_WEIGHTS},
         dims={"loco_obs": 57, "arm_obs": 52, "loco_act": 12, "arm_act": 12,
-              "action_space": 24, "critic": "unified", "critic_obs": 109,
+              "action_space": 24, "critic": "dual",
+              "critic_note": ("separate LocoCritic(57) + ArmCritic(52); this file does NOT build "
+                              "the 109-dim unified critic of the S6u run -- for that see "
+                              "train_ulc_stage_6_unified_asrun_c545e8a.py"),
               "controlled_joints": "12 leg + 5 arm + 7 finger"},
         upstream={"stage3_checkpoint": args_cli.stage3_checkpoint,
                   "resume_checkpoint": args_cli.checkpoint},
