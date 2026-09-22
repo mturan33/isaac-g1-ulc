@@ -2,10 +2,14 @@ cff-version: 1.2.0
 message: "If you use this software, please cite the paper below."
 title: "Critic Architecture Matters: Dual vs. Unified Critics for Humanoid Loco-Manipulation"
 abstract: >-
-  Official implementation of a controlled comparison between dual and unified critic
-  architectures for multi-objective humanoid loco-manipulation. Policies are trained on
-  the Unitree G1 in NVIDIA Isaac Lab through a 13-level sequential curriculum spanning
-  stationary reaching to walking with variable-orientation targets.
+  Official implementation of the paper, which compares dual and unified critic
+  architectures for multi-objective humanoid loco-manipulation on the Unitree G1 in
+  NVIDIA Isaac Lab, training policies through sequential curricula that progress from
+  stationary reaching to walking with variable-orientation targets. The two runs differ
+  in more than the critic (curriculum, locomotion reward weight, arm action
+  dimensionality, one seed each), so the measured gap is reported as a relation between
+  two runs rather than a causal effect of the critic; see the Confounding Factors section
+  of the paper (v2).
 type: software
 authors:
   - family-names: "Yardımcı"
@@ -35,7 +39,7 @@ preferred-citation:
   journal: "arXiv preprint arXiv:2606.11891"
   doi: "10.48550/arXiv.2606.11891"
   url: "https://arxiv.org/abs/2606.11891"
-  collection-title: "ICRA 2026 Workshop on Reinforcement Learning for Imitation Learning (RL4IL)"
+  collection-title: "ICRA 2026 Workshop on Reinforcement Learning in the Era of Imitation Learning (RL4IL)"
   identifiers:
     - type: other
       value: "arXiv:2606.11891"

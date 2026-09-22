@@ -1,7 +1,9 @@
 # Critic Architecture Matters: Dual vs. Unified Critics for Humanoid Loco-Manipulation
 
-Official code for the RL4IL @ ICRA 2026 paper — a controlled comparison of dual and unified
-critic architectures for whole-body loco-manipulation on the Unitree G1 in NVIDIA Isaac Lab.
+Official code for the RL4IL @ ICRA 2026 paper, which compares dual and unified critic
+architectures for whole-body loco-manipulation on the Unitree G1 in NVIDIA Isaac Lab. The two
+runs differ in more than the critic; see [Experimental caveats](#experimental-caveats) before
+reading the results as an effect of critic architecture.
 
 [![arXiv](https://img.shields.io/badge/arXiv-2606.11891-b31b1b.svg)](https://arxiv.org/abs/2606.11891)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -67,7 +69,7 @@ All commands run from `C:\IsaacLab` with `env_isaaclab` active. `REPO` below sta
   --headless
 ```
 
-Run of record: `ulc_g1_stage6_simplified_2026-02-04_23-41-18` — reached curriculum level 12/12,
+Run of record: `ulc_g1_stage6_simplified_2026-02-04_23-41-18` — reached curriculum level 12/13 (the last level of its 13-level curriculum),
 best checkpoint at iteration 19,730.
 
 ### Train the unified-critic policy (S6u)
@@ -113,7 +115,7 @@ Frozen locomotion branch, freshly initialised arm policy, 8-level curriculum, 55
   --headless
 ```
 
-Run of record: `ulc_g1_stage7_antigaming_2026-02-06_17-41-47` — level 7/7, best checkpoint at
+Run of record: `ulc_g1_stage7_antigaming_2026-02-06_17-41-47` — level 7/8 (the last level of its 8-level curriculum), best checkpoint at
 iteration 14,878.
 
 ### Run the three-way evaluation
@@ -197,7 +199,8 @@ of `num_envs` ≥ 2044 and rules 1024 out outright, while sitting at 99.78% of t
 have to hover at 49.9% of its ceiling for 20,000 iterations and never once cross half. 2048 is
 the only reading consistent with the data, but it remains an inference, not a record.
 
-The paper states that all experiments used 4096 environments. That holds only for S7.
+Version 1 of the paper stated that all experiments used 4096 environments; that held only for
+S7. Version 2 (30 July 2026) reports the per-run counts above.
 
 ### Curriculum — the two runs did not finish on the same task
 
@@ -244,11 +247,12 @@ Two things temper how far that undercuts the result, and neither rescues the cau
   slightly more forgiving. S6u underperformed on approximately its own final training task.
 - Both runs had the same budget — 20,000 iterations at 2048 environments. That the dual-critic
   arm finished a 13-level curriculum in that budget while the unified arm reached level 10 of 40
-  is itself an observation about learning speed. But it is a *different* claim from the paper's,
+  is itself an observation about learning speed. But it is a *different* claim from the one v1 of
+  the paper made,
   and it is still confounded: the two ladders differ in length, in graduation gates (S6u demands
   10,000 validated reaches at level 9 against S6s's 4,000–6,000), and in what they ask for.
 
-The paper's "Level 10/12" for S6u should read 10/40.
+Version 1 of the paper reported S6u at "Level 10/12"; version 2 corrects this to 10/40.
 
 ### Not held constant, besides the curriculum
 
