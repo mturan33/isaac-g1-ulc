@@ -9,21 +9,31 @@ reading the results as an effect of critic architecture.
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 
-The policy controls **17 joints (12 leg + 5 right arm)** of the G1's 23 active DoF; wrist and
-hand joints are held fixed.
+The policy controls **17 joints (12 leg + 5 right arm)** of the G1's 23 active body DoF; wrist
+joints are held fixed. The seven right-hand Dex3 finger joints lie outside that count of 23: they
+are pinned open in the dual-critic runs and in every evaluation, but the unified run drove them
+from curriculum level 10 on (see [Experimental caveats](#experimental-caveats)).
 
 ## Results
 
 Standardized benchmark — 3,000 steps, 1 environment, deterministic actions, standing mode.
 
-| Metric | Unified critic (S6u) | Dual critic (S6s) |
-|---|---|---|
-| Steps to target | 22.6 | **6.5** (3.5x faster) |
-| Throughput (validated reaches / 1,000 steps) | 7.0 | **14.3** (2x) |
-| Validated reach rate | 53.8% | **65.2%** |
+| Standing mode | Unified critic (S6u) | S6u, own fingers driven ‡ | Dual critic (S6s) | Dual + anti-gaming (S7) |
+|---|---|---|---|---|
+| Steps to target | 22.6 | 8.3 | 6.5 | 5.8 |
+| Throughput (validated reaches / 1,000 steps) | 7.0 | 12.7 | 14.3 | 13.0 |
+| Validated reach rate | 53.8% | 59.4% | 65.2% | 60.9% |
 
-Adding anti-gaming reward shaping on top of the dual critic (S7) yields **60.9%** — no gain
-over the architectural change alone.
+The benchmark pins the fingers open for every policy, whereas S6u had trained driving its own.
+‡ Same S6u checkpoint, benchmark, seed and step count; the only change is that its seven finger
+outputs drive the fingers (version 3 of the paper adds this column). With that change the
+standing-mode gap to S6s falls from 3.5x to 1.3x in speed and from 2x to 1.1x in throughput
+(walking: 2.3x to 1.2x, and 1.8x to 1.03x). This is a single re-evaluation of a single
+checkpoint, and we do not generalize from it; S6u still runs on the dual run's locomotion branch,
+not its own, and that second mismatch is unmeasured.
+
+The anti-gaming variant (S7) is faster to target than S6s (5.8 vs. 6.5 steps) but did not raise
+validated reach rate or throughput. Walking-mode numbers: Table II of the paper.
 
 ## Installation
 
@@ -142,6 +152,25 @@ Evaluation defaults match the paper: `--pos_threshold 0.06`, `--min_displacement
 By default the benchmark loads one shared locomotion branch into all three policies so that the
 arm branch is the only difference; pass `--s6u_own_loco` to evaluate S6u with its own
 locomotion weights instead.
+
+### Re-evaluate S6u driving its own fingers (the ‡ column)
+
+`benchmark_s6_vs_s7_fingerdrive.py` is a copy of the benchmark that leaves the original untouched
+and adds `--s6u_fingers {pin,policy,both}`. With `both`, S6u is evaluated twice in one session:
+once with the fingers pinned (bit-identical to the original benchmark) and once with its own seven
+finger outputs driving the fingers. S6s and S7 have no finger outputs and are unaffected. It also
+writes `action_magnitude.csv`, the mean absolute arm action at every step for every policy.
+
+```powershell
+.\isaaclab.bat -p REPO/g1/isaac_g1_ulc/test/benchmark_s6_vs_s7_fingerdrive.py `
+  --s6_checkpoint  logs/ulc/ulc_g1_stage6_simplified_2026-02-04_23-41-18/model_best.pt `
+  --s6u_checkpoint logs/ulc/ulc_g1_stage6_complete_2026-01-31_20-49-39/model_final.pt `
+  --s7_checkpoint  logs/ulc/ulc_g1_stage7_antigaming_2026-02-06_17-41-47/model_best.pt `
+  --steps 3000 --num_envs 1 --mode both --seed 42 --s6u_fingers both
+```
+
+`--s6u_own_loco` was not passed for the paper's re-evaluation, so the locomotion branch is the
+same one as in the original table.
 
 > ### Known pitfall — use the correct S6u checkpoint
 >
@@ -281,7 +310,9 @@ Version 1 of the paper reported S6u at "Level 10/12"; version 2 corrects this to
   evaluation, where the benchmark pins the fingers open for every policy (`arm_out[:, :5]` and
   `target_pos[:, self.finger_idx] = self.finger_lower`). S6u is therefore evaluated in a
   configuration it did not train in, and the confound is in the task performed as well as in
-  exploration and policy entropy.
+  exploration and policy entropy. Driving its own fingers, with nothing else changed, shrinks the
+  standing-mode gap from 3.5x to 1.3x in speed and from 2x to 1.1x in throughput (one
+  re-evaluation; see [Results](#results)).
 - **Reward table.** The two scripts do not share a reward table. The as-run unified script keeps
   one flat `REWARD_WEIGHTS` dict; the simplified one keeps separate `LOCO_REWARD_WEIGHTS` and
   `ARM_REWARD_WEIGHTS`. Forward velocity tracking is 2.5 in the unified script against 5.0 in the
@@ -312,23 +343,23 @@ matched target sequences even though the training runs behind them are unseeded.
 
 ### What survives this
 
-The evaluation itself is apples-to-apples — one harness, one locomotion branch for all three
-policies, matched target sequences — so the measured gap between the two arm policies (3.5x on
-steps-to-target, 2x on throughput) is a real property of these two checkpoints as the harness
-runs them, with S6u's arm driven by the dual run's locomotion branch and with its fingers pinned.
+The evaluation is internally consistent — one harness, one locomotion branch for all three
+policies, matched target sequences — so the measured gap is a real property of these two
+checkpoints *under this harness*, with S6u's arm driven by the dual run's locomotion branch. It
+depends on the harness: with S6u's finger outputs restored and nothing else changed, the
+standing-mode gap falls from 3.5x to 1.3x in steps-to-target and from 2x to 1.1x in throughput.
 
-What the experiment cannot carry is the causal claim. Once the curricula are laid side by side,
-the simpler explanation for the gap is training progress: the two policies were not merely
-trained differently, they finished on tasks of very different difficulty, and the slower one had
-last been trained to stand still. Critic architecture may well be why one arm climbed further on
-the same budget — that is a reasonable hypothesis and the reason the ablation is worth running —
-but the measured 3.5x cannot be attributed to it, because curriculum ladder, graduation gates,
-locomotion reward weight and arm action dimensionality all vary alongside the critic, with a
-single seed per arm.
+What the experiment cannot carry is the causal claim. Training progress is at least as
+parsimonious an explanation as critic architecture for the difference that remains: the two
+policies finished on tasks of very different difficulty, and the slower one had last been trained
+to stand still. This design cannot isolate the critic's contribution from the other differences
+listed above — curriculum ladder, graduation gates, reward tables, arm action dimensionality and
+finger control, and the PPO update rule — with a single seed per arm.
 
 Settling it needs a single-variable ablation: one curriculum, one action space, one reward set,
-only the critic swapped, several seeds. That run has not been done, and this repository should
-be read as its starting point rather than its conclusion.
+one update rule, only the critic swapped, several seeds. That run is specified and instrumented
+but has not been done, and this repository should be read as its starting point rather than its
+conclusion.
 
 ## Repository structure
 
@@ -357,8 +388,8 @@ isaac_g1_ulc/
   year    = {2026},
   doi     = {10.48550/arXiv.2606.11891},
   url     = {https://github.com/mturan33/isaac-g1-ulc},
-  note    = {ICRA 2026 Workshop on Reinforcement Learning for
-             Imitation Learning (RL4IL)}
+  note    = {ICRA 2026 Workshop on Reinforcement Learning in the Era
+             of Imitation Learning (RL4IL)}
 }
 ```
 
