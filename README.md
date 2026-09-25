@@ -24,7 +24,7 @@ Standardized benchmark — 3,000 steps, 1 environment, deterministic actions, st
 | Throughput (validated reaches / 1,000 steps) | 7.0 | 12.7 | 14.3 | 13.0 |
 | Validated reach rate | 53.8% | 59.4% | 65.2% | 60.9% |
 
-The benchmark pins the fingers open for every policy, whereas S6u had trained driving its own.
+The original benchmark pins the fingers open for every policy, whereas S6u had trained driving its own.
 ‡ Same S6u checkpoint, benchmark, seed and step count; the only change is that its seven finger
 outputs drive the fingers (version 3 of the paper adds this column). With that change the
 standing-mode gap to S6s falls from 3.5x to 1.3x in speed and from 2x to 1.1x in throughput
@@ -149,9 +149,9 @@ Evaluation defaults match the paper: `--pos_threshold 0.06`, `--min_displacement
 `--max_target_steps 150`, `--min_target_dist 0.12`. Results are written as `summary.json` and
 `per_target.csv`, plus plots, in the output directory.
 
-By default the benchmark loads one shared locomotion branch into all three policies so that the
-arm branch is the only difference; pass `--s6u_own_loco` to evaluate S6u with its own
-locomotion weights instead.
+By default the benchmark loads one shared locomotion branch, the dual runs', into all three
+policies; S6u did not train with it, so for S6u the arm branch is not the only difference. Pass
+`--s6u_own_loco` to evaluate S6u with its own locomotion weights instead.
 
 ### Re-evaluate S6u driving its own fingers (the ‡ column)
 
@@ -206,8 +206,9 @@ than the critic. This section states what was and was not held constant.
 Robot and simulator; the 17 driven joints (12 leg + 5 arm); observation spaces (57-dim
 locomotion, 52-dim arm); network sizes ([512, 256, 128] locomotion, [256, 256, 128] arm); PPO
 settings (lr 3e-4 with cosine annealing, γ = 0.99, λ = 0.95, clip 0.2, 24-step rollouts);
-20,000 training iterations; and the entire evaluation path — one benchmark script, one shared
-locomotion branch, fingers pinned open for every policy, seed 42.
+20,000 training iterations; and the evaluation harness — one benchmark script, one locomotion
+branch given to all three policies (the dual run's, which S6u did not train with; see below), seed
+42, and, in the original, pinned-finger evaluation, fingers pinned open for every policy.
 
 Two of those "held constant" items cut against S6u specifically. The shared locomotion branch is
 the dual run's: S6s and S7 carry bit-identical locomotion weights (15 of 15 tensors equal), while
@@ -254,7 +255,7 @@ checkpoint was saved:
 | At its final level | S6u — level 10 of 40 | S6s — level 12 of 13 |
 |---|---|---|
 | Base motion | **standing still** (`vx`, `vy`, `vyaw` all 0) | **walking**, `vx` 0–0.6 m/s, `vy` ±0.13, `vyaw` ±0.22 |
-| Target distance | 0.18–0.28 m | 0.18–0.40 m |
+| Target radius (from the shoulder) | 0.18–0.35 m | 0.18–0.40 m |
 | Position tolerance | 0.05 m | 0.04 m |
 | Orientation target | fixed palm-down | **arbitrary**, sampled in a widening cone (80° at level 12) |
 | Orientation tolerance | 0.8 rad (≈46°) | 1.0 rad (≈57°) |
@@ -287,9 +288,11 @@ against S6s's, and the gap in final task difficulty is large.
 
 Two things temper how far that undercuts the result, and neither rescues the causal claim:
 
-- The benchmark does not test S6u out of distribution. Its targets average ≈0.21 m at a 0.06 m
-  tolerance, which falls inside S6u's own level-10 training range (0.18–0.28 m at 0.05 m) and is
-  slightly more forgiving. S6u underperformed on approximately its own final training task.
+- The benchmark's 0.06 m position tolerance is looser than the 0.05 m S6u faced at level 10, and
+  its targets are sampled 0.18–0.40 m from the shoulder, a band S6u had trained on, though beyond
+  0.35 m only at levels 5–9 (up to 0.38 m at level 5), iterations 327–1,161 of 20,000; level 10
+  samples 0.18–0.35 m. Earlier versions of this README quoted 0.18–0.28 m for level 10: that is
+  the level's `arm_radius`, which the absolute-mode target sampler never reads.
 - Both runs had the same budget — 20,000 iterations at 2048 environments. That the dual-critic
   arm finished a 13-level curriculum in that budget while the unified arm reached level 10 of 40
   is itself an observation about learning speed. But it is a *different* claim from the one v1 of
@@ -306,8 +309,9 @@ Version 1 of the paper reported S6u at "Level 10/12"; version 2 corrects this to
   finger) against S6s's 5, visible in the released weights as `arm_actor.log_std` with shape
   `(12,)` versus `(5,)`. Finger control switches on at curriculum **level 10**, not level 20, so
   those seven outputs drove the robot's fingers for 18,838 of the 20,000 iterations
-  (`if lv["use_gripper"]:` in `_pre_physics_step` of the as-run script). They are discarded at
-  evaluation, where the benchmark pins the fingers open for every policy (`arm_out[:, :5]` and
+  (`if lv["use_gripper"]:` in `_pre_physics_step` of the as-run script). They are discarded in
+  the original, pinned-finger evaluation, where the benchmark pins the fingers open for every
+  policy (`arm_out[:, :5]` and
   `target_pos[:, self.finger_idx] = self.finger_lower`). S6u is therefore evaluated in a
   configuration it did not train in, and the confound is in the task performed as well as in
   exploration and policy entropy. Driving its own fingers, with nothing else changed, shrinks the
@@ -326,6 +330,10 @@ Version 1 of the paper reported S6u at "Level 10/12"; version 2 corrects this to
   reward stream, normalizes each one, and updates each actor with its own ratio, its own gradient
   clipping and its own optimizer. Critic architecture and credit assignment move together between
   these two runs, and no measurement here separates them.
+- **Locomotion branch at evaluation.** The harness gives all three policies the locomotion branch
+  the dual runs share; S6u's own locomotion weights differ from it, so its arm is evaluated with a
+  locomotion branch it did not train with. What that costs has not been measured, and the finger
+  re-evaluation leaves it in place.
 - The unified script's gripper reward term (`gripper_grasp`, 5.0) fired: `Env/R/gripper` is
   non-zero for 18,837 of the 20,000 logged iterations, starting at iteration 1,163.
 
@@ -349,12 +357,13 @@ checkpoints *under this harness*, with S6u's arm driven by the dual run's locomo
 depends on the harness: with S6u's finger outputs restored and nothing else changed, the
 standing-mode gap falls from 3.5x to 1.3x in steps-to-target and from 2x to 1.1x in throughput.
 
-What the experiment cannot carry is the causal claim. Training progress is at least as
-parsimonious an explanation as critic architecture for the difference that remains: the two
-policies finished on tasks of very different difficulty, and the slower one had last been trained
-to stand still. This design cannot isolate the critic's contribution from the other differences
-listed above — curriculum ladder, graduation gates, reward tables, arm action dimensionality and
-finger control, and the PPO update rule — with a single seed per arm.
+What the experiment cannot carry is the causal claim. For the difference that remains, training
+progress is at least as parsimonious an explanation as critic architecture — the two policies
+finished on tasks of very different difficulty, and the slower one had last been trained to stand
+still — and the unmeasured locomotion-branch mismatch is a third candidate. This design cannot
+isolate the critic's contribution from the other differences listed above — curriculum ladder,
+graduation gates, reward tables, arm action dimensionality and finger control, the PPO update rule
+and the locomotion branch at evaluation — with a single seed per arm.
 
 Settling it needs a single-variable ablation: one curriculum, one action space, one reward set,
 one update rule, only the critic swapped, several seeds. That run is specified and instrumented
