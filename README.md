@@ -293,7 +293,9 @@ Two things temper how far that undercuts the result, and neither rescues the cau
   beyond 0.35 m was sampled only at levels 5–9 (up to 0.38 m at level 5), iterations 327–1,161 of 20,000; level 10
   samples 0.18–0.35 m. Earlier versions of this README quoted 0.18–0.28 m for level 10: that is
   the level's `arm_radius`, which the absolute-mode target sampler never reads.
-- Both runs had the same budget — 20,000 iterations at 2048 environments. That the dual-critic
+- Both runs used 2048 parallel environments and 20,000 training iterations; for S6u these values
+  are reconstructed from run artifacts (the saved checkpoints and the per-iteration reach counter),
+  because its launch configuration was not recorded. That the dual-critic
   arm finished a 13-level curriculum in that budget while the unified arm reached level 10 of 40
   is itself an observation about learning speed. But it is a *different* claim from the one v1 of
   the paper made,
