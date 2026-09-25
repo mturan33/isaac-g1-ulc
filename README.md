@@ -289,8 +289,8 @@ against S6s's, and the gap in final task difficulty is large.
 Two things temper how far that undercuts the result, and neither rescues the causal claim:
 
 - The benchmark's 0.06 m position tolerance is looser than the 0.05 m S6u faced at level 10, and
-  its targets are sampled 0.18–0.40 m from the shoulder, a band S6u had trained on, though beyond
-  0.35 m only at levels 5–9 (up to 0.38 m at level 5), iterations 327–1,161 of 20,000; level 10
+  its targets are sampled 0.18–0.40 m from the shoulder, a band S6u had trained on, though the band
+  beyond 0.35 m was sampled only at levels 5–9 (up to 0.38 m at level 5), iterations 327–1,161 of 20,000; level 10
   samples 0.18–0.35 m. Earlier versions of this README quoted 0.18–0.28 m for level 10: that is
   the level's `arm_radius`, which the absolute-mode target sampler never reads.
 - Both runs had the same budget — 20,000 iterations at 2048 environments. That the dual-critic
@@ -313,8 +313,8 @@ Version 1 of the paper reported S6u at "Level 10/12"; version 2 corrects this to
   the original, pinned-finger evaluation, where the benchmark pins the fingers open for every
   policy (`arm_out[:, :5]` and
   `target_pos[:, self.finger_idx] = self.finger_lower`). S6u is therefore evaluated in a
-  configuration it did not train in, and the confound is in the task performed as well as in
-  exploration and policy entropy. Driving its own fingers, with nothing else changed, shrinks the
+  configuration it did not train in, and the confound is in the task performed and may also lie in
+  exploration and policy entropy, which were not measured. Driving its own fingers, with nothing else changed, shrinks the
   standing-mode gap from 3.5x to 1.3x in speed and from 2x to 1.1x in throughput (one
   re-evaluation; see [Results](#results)).
 - **Reward table.** The two scripts do not share a reward table. The as-run unified script keeps
@@ -363,7 +363,7 @@ finished on tasks of very different difficulty, and the slower one had last been
 still — and the unmeasured locomotion-branch mismatch is a third candidate. This design cannot
 isolate the critic's contribution from the other differences listed above — curriculum ladder,
 graduation gates, reward tables, arm action dimensionality and finger control, the PPO update rule
-and the locomotion branch at evaluation — with a single seed per arm.
+and the locomotion branch at evaluation — with a single unseeded run per arm.
 
 Settling it needs a single-variable ablation: one curriculum, one action space, one reward set,
 one update rule, only the critic swapped, several seeds. That run is specified and instrumented
